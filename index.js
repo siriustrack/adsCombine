@@ -315,7 +315,7 @@ app.post('/videos', async (req, res) => {
     console.log(`[${fileName}] Cleaned temp directory ${jobTemp}`);
     
     // Notify webhook
-    const downloadUrl = `${BASE_URL}/${fileName}${extension}`;
+    const downloadUrl = `${BASE_URL}/files/${fileName}${extension}`;
     const stats = fs.statSync(outputPath);
     try {
       const response = await fetch(webhookDestination, {
