@@ -7,6 +7,7 @@ const morgan = require('morgan');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
 const ffprobeInstaller = require('@ffprobe-installer/ffprobe');
+const serveIndex = require('serve-index');
 ffmpeg.setFfprobePath(ffprobeInstaller.path);
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
@@ -40,6 +41,22 @@ const tempDir   = path.join(__dirname, 'temp');
 // Ensure directories exist
 if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir);
 if (!fs.existsSync(tempDir))   fs.mkdirSync(tempDir);
+
+// ───────────────────────────────────────────────
+// 1) Rota pública para listar e baixar tudo em /public
+//    — sem autenticação
+app.use(
+  '/files',
+  express.static(publicDir, {
+    // força download em vez de reprodução inline
+    setHeaders: (res, filePath) => {
+      res.setHeader('Content-Disposition', `attachment; filename="${path.basename(filePath)}"`);
+    }
+  }),
+  serveIndex(publicDir, { icons: true })
+);
+// ───────────────────────────────────────────────
+
 
 // In-memory store (restarts on app restart)
 const videosMeta = [];
