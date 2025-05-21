@@ -14,6 +14,7 @@ public/*
 npm-d4ebug.log*
 yarn-debug.log*
 *.log
+yarn.lock
 
 # Editor / SO
 .vscode/
