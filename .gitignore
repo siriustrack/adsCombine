@@ -1,0 +1,20 @@
+# Node.js modules
+node_modules/
+
+# Environment variables
+.env
+
+# Tempo­rary files during processamento
+temp/
+
+# Vídeos gerados/publicados
+public/*
+
+# Logs
+npm-d4ebug.log*
+yarn-debug.log*
+*.log
+
+# Editor / SO
+.vscode/
+.DS_Store
