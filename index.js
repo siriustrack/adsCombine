@@ -636,8 +636,8 @@ app.post('/videos/story-crop', async (req, res) => {
             path: filePath,
             audioBitrate: audioStream ? (audioStream.bit_rate || '192k') : '192k'
           });
-          if (s.width !== 1920 || s.height !== 1080) {
-            warnings.push(`Video ${i} is ${s.width}x${s.height}, expected 1920x1080 for story crop`);
+          if (s.width !== 1920 && s.width !== 1280) {
+            warnings.push(`Video ${i} is ${s.width}x${s.height}, will attempt to crop but optimal formats are 1920x1080 or 1280x720`);
           }
         }
       }
@@ -669,13 +669,39 @@ app.post('/videos/story-crop', async (req, res) => {
       console.log(`[${fileName}] Starting story crop of video ${i} (${inputVideo.width}x${inputVideo.height}) to 1080x1920...`);
       
       await new Promise((resolve, reject) => {
+        // Calculate crop dimensions based on input video size
+        let cropFilter;
+        let targetWidth, targetHeight;
+        
+        if (inputVideo.width === 1920 && inputVideo.height === 1080) {
+          // 1920x1080 -> crop 1080x1080 from center, then scale to 1080x1920
+          const cropX = (1920 - 1080) / 2; // 420
+          cropFilter = `crop=1080:1080:${cropX}:0,scale=1080:1920`;
+          targetWidth = 1080;
+          targetHeight = 1920;
+          console.log(`[${fileName}] Using 1920x1080 crop: ${cropFilter}`);
+        } else if (inputVideo.width === 1280 && inputVideo.height === 720) {
+          // 1280x720 -> crop 720x720 from center, then scale to 1080x1920
+          const cropX = (1280 - 720) / 2; // 280
+          cropFilter = `crop=720:720:${cropX}:0,scale=1080:1920`;
+          targetWidth = 1080;
+          targetHeight = 1920;
+          console.log(`[${fileName}] Using 1280x720 crop: ${cropFilter}`);
+        } else {
+          // For other dimensions, try to crop the largest square possible from center
+          const minDimension = Math.min(inputVideo.width, inputVideo.height);
+          const cropX = (inputVideo.width - minDimension) / 2;
+          const cropY = (inputVideo.height - minDimension) / 2;
+          cropFilter = `crop=${minDimension}:${minDimension}:${cropX}:${cropY},scale=1080:1920`;
+          targetWidth = 1080;
+          targetHeight = 1920;
+          console.log(`[${fileName}] Using generic crop for ${inputVideo.width}x${inputVideo.height}: ${cropFilter}`);
+        }
+        
         // Create FFmpeg command to crop the video from center
-        // crop filter: crop=width:height:x:y where x,y is top-left corner
-        // For centering: x = (input_width - output_width) / 2, y = (input_height - output_height) / 2
-        // From 1920x1080 to 1080x1920: x = (1920-1080)/2 = 420, y = (1080-1920)/2 = -420 (will be 0)
         const command = ffmpeg(inputVideo.path)
           .outputOptions([
-            `-vf crop=1080:1080:420:0`, // Crop 1080x1080 from center horizontally, full height
+            `-vf ${cropFilter}`, // Dynamic crop and scale filter
             '-c:v libx264', // Use h.264 codec
             '-preset medium', // Balance between speed and quality
             '-crf 18', // Constant Rate Factor (quality) - Lower is better quality, 18 is high quality
