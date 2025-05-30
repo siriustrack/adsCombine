@@ -508,9 +508,9 @@ app.delete('/videos', (req, res) => {
 
 /**
  * @openapi
- * /videos/story-crop:
+ * /videos/create-raw-assets:
  *   post:
- *     summary: Recorta vídeos 1920x1080 para formato story 1080x1920
+ *     summary: Cria 3 versões de assets dos vídeos - feed, story com tarjas e story fullscreen
  *     tags:
  *       - Vídeos
  *     requestBody:
@@ -546,10 +546,10 @@ app.delete('/videos', (req, res) => {
  *       '500':
  *         description: Erro interno de servidor
  */
-app.post('/videos/story-crop', async (req, res) => {
+app.post('/videos/create-raw-assets', async (req, res) => {
   const { webhookDestination, fileName, extension, videos } = req.body;
 
-  console.log(`[${fileName}] Received story-crop request: ${JSON.stringify({
+  console.log(`[${fileName}] Received create-raw-assets request: ${JSON.stringify({
     fileName, 
     extension, 
     videoCount: videos?.length || 0
@@ -569,8 +569,17 @@ app.post('/videos/story-crop', async (req, res) => {
     return res.status(400).json({ error: 'Videos array must not be empty' });
   }
 
+  // Create directories for different asset types
+  const feedDir = path.join(publicDir, 'feed');
+  const storyTarjasDir = path.join(publicDir, 'story_tarjas');
+  const storyFullscreenDir = path.join(publicDir, 'story_fullscreen');
+  
+  [feedDir, storyTarjasDir, storyFullscreenDir].forEach(dir => {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  });
+
   // Create temp folder for this job
-  const jobId = `story-${fileName}-${Date.now()}`;
+  const jobId = `assets-${fileName}-${Date.now()}`;
   const jobTemp = path.join(tempDir, jobId);
   fs.mkdirSync(jobTemp, { recursive: true });
   console.log(`[${fileName}] Created temp directory at ${jobTemp}`);
@@ -614,7 +623,6 @@ app.post('/videos/story-crop', async (req, res) => {
   const warnings = [];
   const videoDimensions = [];
   
-  // Get dimensions of all videos
   await Promise.all(videos.map((_, i) => new Promise((resolve) => {
     const filePath = path.join(jobTemp, `${i}.mp4`);
     ffmpeg.ffprobe(filePath, (err, meta) => {
@@ -636,9 +644,6 @@ app.post('/videos/story-crop', async (req, res) => {
             path: filePath,
             audioBitrate: audioStream ? (audioStream.bit_rate || '192k') : '192k'
           });
-          if (s.width !== 1920 && s.width !== 1280) {
-            warnings.push(`Video ${i} is ${s.width}x${s.height}, will attempt to crop but optimal formats are 1920x1080 or 1280x720`);
-          }
         }
       }
       resolve();
@@ -648,16 +653,16 @@ app.post('/videos/story-crop', async (req, res) => {
   if (warnings.length) console.warn(`[${fileName}] Warnings: ${warnings.join('; ')}`);
 
   // 3) Immediate response
-  console.log(`[${fileName}] Story crop processing started with warnings:`, warnings);
-  res.status(200).json({ message: 'Story crop processing started', warnings });
+  console.log(`[${fileName}] Raw assets processing started with warnings:`, warnings);
+  res.status(200).json({ message: 'Raw assets processing started', warnings });
 
-  // 4) Create story-cropped versions of each video (1080x1920)
-  console.log(`[${fileName}] Cropping videos to story format 1080x1920...`);
-  
   try {
-    // Create cropped versions sequentially to avoid overloading resources
-    const croppedVideos = [];
+    // Arrays to store processed videos for each format
+    const feedVideos = [];
+    const storyTarjasVideos = [];
+    const storyFullscreenVideos = [];
     
+    // 4) Process each video to create 3 versions
     for (let i = 0; i < videoDimensions.length; i++) {
       const inputVideo = videoDimensions[i];
       if (!inputVideo) {
@@ -665,168 +670,261 @@ app.post('/videos/story-crop', async (req, res) => {
         continue;
       }
       
-      const croppedPath = path.join(jobTemp, `cropped-${i}.mp4`);
-      console.log(`[${fileName}] Starting story crop of video ${i} (${inputVideo.width}x${inputVideo.height}) to 1080x1920...`);
+      console.log(`[${fileName}] Processing video ${i} (${inputVideo.width}x${inputVideo.height}) into 3 formats...`);
+      
+      // First, scale 1280x720 videos to 1920x1080 if needed
+      let scaledPath = inputVideo.path;
+      if (inputVideo.width === 1280 && inputVideo.height === 720) {
+        scaledPath = path.join(jobTemp, `scaled-${i}.mp4`);
+        console.log(`[${fileName}] Scaling video ${i} from 1280x720 to 1920x1080...`);
+        
+        await new Promise((resolve, reject) => {
+          ffmpeg(inputVideo.path)
+            .outputOptions([
+              '-vf scale=1920:1080', // Scale to 1920x1080
+              '-c:v libx264',
+              '-preset medium',
+              '-crf 18',
+              '-c:a aac',
+              '-b:a 320k',
+              '-ar 48000',
+              '-ac 2'
+            ])
+            .output(scaledPath)
+            .on('start', () => {
+              console.log(`[${fileName}] FFmpeg scaling of video ${i} started`);
+            })
+            .on('progress', (progress) => {
+              if (progress.percent) {
+                console.log(`[${fileName}] Scaling video ${i}: ${progress.percent.toFixed(2)}% done`);
+              }
+            })
+            .on('end', () => {
+              console.log(`[${fileName}] Scaled video ${i} successfully to 1920x1080`);
+              resolve();
+            })
+            .on('error', (err) => {
+              console.error(`[${fileName}] Error scaling video ${i}: ${err.message}`);
+              reject(err);
+            })
+            .run();
+        });
+      }
+      
+      // Get dimensions for processing (after scaling)
+      const processWidth = inputVideo.width === 1280 ? 1920 : inputVideo.width;
+      const processHeight = inputVideo.height === 720 ? 1080 : inputVideo.height;
+      
+      // A) Create FEED version (1080x1350 crop from center)
+      const feedPath = path.join(jobTemp, `feed-${i}.mp4`);
+      console.log(`[${fileName}] Creating FEED version ${i} (1080x1350)...`);
       
       await new Promise((resolve, reject) => {
-        // Calculate crop dimensions based on input video size
-        let cropFilter;
-        let targetWidth, targetHeight;
+        // Calculate crop position to center the 1080x1350 area
+        const cropX = Math.max(0, (processWidth - 1080) / 2);
+        const cropY = Math.max(0, (processHeight - 1350) / 2);
         
-        if (inputVideo.width === 1920 && inputVideo.height === 1080) {
-          // 1920x1080 -> crop 1080x1080 from center, then scale to 1080x1920
-          const cropX = (1920 - 1080) / 2; // 420
-          cropFilter = `crop=1080:1080:${cropX}:0,scale=1080:1920`;
-          targetWidth = 1080;
-          targetHeight = 1920;
-          console.log(`[${fileName}] Using 1920x1080 crop: ${cropFilter}`);
-        } else if (inputVideo.width === 1280 && inputVideo.height === 720) {
-          // 1280x720 -> crop 720x720 from center, then scale to 1080x1920
-          const cropX = (1280 - 720) / 2; // 280
-          cropFilter = `crop=720:720:${cropX}:0,scale=1080:1920`;
-          targetWidth = 1080;
-          targetHeight = 1920;
-          console.log(`[${fileName}] Using 1280x720 crop: ${cropFilter}`);
+        // If source is smaller than target, we need to scale first then crop
+        let cropFilter;
+        if (processHeight < 1350) {
+          // Scale to make height at least 1350, maintaining aspect ratio
+          const scaleHeight = 1350;
+          const scaleWidth = Math.round((processWidth * scaleHeight) / processHeight);
+          const newCropX = Math.max(0, (scaleWidth - 1080) / 2);
+          cropFilter = `scale=${scaleWidth}:${scaleHeight},crop=1080:1350:${newCropX}:0`;
         } else {
-          // For other dimensions, try to crop the largest square possible from center
-          const minDimension = Math.min(inputVideo.width, inputVideo.height);
-          const cropX = (inputVideo.width - minDimension) / 2;
-          const cropY = (inputVideo.height - minDimension) / 2;
-          cropFilter = `crop=${minDimension}:${minDimension}:${cropX}:${cropY},scale=1080:1920`;
-          targetWidth = 1080;
-          targetHeight = 1920;
-          console.log(`[${fileName}] Using generic crop for ${inputVideo.width}x${inputVideo.height}: ${cropFilter}`);
+          cropFilter = `crop=1080:1350:${cropX}:${cropY}`;
         }
         
-        // Create FFmpeg command to crop the video from center
-        const command = ffmpeg(inputVideo.path)
+        ffmpeg(scaledPath)
           .outputOptions([
-            `-vf ${cropFilter}`, // Dynamic crop and scale filter
-            '-c:v libx264', // Use h.264 codec
-            '-preset medium', // Balance between speed and quality
-            '-crf 18', // Constant Rate Factor (quality) - Lower is better quality, 18 is high quality
-            '-c:a aac', // Audio codec
-            '-b:a 320k', // High quality audio bitrate
-            '-ar 48000', // Audio sample rate (CD quality)
-            '-ac 2' // Stereo audio
+            `-vf ${cropFilter}`,
+            '-c:v libx264',
+            '-preset medium',
+            '-crf 18',
+            '-c:a aac',
+            '-b:a 320k',
+            '-ar 48000',
+            '-ac 2'
           ])
-          .output(croppedPath)
-          .on('start', () => {
-            console.log(`[${fileName}] FFmpeg story crop of video ${i} started`);
-          })
-          .on('progress', (progress) => {
-            if (progress.percent) {
-              console.log(`[${fileName}] Cropping video ${i}: ${progress.percent.toFixed(2)}% done`);
-            }
-          })
+          .output(feedPath)
           .on('end', () => {
-            console.log(`[${fileName}] Story cropped video ${i} successfully`);
-            croppedVideos.push(croppedPath);
+            console.log(`[${fileName}] FEED version ${i} completed`);
+            feedVideos.push(feedPath);
             resolve();
           })
-          .on('error', (err) => {
-            console.error(`[${fileName}] Error cropping video ${i}: ${err.message}`);
-            reject(err);
-          });
-          
-        command.run();
+          .on('error', reject)
+          .run();
+      });
+      
+      // B) Create STORY WITH TARJAS version (1080x1920 with black bars)
+      const storyTarjasPath = path.join(jobTemp, `story-tarjas-${i}.mp4`);
+      console.log(`[${fileName}] Creating STORY TARJAS version ${i} (1080x1920 with black bars)...`);
+      
+      await new Promise((resolve, reject) => {
+        // Scale to 1080 width maintaining aspect ratio, then pad to 1080x1920
+        const scaleHeight = Math.round((processHeight * 1080) / processWidth);
+        const padFilter = `scale=1080:${scaleHeight},pad=1080:1920:0:(oh-ih)/2:black`;
+        
+        ffmpeg(scaledPath)
+          .outputOptions([
+            `-vf ${padFilter}`,
+            '-c:v libx264',
+            '-preset medium',
+            '-crf 18',
+            '-c:a aac',
+            '-b:a 320k',
+            '-ar 48000',
+            '-ac 2'
+          ])
+          .output(storyTarjasPath)
+          .on('end', () => {
+            console.log(`[${fileName}] STORY TARJAS version ${i} completed`);
+            storyTarjasVideos.push(storyTarjasPath);
+            resolve();
+          })
+          .on('error', reject)
+          .run();
+      });
+      
+      // C) Create STORY FULLSCREEN version (scale to 1920 height, crop 1080x1920 from center)
+      const storyFullscreenPath = path.join(jobTemp, `story-fullscreen-${i}.mp4`);
+      console.log(`[${fileName}] Creating STORY FULLSCREEN version ${i} (1080x1920 cropped)...`);
+      
+      await new Promise((resolve, reject) => {
+        // Scale to 1920 height maintaining aspect ratio, then crop 1080x1920 from center
+        const scaleWidth = Math.round((processWidth * 1920) / processHeight);
+        const cropX = Math.max(0, (scaleWidth - 1080) / 2);
+        const fullscreenFilter = `scale=${scaleWidth}:1920,crop=1080:1920:${cropX}:0`;
+        
+        ffmpeg(scaledPath)
+          .outputOptions([
+            `-vf ${fullscreenFilter}`,
+            '-c:v libx264',
+            '-preset medium',
+            '-crf 18',
+            '-c:a aac',
+            '-b:a 320k',
+            '-ar 48000',
+            '-ac 2'
+          ])
+          .output(storyFullscreenPath)
+          .on('end', () => {
+            console.log(`[${fileName}] STORY FULLSCREEN version ${i} completed`);
+            storyFullscreenVideos.push(storyFullscreenPath);
+            resolve();
+          })
+          .on('error', reject)
+          .run();
       });
     }
     
-    // 5) Create a concat file
-    const concatFilePath = path.join(jobTemp, 'concat.txt');
-    const concatFileContent = croppedVideos.map(file => `file '${file}'`).join('\n');
-    fs.writeFileSync(concatFilePath, concatFileContent);
+    // 5) Concatenate each type of video
+    const assets = [
+      { videos: feedVideos, dir: feedDir, suffix: '_feed', description: 'FEED' },
+      { videos: storyTarjasVideos, dir: storyTarjasDir, suffix: '_story_tarjas', description: 'STORY TARJAS' },
+      { videos: storyFullscreenVideos, dir: storyFullscreenDir, suffix: '_story_fullscreen', description: 'STORY FULLSCREEN' }
+    ];
     
-    // 6) Concat all cropped videos with high quality settings
-    const outputPath = path.join(publicDir, `story_size_${fileName}${extension}`);
+    const downloadUrls = [];
     
-    // Calculate highest bitrate from input videos to ensure we maintain quality
-    const highestAudioBitrate = videoDimensions
-      .filter(Boolean)
-      .reduce((max, video) => {
-        const bitNum = parseInt(video.audioBitrate);
-        return isNaN(bitNum) ? max : Math.max(max, bitNum);
-      }, 192000); // Default to 192k if can't determine
-    
-    const audioBitrate = Math.max(320000, highestAudioBitrate).toString();
-    console.log(`[${fileName}] Starting concatenation of ${croppedVideos.length} story videos with audio bitrate ${audioBitrate}`);
-    console.log(`[${fileName}] Concat file created at ${concatFilePath} with content: ${concatFileContent}`);
-    
-    await new Promise((resolve, reject) => {
-      const ffmpegCmd = ffmpeg()
-        .input(concatFilePath)
-        .inputOptions(['-f concat', '-safe 0'])
-        .outputOptions([
-          `-c:v libx264`,
-          `-c:a aac`, // Use AAC for audio
-          `-b:a ${Math.max(320000, parseInt(audioBitrate) || 320000)}`, // Use at least 320k audio bitrate or higher if input has higher
-          `-ar 48000`, // 48kHz audio sample rate (high quality)
-          `-ac 2`, // Stereo audio
-          `-crf 18`, // Maintain high video quality with constant rate factor
-          `-preset slow` // Use slow preset for better quality encoding
-        ])
-        .output(outputPath);
+    for (const asset of assets) {
+      if (asset.videos.length === 0) {
+        console.log(`[${fileName}] No videos to concatenate for ${asset.description}`);
+        continue;
+      }
       
-      // Log all FFmpeg command options for debugging
-      const ffmpegCommandString = ffmpegCmd._getArguments().join(' ');
-      console.log(`[${fileName}] FFmpeg story concat command: ffmpeg ${ffmpegCommandString}`);
+      console.log(`[${fileName}] Concatenating ${asset.videos.length} videos for ${asset.description}...`);
       
-      ffmpegCmd
-        .on('start', (cmd) => {
-          console.log(`[${fileName}] FFmpeg story concat started with command: ${cmd}`);
-        })
-        .on('progress', progress => {
-          const percent = progress.percent ? progress.percent.toFixed(2) : 'unknown';
-          const frames = progress.frames || 0;
-          const fps = progress.currentFps || 0;
-          console.log(`[${fileName}] Processing: ${percent}% done | Frames: ${frames} | FPS: ${fps}`);
-        })
-        .on('end', () => {
-          console.log(`[${fileName}] FFmpeg story processing finished. Output at ${outputPath}`);
-          resolve();
-        })
-        .on('error', (err, stdout, stderr) => {
-          console.error(`[${fileName}] FFmpeg story concat error: ${err.message}`);
-          console.error(`[${fileName}] FFmpeg stderr: ${stderr}`);
-          reject(err);
-        })
-        .run();
-    });
+      // Create concat file
+      const concatFilePath = path.join(jobTemp, `concat-${asset.suffix}.txt`);
+      const concatFileContent = asset.videos.map(file => `file '${file}'`).join('\n');
+      fs.writeFileSync(concatFilePath, concatFileContent);
+      
+      // Output path
+      const outputPath = path.join(asset.dir, `${fileName}${asset.suffix}${extension}`);
+      
+      await new Promise((resolve, reject) => {
+        ffmpeg()
+          .input(concatFilePath)
+          .inputOptions(['-f concat', '-safe 0'])
+          .outputOptions([
+            '-c:v libx264',
+            '-c:a aac',
+            '-b:a 320k',
+            '-ar 48000',
+            '-ac 2',
+            '-crf 18',
+            '-preset slow'
+          ])
+          .output(outputPath)
+          .on('start', (cmd) => {
+            console.log(`[${fileName}] FFmpeg ${asset.description} concat started`);
+          })
+          .on('progress', progress => {
+            const percent = progress.percent ? progress.percent.toFixed(2) : 'unknown';
+            console.log(`[${fileName}] ${asset.description} Processing: ${percent}% done`);
+          })
+          .on('end', () => {
+            console.log(`[${fileName}] ${asset.description} processing finished`);
+            
+            // Add download URL
+            const relativePath = path.relative(publicDir, outputPath).replace(/\\/g, '/');
+            downloadUrls.push({
+              type: asset.description.toLowerCase().replace(' ', '_'),
+              url: `${BASE_URL}/files/${relativePath}`,
+              fileName: `${fileName}${asset.suffix}${extension}`
+            });
+            
+            resolve();
+          })
+          .on('error', (err, stdout, stderr) => {
+            console.error(`[${fileName}] FFmpeg ${asset.description} error: ${err.message}`);
+            console.error(`[${fileName}] FFmpeg stderr: ${stderr}`);
+            reject(err);
+          })
+          .run();
+      });
+    }
     
-    // 7) Success handling
-    console.log(`[${fileName}] Story video processing completed successfully`);
+    // 6) Success handling
+    console.log(`[${fileName}] All raw assets processing completed successfully`);
     
     // Cleanup temp
     fs.rmSync(jobTemp, { recursive: true, force: true });
     console.log(`[${fileName}] Cleaned temp directory ${jobTemp}`);
     
-    // Notify webhook
-    const downloadUrl = `${BASE_URL}/files/story_size_${fileName}${extension}`;
-    const stats = fs.statSync(outputPath);
+    // Notify webhook with all download URLs
     try {
       const response = await fetch(webhookDestination, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileName: `story_size_${fileName}`, downloadUrl, size: stats.size, status: 'success' })
+        body: JSON.stringify({ 
+          fileName, 
+          status: 'success',
+          assets: downloadUrls
+        })
       });
-      console.log(`[${fileName}] Webhook notified with success: ${downloadUrl}, response: ${response.status}`);
+      console.log(`[${fileName}] Webhook notified with success, response: ${response.status}`);
     } catch (webhookErr) {
       console.error(`[${fileName}] Failed to notify webhook on success: ${webhookErr.message}`);
     }
     
-    // Store metadata
-    videosMeta.push({ 
-      webhookDestination, 
-      fileName: `story_size_${fileName}`, 
-      extension, 
-      width: 1080, 
-      height: 1920, 
-      downloadUrl 
+    // Store metadata for each asset
+    downloadUrls.forEach(asset => {
+      videosMeta.push({ 
+        webhookDestination, 
+        fileName: asset.fileName, 
+        extension, 
+        width: asset.type === 'feed' ? 1080 : 1080,
+        height: asset.type === 'feed' ? 1350 : 1920,
+        downloadUrl: asset.url,
+        assetType: asset.type
+      });
     });
     
   } catch (err) {
-    console.error(`[${fileName}] Story processing error: ${err.message}`);
+    console.error(`[${fileName}] Raw assets processing error: ${err.message}`);
     
     // Cleanup on error
     try {
