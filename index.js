@@ -947,6 +947,178 @@ app.post('/videos/create-raw-assets', async (req, res) => {
   }
 });
 
+/**
+ * @openapi
+ * /images/process:
+ *   post:
+ *     summary: Processa uma imagem 1024x1024 e cria versões para feed e story
+ *     tags:
+ *       - Imagens
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               imageUrl:
+ *                 type: string
+ *                 format: uri
+ *               fileName:
+ *                 type: string
+ *             required:
+ *               - imageUrl
+ *               - fileName
+ *     responses:
+ *       '200':
+ *         description: Imagem processada com sucesso
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 feedUrl:
+ *                   type: string
+ *                   format: uri
+ *                 storyUrl:
+ *                   type: string
+ *                   format: uri
+ *                 inputUrl:
+ *                   type: string
+ *                   format: uri
+ *       '400':
+ *         description: Campos obrigatórios ausentes ou inválidos
+ *       '401':
+ *         description: Não autorizado
+ *       '500':
+ *         description: Erro interno de servidor
+ */
+app.post('/images/process', async (req, res) => {
+  const { imageUrl, fileName } = req.body;
+
+  console.log(`[${fileName}] Received image processing request: ${imageUrl}`);
+
+  // Basic validation
+  if (!imageUrl || !fileName) {
+    console.error(`[${fileName}] Missing required fields`);
+    return res.status(400).json({ error: 'Missing required fields: imageUrl and fileName' });
+  }
+
+  // Create imgs directory structure
+  const imgsDir = path.join(publicDir, 'imgs');
+  const feedImgsDir = path.join(imgsDir, 'feed');
+  const storyImgsDir = path.join(imgsDir, 'story');
+  
+  [imgsDir, feedImgsDir, storyImgsDir].forEach(dir => {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  });
+
+  // Create temp folder for this job
+  const jobId = `img-${fileName}-${Date.now()}`;
+  const jobTemp = path.join(tempDir, jobId);
+  fs.mkdirSync(jobTemp, { recursive: true });
+  console.log(`[${fileName}] Created temp directory at ${jobTemp}`);
+
+  try {
+    // 1) Download image
+    console.log(`[${fileName}] Starting download of image...`);
+    const inputImagePath = path.join(jobTemp, 'input.png');
+    
+    const response = await fetch(imageUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to download image: ${response.status} ${response.statusText}`);
+    }
+    
+    const imageBuffer = await response.buffer();
+    fs.writeFileSync(inputImagePath, imageBuffer);
+    console.log(`[${fileName}] Image downloaded successfully`);
+
+    // 2) Create FEED version (1080x1350 with white background)
+    const feedOutputPath = path.join(feedImgsDir, `${fileName}_feed.png`);
+    console.log(`[${fileName}] Creating FEED version (1080x1350)...`);
+    
+    await new Promise((resolve, reject) => {
+      ffmpeg(inputImagePath)
+        .outputOptions([
+          // Create white background canvas 1080x1350 and overlay the 1024x1024 image in center
+          '-vf scale=1024:1024,pad=1080:1350:(ow-iw)/2:(oh-ih)/2:white',
+          '-vframes 1'
+        ])
+        .output(feedOutputPath)
+        .on('start', () => {
+          console.log(`[${fileName}] FFmpeg FEED processing started`);
+        })
+        .on('end', () => {
+          console.log(`[${fileName}] FEED version completed`);
+          resolve();
+        })
+        .on('error', (err) => {
+          console.error(`[${fileName}] Error creating FEED version: ${err.message}`);
+          reject(err);
+        })
+        .run();
+    });
+
+    // 3) Create STORY version (1080x1920 with white background)
+    const storyOutputPath = path.join(storyImgsDir, `${fileName}_story.png`);
+    console.log(`[${fileName}] Creating STORY version (1080x1920)...`);
+    
+    await new Promise((resolve, reject) => {
+      ffmpeg(inputImagePath)
+        .outputOptions([
+          // Create white background canvas 1080x1920 and overlay the 1024x1024 image in center
+          '-vf scale=1024:1024,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:white',
+          '-vframes 1'
+        ])
+        .output(storyOutputPath)
+        .on('start', () => {
+          console.log(`[${fileName}] FFmpeg STORY processing started`);
+        })
+        .on('end', () => {
+          console.log(`[${fileName}] STORY version completed`);
+          resolve();
+        })
+        .on('error', (err) => {
+          console.error(`[${fileName}] Error creating STORY version: ${err.message}`);
+          reject(err);
+        })
+        .run();
+    });
+
+    // 4) Success handling
+    console.log(`[${fileName}] Image processing completed successfully`);
+    
+    // Cleanup temp
+    fs.rmSync(jobTemp, { recursive: true, force: true });
+    console.log(`[${fileName}] Cleaned temp directory ${jobTemp}`);
+    
+    // Generate URLs
+    const feedUrl = `${BASE_URL}/files/imgs/feed/${fileName}_feed.png`;
+    const storyUrl = `${BASE_URL}/files/imgs/story/${fileName}_story.png`;
+    
+    // Return response
+    res.status(200).json({
+      feedUrl,
+      storyUrl,
+      inputUrl: imageUrl
+    });
+    
+    console.log(`[${fileName}] Response sent with URLs: feed=${feedUrl}, story=${storyUrl}`);
+    
+  } catch (err) {
+    console.error(`[${fileName}] Image processing error: ${err.message}`);
+    
+    // Cleanup on error
+    try {
+      fs.rmSync(jobTemp, { recursive: true, force: true });
+    } catch (cleanupErr) {
+      console.error(`[${fileName}] Error cleaning up: ${cleanupErr.message}`);
+    }
+    
+    res.status(500).json({ error: `Failed to process image: ${err.message}` });
+  }
+});
+
 // Serve static files
 app.use(express.static(publicDir));
 
