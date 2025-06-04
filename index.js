@@ -1130,11 +1130,41 @@ app.post('/images/process', async (req, res) => {
       const FormData = require('form-data');
       const form = new FormData();
       
-      form.append('image', fs.createReadStream(inputImagePath));
-      form.append('mask', fs.createReadStream(maskPath));
-      form.append('prompt', 'Continue a cena mantendo o estilo e cores originais');
+      // Validar se os arquivos existem
+      if (!fs.existsSync(inputImagePath)) {
+        throw new Error(`Input image not found: ${inputImagePath}`);
+      }
+      if (!fs.existsSync(maskPath)) {
+        throw new Error(`Mask file not found: ${maskPath}`);
+      }
+      
+      console.log(`[${fileName}] Input image size: ${fs.statSync(inputImagePath).size} bytes`);
+      console.log(`[${fileName}] Mask image size: ${fs.statSync(maskPath).size} bytes`);
+      
+      // Verificar se a imagem é PNG válida
+      const inputBuffer = fs.readFileSync(inputImagePath);
+      const maskBuffer = fs.readFileSync(maskPath);
+      
+      if (!inputBuffer.toString('hex', 0, 8).startsWith('89504e47')) {
+        throw new Error('Input image is not a valid PNG file');
+      }
+      if (!maskBuffer.toString('hex', 0, 8).startsWith('89504e47')) {
+        throw new Error('Mask image is not a valid PNG file');
+      }
+      
+      form.append('image', fs.createReadStream(inputImagePath), {
+        filename: 'image.png',
+        contentType: 'image/png'
+      });
+      form.append('mask', fs.createReadStream(maskPath), {
+        filename: 'mask.png',
+        contentType: 'image/png'
+      });
+      form.append('prompt', 'Continue the scene maintaining the original style and colors');
       form.append('n', '1');
       form.append('size', '1024x1024');
+      
+      console.log(`[${fileName}] Sending request to OpenAI API...`);
       
       const response = await fetch('https://api.openai.com/v1/images/edits', {
         method: 'POST',
@@ -1145,12 +1175,16 @@ app.post('/images/process', async (req, res) => {
         body: form
       });
       
+      console.log(`[${fileName}] OpenAI API response status: ${response.status}`);
+      
       if (!response.ok) {
         const errorText = await response.text();
+        console.error(`[${fileName}] OpenAI API error details: ${errorText}`);
         throw new Error(`OpenAI API error: ${response.status} ${errorText}`);
       }
       
       const result = await response.json();
+      console.log(`[${fileName}] OpenAI API success, got ${result.data.length} images`);
       const imageUrl = result.data[0].url;
       
       // Download the generated image
@@ -1243,7 +1277,6 @@ app.post('/images/process', async (req, res) => {
     res.status(500).json({ error: `Failed to process image: ${err.message}` });
   }
 });
-
 // Serve static files
 app.use(express.static(publicDir));
 
