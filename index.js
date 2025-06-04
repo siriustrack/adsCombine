@@ -997,13 +997,18 @@ app.post('/videos/create-raw-assets', async (req, res) => {
  *         description: Erro interno de servidor
  */
 app.post('/images/process', async (req, res) => {
-  const { imageUrl, imageData, fileName } = req.body;
+  let { imageUrl, imageData, fileName } = req.body;
+
+  // LIMPAR o fileName removendo quebras de linha e espaços
+  if (fileName) {
+    fileName = fileName.trim().replace(/[\r\n]/g, '');
+  }
 
   console.log(`[${fileName}] Received image processing request`);
 
   // Basic validation
   if (!fileName) {
-    console.error(`[${fileName}] Missing fileName`);
+    console.error(`Missing fileName`);
     return res.status(400).json({ error: 'Missing required field: fileName' });
   }
 
@@ -1110,30 +1115,32 @@ app.post('/images/process', async (req, res) => {
     });
 
     // 4) Success handling
-console.log(`[${fileName}] Image processing completed successfully`);
+    console.log(`[${fileName}] Image processing completed successfully`);
+    
+    // PRIMEIRO: Salvar arquivo original ANTES de limpar o temp
+    const originalOutputPath = path.join(imgsDir, `${fileName}_original.png`);
+    fs.copyFileSync(inputImagePath, originalOutputPath);
+    console.log(`[${fileName}] Original image saved to ${originalOutputPath}`);
 
-// PRIMEIRO: Salvar arquivo original ANTES de limpar o temp
-const originalOutputPath = path.join(imgsDir, `${fileName}_original.png`);
-fs.copyFileSync(inputImagePath, originalOutputPath);
-const originalUrl = `${BASE_URL}/files/imgs/${fileName}_original.png`;
-console.log(`[${fileName}] Original image saved to ${originalOutputPath}`);
-
-// DEPOIS: Cleanup temp (só depois de copiar o arquivo)
-fs.rmSync(jobTemp, { recursive: true, force: true });
-console.log(`[${fileName}] Cleaned temp directory ${jobTemp}`);
-
-// Generate URLs
-const feedUrl = `${BASE_URL}/files/imgs/feed/${fileName}_feed.png`;
-const storyUrl = `${BASE_URL}/files/imgs/story/${fileName}_story.png`;
-
-// Return response
-res.status(200).json({
-  feedUrl,
-  storyUrl,
-  inputUrl: originalUrl
-});
-
-console.log(`[${fileName}] Response sent with URLs: feed=${feedUrl}, story=${storyUrl}, original=${originalUrl}`);
+    // DEPOIS: Cleanup temp (só depois de copiar o arquivo)
+    fs.rmSync(jobTemp, { recursive: true, force: true });
+    console.log(`[${fileName}] Cleaned temp directory ${jobTemp}`);
+    
+    // Generate URLs with HTTPS
+    const baseUrl = BASE_URL.startsWith('http') ? BASE_URL : `https://${BASE_URL}`;
+    const feedUrl = `${baseUrl}/files/imgs/feed/${fileName}_feed.png`;
+    const storyUrl = `${baseUrl}/files/imgs/story/${fileName}_story.png`;
+    const originalUrl = `${baseUrl}/files/imgs/${fileName}_original.png`;
+    
+    // Return response
+    res.status(200).json({
+      feedUrl,
+      storyUrl,
+      inputUrl: originalUrl
+    });
+    
+    console.log(`[${fileName}] Response sent with URLs: feed=${feedUrl}, story=${storyUrl}, original=${originalUrl}`);
+    
   } catch (err) {
     console.error(`[${fileName}] Image processing error: ${err.message}`);
     
