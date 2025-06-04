@@ -1017,12 +1017,20 @@ app.post('/images/process', async (req, res) => {
     return res.status(400).json({ error: 'Must provide either imageUrl or imageData' });
   }
 
+  // Validate OpenAI API Key
+  if (!process.env.OPENAI_API_KEY) {
+    console.error(`[${fileName}] Missing OPENAI_API_KEY`);
+    return res.status(500).json({ error: 'OpenAI API key not configured' });
+  }
+
   // Create imgs directory structure
   const imgsDir = path.join(publicDir, 'imgs');
   const feedImgsDir = path.join(imgsDir, 'feed');
   const storyImgsDir = path.join(imgsDir, 'story');
+  const feedFullyImgsDir = path.join(imgsDir, 'feed-fully');
+  const storyFullyImgsDir = path.join(imgsDir, 'story-fully');
   
-  [imgsDir, feedImgsDir, storyImgsDir].forEach(dir => {
+  [imgsDir, feedImgsDir, storyImgsDir, feedFullyImgsDir, storyFullyImgsDir].forEach(dir => {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   });
 
@@ -1114,7 +1122,84 @@ app.post('/images/process', async (req, res) => {
         .run();
     });
 
-    // 4) Success handling
+    // 4) Generate AI-completed versions using OpenAI
+    console.log(`[${fileName}] Starting OpenAI image completion...`);
+    
+    // Helper function to call OpenAI API
+    const generateAIImage = async (maskPath, outputPath, targetSize) => {
+      const FormData = require('form-data');
+      const form = new FormData();
+      
+      form.append('image', fs.createReadStream(inputImagePath));
+      form.append('mask', fs.createReadStream(maskPath));
+      form.append('prompt', 'Continue a cena mantendo o estilo e cores originais');
+      form.append('n', '1');
+      form.append('size', '1024x1024');
+      
+      const response = await fetch('https://api.openai.com/v1/images/edits', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          ...form.getHeaders()
+        },
+        body: form
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`OpenAI API error: ${response.status} ${errorText}`);
+      }
+      
+      const result = await response.json();
+      const imageUrl = result.data[0].url;
+      
+      // Download the generated image
+      const imageResponse = await fetch(imageUrl);
+      const imageBuffer = await imageResponse.buffer();
+      
+      // Save the 1024x1024 result temporarily
+      const tempAIPath = path.join(jobTemp, `ai_${targetSize}.png`);
+      fs.writeFileSync(tempAIPath, imageBuffer);
+      
+      // Scale to target size using FFmpeg
+      await new Promise((resolve, reject) => {
+        const [width, height] = targetSize.split('x');
+        ffmpeg(tempAIPath)
+          .outputOptions([
+            `-vf scale=${width}:${height}`,
+            '-vframes 1'
+          ])
+          .output(outputPath)
+          .on('start', () => {
+            console.log(`[${fileName}] FFmpeg AI scaling to ${targetSize} started`);
+          })
+          .on('end', () => {
+            console.log(`[${fileName}] AI ${targetSize} version completed`);
+            resolve();
+          })
+          .on('error', (err) => {
+            console.error(`[${fileName}] Error scaling AI ${targetSize} version: ${err.message}`);
+            reject(err);
+          })
+          .run();
+      });
+    };
+
+    // Generate AI Feed version (1080x1350)
+    const feedFullyOutputPath = path.join(feedFullyImgsDir, `${fileName}_feed_fully.png`);
+    const maskFeedPath = path.join(__dirname, 'assets-img', 'maskFeed.png');
+    
+    console.log(`[${fileName}] Creating AI FEED FULLY version (1080x1350)...`);
+    await generateAIImage(maskFeedPath, feedFullyOutputPath, '1080x1350');
+
+    // Generate AI Story version (1080x1920)
+    const storyFullyOutputPath = path.join(storyFullyImgsDir, `${fileName}_story_fully.png`);
+    const maskStoryPath = path.join(__dirname, 'assets-img', 'maskStory.png');
+    
+    console.log(`[${fileName}] Creating AI STORY FULLY version (1080x1920)...`);
+    await generateAIImage(maskStoryPath, storyFullyOutputPath, '1080x1920');
+
+    // 5) Success handling
     console.log(`[${fileName}] Image processing completed successfully`);
     
     // PRIMEIRO: Salvar arquivo original ANTES de limpar o temp
@@ -1131,15 +1216,19 @@ app.post('/images/process', async (req, res) => {
     const feedUrl = `${baseUrl}/files/imgs/feed/${fileName}_feed.png`;
     const storyUrl = `${baseUrl}/files/imgs/story/${fileName}_story.png`;
     const originalUrl = `${baseUrl}/files/imgs/${fileName}_original.png`;
+    const feedFullyUrl = `${baseUrl}/files/imgs/feed-fully/${fileName}_feed_fully.png`;
+    const storyFullyUrl = `${baseUrl}/files/imgs/story-fully/${fileName}_story_fully.png`;
     
     // Return response
     res.status(200).json({
       feedUrl,
       storyUrl,
-      inputUrl: originalUrl
+      inputUrl: originalUrl,
+      feedFullyUrl,
+      storyFullyUrl
     });
     
-    console.log(`[${fileName}] Response sent with URLs: feed=${feedUrl}, story=${storyUrl}, original=${originalUrl}`);
+    console.log(`[${fileName}] Response sent with URLs: feed=${feedUrl}, story=${storyUrl}, original=${originalUrl}, feedFully=${feedFullyUrl}, storyFully=${storyFullyUrl}`);
     
   } catch (err) {
     console.error(`[${fileName}] Image processing error: ${err.message}`);
