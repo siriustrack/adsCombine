@@ -964,10 +964,13 @@ app.post('/videos/create-raw-assets', async (req, res) => {
  *               imageUrl:
  *                 type: string
  *                 format: uri
+ *                 description: URL da imagem (opcional se imageData fornecido)
+ *               imageData:
+ *                 type: string
+ *                 description: Imagem em base64 (data:image/png;base64,...)
  *               fileName:
  *                 type: string
  *             required:
- *               - imageUrl
  *               - fileName
  *     responses:
  *       '200':
@@ -994,14 +997,19 @@ app.post('/videos/create-raw-assets', async (req, res) => {
  *         description: Erro interno de servidor
  */
 app.post('/images/process', async (req, res) => {
-  const { imageUrl, fileName } = req.body;
+  const { imageUrl, imageData, fileName } = req.body;
 
-  console.log(`[${fileName}] Received image processing request: ${imageUrl}`);
+  console.log(`[${fileName}] Received image processing request`);
 
   // Basic validation
-  if (!imageUrl || !fileName) {
-    console.error(`[${fileName}] Missing required fields`);
-    return res.status(400).json({ error: 'Missing required fields: imageUrl and fileName' });
+  if (!fileName) {
+    console.error(`[${fileName}] Missing fileName`);
+    return res.status(400).json({ error: 'Missing required field: fileName' });
+  }
+
+  if (!imageUrl && !imageData) {
+    console.error(`[${fileName}] Missing image source`);
+    return res.status(400).json({ error: 'Must provide either imageUrl or imageData' });
   }
 
   // Create imgs directory structure
@@ -1020,18 +1028,34 @@ app.post('/images/process', async (req, res) => {
   console.log(`[${fileName}] Created temp directory at ${jobTemp}`);
 
   try {
-    // 1) Download image
-    console.log(`[${fileName}] Starting download of image...`);
+    // 1) Get image data
+    console.log(`[${fileName}] Processing image...`);
     const inputImagePath = path.join(jobTemp, 'input.png');
     
-    const response = await fetch(imageUrl);
-    if (!response.ok) {
-      throw new Error(`Failed to download image: ${response.status} ${response.statusText}`);
+    if (imageData) {
+      // Handle base64 data
+      console.log(`[${fileName}] Processing base64 image data...`);
+      
+      // Extract base64 data (remove data:image/png;base64, prefix if present)
+      const base64Data = imageData.replace(/^data:image\/[a-zA-Z]+;base64,/, '');
+      const imageBuffer = Buffer.from(base64Data, 'base64');
+      
+      fs.writeFileSync(inputImagePath, imageBuffer);
+      console.log(`[${fileName}] Base64 image saved successfully`);
+      
+    } else if (imageUrl) {
+      // Handle URL download
+      console.log(`[${fileName}] Downloading image from URL...`);
+      
+      const response = await fetch(imageUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to download image: ${response.status} ${response.statusText}`);
+      }
+      
+      const imageBuffer = await response.buffer();
+      fs.writeFileSync(inputImagePath, imageBuffer);
+      console.log(`[${fileName}] Image downloaded successfully`);
     }
-    
-    const imageBuffer = await response.buffer();
-    fs.writeFileSync(inputImagePath, imageBuffer);
-    console.log(`[${fileName}] Image downloaded successfully`);
 
     // 2) Create FEED version (1080x1350 with white background)
     const feedOutputPath = path.join(feedImgsDir, `${fileName}_feed.png`);
@@ -1096,14 +1120,19 @@ app.post('/images/process', async (req, res) => {
     const feedUrl = `${BASE_URL}/files/imgs/feed/${fileName}_feed.png`;
     const storyUrl = `${BASE_URL}/files/imgs/story/${fileName}_story.png`;
     
+    // Save original image in public/imgs for reference
+    const originalOutputPath = path.join(imgsDir, `${fileName}_original.png`);
+    fs.copyFileSync(inputImagePath, originalOutputPath);
+    const originalUrl = `${BASE_URL}/files/imgs/${fileName}_original.png`;
+    
     // Return response
     res.status(200).json({
       feedUrl,
       storyUrl,
-      inputUrl: imageUrl
+      inputUrl: originalUrl // Return the saved original instead of external URL
     });
     
-    console.log(`[${fileName}] Response sent with URLs: feed=${feedUrl}, story=${storyUrl}`);
+    console.log(`[${fileName}] Response sent with URLs: feed=${feedUrl}, story=${storyUrl}, original=${originalUrl}`);
     
   } catch (err) {
     console.error(`[${fileName}] Image processing error: ${err.message}`);
