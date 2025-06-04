@@ -1110,30 +1110,30 @@ app.post('/images/process', async (req, res) => {
     });
 
     // 4) Success handling
-    console.log(`[${fileName}] Image processing completed successfully`);
-    
-    // Cleanup temp
-    fs.rmSync(jobTemp, { recursive: true, force: true });
-    console.log(`[${fileName}] Cleaned temp directory ${jobTemp}`);
-    
-    // Generate URLs
-    const feedUrl = `${BASE_URL}/files/imgs/feed/${fileName}_feed.png`;
-    const storyUrl = `${BASE_URL}/files/imgs/story/${fileName}_story.png`;
-    
-    // Save original image in public/imgs for reference
-    const originalOutputPath = path.join(imgsDir, `${fileName}_original.png`);
-    fs.copyFileSync(inputImagePath, originalOutputPath);
-    const originalUrl = `${BASE_URL}/files/imgs/${fileName}_original.png`;
-    
-    // Return response
-    res.status(200).json({
-      feedUrl,
-      storyUrl,
-      inputUrl: originalUrl // Return the saved original instead of external URL
-    });
-    
-    console.log(`[${fileName}] Response sent with URLs: feed=${feedUrl}, story=${storyUrl}, original=${originalUrl}`);
-    
+console.log(`[${fileName}] Image processing completed successfully`);
+
+// PRIMEIRO: Salvar arquivo original ANTES de limpar o temp
+const originalOutputPath = path.join(imgsDir, `${fileName}_original.png`);
+fs.copyFileSync(inputImagePath, originalOutputPath);
+const originalUrl = `${BASE_URL}/files/imgs/${fileName}_original.png`;
+console.log(`[${fileName}] Original image saved to ${originalOutputPath}`);
+
+// DEPOIS: Cleanup temp (só depois de copiar o arquivo)
+fs.rmSync(jobTemp, { recursive: true, force: true });
+console.log(`[${fileName}] Cleaned temp directory ${jobTemp}`);
+
+// Generate URLs
+const feedUrl = `${BASE_URL}/files/imgs/feed/${fileName}_feed.png`;
+const storyUrl = `${BASE_URL}/files/imgs/story/${fileName}_story.png`;
+
+// Return response
+res.status(200).json({
+  feedUrl,
+  storyUrl,
+  inputUrl: originalUrl
+});
+
+console.log(`[${fileName}] Response sent with URLs: feed=${feedUrl}, story=${storyUrl}, original=${originalUrl}`);
   } catch (err) {
     console.error(`[${fileName}] Image processing error: ${err.message}`);
     
