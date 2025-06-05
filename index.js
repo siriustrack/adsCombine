@@ -1216,11 +1216,11 @@ app.post('/images/process', async (req, res) => {
       console.log(`[${fileName}] Canvas image size: ${fs.statSync(canvasPath).size} bytes`);
       console.log(`[${fileName}] Mask image size: ${fs.statSync(maskPath).size} bytes`);
       
-      form.append('image', fs.createReadStream(canvasPath), {
+      form.append('init_image', fs.createReadStream(canvasPath), {
         filename: 'image.png',
         contentType: 'image/png'
       });
-      form.append('mask', fs.createReadStream(maskPath), {
+      form.append('mask_image', fs.createReadStream(maskPath), {
         filename: 'mask.png',
         contentType: 'image/png'
       });
