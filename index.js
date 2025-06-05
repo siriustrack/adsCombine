@@ -1159,20 +1159,26 @@ app.post('/images/process', async (req, res) => {
       
       // Criar máscara: preto onde está a imagem original, branco nas bordas
       await new Promise((resolve, reject) => {
-        const xOffset = (targetWidth - 1024) / 2;
-        const yOffset = (targetHeight - 1024) / 2;
+        const xOffset = Math.floor((targetWidth - 1024) / 2);
+        const yOffset = Math.floor((targetHeight - 1024) / 2);
         
         ffmpeg()
-          .input(`color=white:size=${targetWidth}x${targetHeight}:duration=0.1`)
-          .input(`color=black:size=1024x1024:duration=0.1`)
-          .complexFilter([
-            `[1:v]format=rgba[overlay]`,
-            `[0:v][overlay]overlay=${xOffset}:${yOffset}[out]`
+          .inputOptions([
+            '-f', 'lavfi',
+            '-i', `color=white:size=${targetWidth}x${targetHeight}:rate=1:duration=1`
           ])
-          .outputOptions(['-map', '[out]', '-vframes', '1'])
+          .inputOptions([
+            '-f', 'lavfi', 
+            '-i', `color=black:size=1024x1024:rate=1:duration=1`
+          ])
+          .complexFilter([
+            `[0:v][1:v]overlay=${xOffset}:${yOffset}[out]`
+          ])
+          .outputOptions(['-map', '[out]', '-vframes', '1', '-y'])
           .output(maskPath)
-          .on('start', () => {
+          .on('start', (cmd) => {
             console.log(`[${fileName}] Creating mask for outpainting...`);
+            console.log(`[${fileName}] FFmpeg command: ${cmd}`);
           })
           .on('end', () => {
             console.log(`[${fileName}] Mask created successfully`);
