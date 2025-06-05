@@ -1207,39 +1207,37 @@ app.post('/images/process', async (req, res) => {
           .run();
       });
       
-      // Preparar form data para Stability AI
+      // Preparar form data para Stability AI - NOVO ENDPOINT E MODELO
       const form = new FormData();
       
       console.log(`[${fileName}] Canvas image size: ${fs.statSync(canvasPath).size} bytes`);
       console.log(`[${fileName}] Resized mask size: ${fs.statSync(maskPath).size} bytes`);
       
-      form.append('init_image', fs.createReadStream(canvasPath), {
+      form.append('image', fs.createReadStream(canvasPath), {
         filename: 'image.png',
         contentType: 'image/png'
       });
       
-      form.append('mask_image', fs.createReadStream(maskPath), {
+      form.append('mask', fs.createReadStream(maskPath), {
         filename: 'mask.png',
         contentType: 'image/png'
       });
       
-      // CORREÇÃO: Adicionar mask_source obrigatório
-      form.append('mask_source', 'MASK_IMAGE_BLACK');
-      
       // Configurações otimizadas para outpainting
-      form.append('text_prompts[0][text]', 'Extend the advertising background maintaining the exact same style, colors, lighting and professional composition. Seamless background extension.');
-      form.append('text_prompts[0][weight]', '1');
-      form.append('cfg_scale', '8');
-      form.append('samples', '1');
-      form.append('steps', '40');
+      form.append('prompt', 'Extend the advertising background maintaining the exact same style, colors, lighting and professional composition. Seamless background extension, high quality, professional advertising material.');
+      form.append('negative_prompt', 'blurry, low quality, distorted, artifacts, bad composition, inconsistent lighting, different style');
+      form.append('mode', 'image-to-image');
+      form.append('output_format', 'png');
+      form.append('strength', '0.8'); // Controla o quanto a IA pode alterar
       
       console.log(`[${fileName}] Sending outpainting request to Stability AI API for ${aiWidth}x${aiHeight} (${aiWidth * aiHeight} pixels)...`);
       
-      const response = await fetch('https://api.stability.ai/v1/generation/stable-diffusion-v1-5/image-to-image/masking', {
+      // ENDPOINT CORRETO PARA STABLE DIFFUSION 3.5
+      const response = await fetch('https://api.stability.ai/v2beta/stable-image/edit/inpaint', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${process.env.STABILITY_API_KEY}`,
-          'Accept': 'application/json',
+          'Accept': 'image/*',
           ...form.getHeaders()
         },
         body: form
@@ -1253,12 +1251,9 @@ app.post('/images/process', async (req, res) => {
         throw new Error(`Stability AI error: ${response.status} ${errorText}`);
       }
       
-      const result = await response.json();
-      console.log(`[${fileName}] Stability AI success, got ${result.artifacts.length} images`);
-      
-      // Stability AI retorna base64 diretamente
-      const base64Image = result.artifacts[0].base64;
-      const imageBuffer = Buffer.from(base64Image, 'base64');
+      // A resposta agora é diretamente a imagem em bytes
+      const imageBuffer = await response.buffer();
+      console.log(`[${fileName}] Stability AI success, received image buffer of ${imageBuffer.length} bytes`);
       
       // Se redimensionamos para a API, agora precisamos redimensionar de volta para o tamanho final
       if (aiWidth !== targetWidth || aiHeight !== targetHeight) {
