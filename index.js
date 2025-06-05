@@ -1128,40 +1128,96 @@ app.post('/images/process', async (req, res) => {
     // Helper function to call Stability AI API
     const generateStabilityImage = async (inputPath, outputPath, targetWidth, targetHeight) => {
       const FormData = require('form-data');
+      
+      // Primeiro, precisamos criar uma imagem canvas do tamanho desejado com a imagem original centralizada
+      const canvasPath = path.join(jobTemp, `canvas_${targetWidth}x${targetHeight}.png`);
+      
+      // Criar canvas com fundo branco e imagem original centralizada
+      await new Promise((resolve, reject) => {
+        ffmpeg(inputPath)
+          .outputOptions([
+            `-vf scale=1024:1024,pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2:white`,
+            '-vframes 1'
+          ])
+          .output(canvasPath)
+          .on('start', () => {
+            console.log(`[${fileName}] Creating canvas ${targetWidth}x${targetHeight} with centered image...`);
+          })
+          .on('end', () => {
+            console.log(`[${fileName}] Canvas created successfully`);
+            resolve();
+          })
+          .on('error', (err) => {
+            console.error(`[${fileName}] Error creating canvas: ${err.message}`);
+            reject(err);
+          })
+          .run();
+      });
+      
+      // Criar máscara para outpainting - área branca indica onde a IA deve gerar conteúdo
+      const maskPath = path.join(jobTemp, `mask_${targetWidth}x${targetHeight}.png`);
+      
+      // Criar máscara: preto onde está a imagem original, branco nas bordas
+      await new Promise((resolve, reject) => {
+        const xOffset = (targetWidth - 1024) / 2;
+        const yOffset = (targetHeight - 1024) / 2;
+        
+        ffmpeg()
+          .input(`color=white:size=${targetWidth}x${targetHeight}:duration=0.1`)
+          .input(`color=black:size=1024x1024:duration=0.1`)
+          .complexFilter([
+            `[1:v]format=rgba[overlay]`,
+            `[0:v][overlay]overlay=${xOffset}:${yOffset}[out]`
+          ])
+          .outputOptions(['-map', '[out]', '-vframes', '1'])
+          .output(maskPath)
+          .on('start', () => {
+            console.log(`[${fileName}] Creating mask for outpainting...`);
+          })
+          .on('end', () => {
+            console.log(`[${fileName}] Mask created successfully`);
+            resolve();
+          })
+          .on('error', (err) => {
+            console.error(`[${fileName}] Error creating mask: ${err.message}`);
+            reject(err);
+          })
+          .run();
+      });
+      
+      // Agora usar a API de outpainting da Stability AI
       const form = new FormData();
       
-      // Validar se o arquivo existe
-      if (!fs.existsSync(inputPath)) {
-        throw new Error(`Input image not found: ${inputPath}`);
+      // Validar se os arquivos existem
+      if (!fs.existsSync(canvasPath)) {
+        throw new Error(`Canvas image not found: ${canvasPath}`);
+      }
+      if (!fs.existsSync(maskPath)) {
+        throw new Error(`Mask image not found: ${maskPath}`);
       }
       
-      console.log(`[${fileName}] Input image size: ${fs.statSync(inputPath).size} bytes`);
+      console.log(`[${fileName}] Canvas image size: ${fs.statSync(canvasPath).size} bytes`);
+      console.log(`[${fileName}] Mask image size: ${fs.statSync(maskPath).size} bytes`);
       
-      // Verificar se a imagem é PNG válida
-      const inputBuffer = fs.readFileSync(inputPath);
-      
-      if (!inputBuffer.toString('hex', 0, 8).startsWith('89504e47')) {
-        throw new Error('Input image is not a valid PNG file');
-      }
-      
-      form.append('init_image', fs.createReadStream(inputPath), {
-        filename: 'input.png',
+      form.append('image', fs.createReadStream(canvasPath), {
+        filename: 'image.png',
+        contentType: 'image/png'
+      });
+      form.append('mask', fs.createReadStream(maskPath), {
+        filename: 'mask.png',
         contentType: 'image/png'
       });
       
-      // Configurações otimizadas para manter fidelidade ao ads original
-      form.append('image_strength', '0.25'); // Baixa para manter fidelidade
-      form.append('text_prompts[0][text]', 'Extend the image maintaining the exact same style, colors, lighting and composition. Professional advertising background extension.');
+      // Configurações otimizadas para outpainting
+      form.append('text_prompts[0][text]', 'Extend the advertising background maintaining the exact same style, colors, lighting and professional composition. Seamless background extension.');
       form.append('text_prompts[0][weight]', '1');
-      form.append('cfg_scale', '8'); // Aumentado para melhor aderência ao prompt
+      form.append('cfg_scale', '8');
       form.append('samples', '1');
-      form.append('steps', '40'); // Aumentado para melhor qualidade
-      form.append('height', targetHeight.toString());
-      form.append('width', targetWidth.toString());
+      form.append('steps', '40');
       
-      console.log(`[${fileName}] Sending request to Stability AI API for ${targetWidth}x${targetHeight}...`);
+      console.log(`[${fileName}] Sending outpainting request to Stability AI API for ${targetWidth}x${targetHeight}...`);
       
-      const response = await fetch('https://api.stability.ai/v1/generation/stable-diffusion-v1-5/image-to-image', {
+      const response = await fetch('https://api.stability.ai/v1/generation/stable-diffusion-v1-5/image-to-image/masking', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${process.env.STABILITY_API_KEY}`,
