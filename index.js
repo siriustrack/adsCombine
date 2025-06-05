@@ -1125,14 +1125,20 @@ app.post('/images/process', async (req, res) => {
     // 4) Generate AI-completed versions using Stability AI
     console.log(`[${fileName}] Starting Stability AI image completion...`);
     
-    // Helper function to call Stability AI API
-    const generateStabilityImage = async (inputPath, outputPath, targetWidth, targetHeight) => {
+    // Helper function to call Stability AI API with local masks
+    const generateStabilityImage = async (inputPath, outputPath, targetWidth, targetHeight, maskType) => {
       const FormData = require('form-data');
       
-      // Primeiro, precisamos criar uma imagem canvas do tamanho desejado com a imagem original centralizada
+      // Usar máscaras locais
+      const maskPath = path.join(__dirname, 'assets-img', `mask${maskType}.png`);
+      
+      if (!fs.existsSync(maskPath)) {
+        throw new Error(`Local mask not found: ${maskPath}`);
+      }
+      
+      // Criar canvas com a imagem original centralizada
       const canvasPath = path.join(jobTemp, `canvas_${targetWidth}x${targetHeight}.png`);
       
-      // Criar canvas com fundo branco e imagem original centralizada
       await new Promise((resolve, reject) => {
         ffmpeg(inputPath)
           .outputOptions([
@@ -1154,76 +1160,24 @@ app.post('/images/process', async (req, res) => {
           .run();
       });
       
-      // Criar máscara para outpainting - área branca indica onde a IA deve gerar conteúdo
-      const maskPath = path.join(jobTemp, `mask_${targetWidth}x${targetHeight}.png`);
-      
-      // Usar abordagem mais simples: criar máscara usando canvas e overlay
-      await new Promise((resolve, reject) => {
-        const xOffset = Math.floor((targetWidth - 1024) / 2);
-        const yOffset = Math.floor((targetHeight - 1024) / 2);
-        
-        // Primeiro criar um canvas branco
-        const whiteCanvasPath = path.join(jobTemp, `white_canvas_${targetWidth}x${targetHeight}.png`);
-        
-        ffmpeg()
-          .input(`color=white:size=${targetWidth}x${targetHeight}`)
-          .inputOptions(['-f', 'lavfi', '-t', '1'])
-          .outputOptions(['-vframes', '1'])
-          .output(whiteCanvasPath)
-          .on('end', () => {
-            // Agora criar um retângulo preto e sobrepor
-            ffmpeg()
-              .input(whiteCanvasPath)
-              .input(`color=black:size=1024x1024`)
-              .inputOptions(['-f', 'lavfi', '-t', '1'])
-              .complexFilter([
-                `[1:v][0:v]scale2ref[overlay][base]`,
-                `[base][overlay]overlay=${xOffset}:${yOffset}[out]`
-              ])
-              .outputOptions(['-map', '[out]', '-vframes', '1'])
-              .output(maskPath)
-              .on('start', () => {
-                console.log(`[${fileName}] Creating mask overlay...`);
-              })
-              .on('end', () => {
-                console.log(`[${fileName}] Mask created successfully`);
-                resolve();
-              })
-              .on('error', (err) => {
-                console.error(`[${fileName}] Error creating mask overlay: ${err.message}`);
-                reject(err);
-              })
-              .run();
-          })
-          .on('error', (err) => {
-            console.error(`[${fileName}] Error creating white canvas: ${err.message}`);
-            reject(err);
-          })
-          .run();
-      });
-      
-      // Agora usar a API de outpainting da Stability AI
+      // Preparar form data para Stability AI
       const form = new FormData();
       
-      // Validar se os arquivos existem
-      if (!fs.existsSync(canvasPath)) {
-        throw new Error(`Canvas image not found: ${canvasPath}`);
-      }
-      if (!fs.existsSync(maskPath)) {
-        throw new Error(`Mask image not found: ${maskPath}`);
-      }
-      
       console.log(`[${fileName}] Canvas image size: ${fs.statSync(canvasPath).size} bytes`);
-      console.log(`[${fileName}] Mask image size: ${fs.statSync(maskPath).size} bytes`);
+      console.log(`[${fileName}] Local mask size: ${fs.statSync(maskPath).size} bytes`);
       
       form.append('init_image', fs.createReadStream(canvasPath), {
         filename: 'image.png',
         contentType: 'image/png'
       });
+      
       form.append('mask_image', fs.createReadStream(maskPath), {
         filename: 'mask.png',
         contentType: 'image/png'
       });
+      
+      // CORREÇÃO: Adicionar mask_source obrigatório
+      form.append('mask_source', 'MASK_IMAGE_BLACK');
       
       // Configurações otimizadas para outpainting
       form.append('text_prompts[0][text]', 'Extend the advertising background maintaining the exact same style, colors, lighting and professional composition. Seamless background extension.');
@@ -1264,15 +1218,15 @@ app.post('/images/process', async (req, res) => {
       console.log(`[${fileName}] AI ${targetWidth}x${targetHeight} version saved successfully`);
     };
 
-    // Generate AI Feed version (1080x1350)
+    // Generate AI Feed version (1080x1350) usando máscara local
     const feedFullyOutputPath = path.join(feedFullyImgsDir, `${fileName}_feed_fully.png`);
     console.log(`[${fileName}] Creating AI FEED FULLY version (1080x1350)...`);
-    await generateStabilityImage(inputImagePath, feedFullyOutputPath, 1080, 1350);
+    await generateStabilityImage(inputImagePath, feedFullyOutputPath, 1080, 1350, 'Feed');
 
-    // Generate AI Story version (1080x1920)
+    // Generate AI Story version (1080x1920) usando máscara local
     const storyFullyOutputPath = path.join(storyFullyImgsDir, `${fileName}_story_fully.png`);
     console.log(`[${fileName}] Creating AI STORY FULLY version (1080x1920)...`);
-    await generateStabilityImage(inputImagePath, storyFullyOutputPath, 1080, 1920);
+    await generateStabilityImage(inputImagePath, storyFullyOutputPath, 1080, 1920, 'Story');
 
     // 5) Success handling
     console.log(`[${fileName}] Image processing completed successfully`);
