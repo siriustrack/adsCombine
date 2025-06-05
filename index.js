@@ -1157,35 +1157,46 @@ app.post('/images/process', async (req, res) => {
       // Criar máscara para outpainting - área branca indica onde a IA deve gerar conteúdo
       const maskPath = path.join(jobTemp, `mask_${targetWidth}x${targetHeight}.png`);
       
-      // Criar máscara: preto onde está a imagem original, branco nas bordas
+      // Usar abordagem mais simples: criar máscara usando canvas e overlay
       await new Promise((resolve, reject) => {
         const xOffset = Math.floor((targetWidth - 1024) / 2);
         const yOffset = Math.floor((targetHeight - 1024) / 2);
         
+        // Primeiro criar um canvas branco
+        const whiteCanvasPath = path.join(jobTemp, `white_canvas_${targetWidth}x${targetHeight}.png`);
+        
         ffmpeg()
-          .inputOptions([
-            '-f', 'lavfi',
-            '-i', `color=white:size=${targetWidth}x${targetHeight}:rate=1:duration=1`
-          ])
-          .inputOptions([
-            '-f', 'lavfi', 
-            '-i', `color=black:size=1024x1024:rate=1:duration=1`
-          ])
-          .complexFilter([
-            `[0:v][1:v]overlay=${xOffset}:${yOffset}[out]`
-          ])
-          .outputOptions(['-map', '[out]', '-vframes', '1', '-y'])
-          .output(maskPath)
-          .on('start', (cmd) => {
-            console.log(`[${fileName}] Creating mask for outpainting...`);
-            console.log(`[${fileName}] FFmpeg command: ${cmd}`);
-          })
+          .input(`color=white:size=${targetWidth}x${targetHeight}`)
+          .inputOptions(['-f', 'lavfi', '-t', '1'])
+          .outputOptions(['-vframes', '1'])
+          .output(whiteCanvasPath)
           .on('end', () => {
-            console.log(`[${fileName}] Mask created successfully`);
-            resolve();
+            // Agora criar um retângulo preto e sobrepor
+            ffmpeg()
+              .input(whiteCanvasPath)
+              .input(`color=black:size=1024x1024`)
+              .inputOptions(['-f', 'lavfi', '-t', '1'])
+              .complexFilter([
+                `[1:v][0:v]scale2ref[overlay][base]`,
+                `[base][overlay]overlay=${xOffset}:${yOffset}[out]`
+              ])
+              .outputOptions(['-map', '[out]', '-vframes', '1'])
+              .output(maskPath)
+              .on('start', () => {
+                console.log(`[${fileName}] Creating mask overlay...`);
+              })
+              .on('end', () => {
+                console.log(`[${fileName}] Mask created successfully`);
+                resolve();
+              })
+              .on('error', (err) => {
+                console.error(`[${fileName}] Error creating mask overlay: ${err.message}`);
+                reject(err);
+              })
+              .run();
           })
           .on('error', (err) => {
-            console.error(`[${fileName}] Error creating mask: ${err.message}`);
+            console.error(`[${fileName}] Error creating white canvas: ${err.message}`);
             reject(err);
           })
           .run();
