@@ -1183,15 +1183,18 @@ app.post('/images/process', async (req, res) => {
       // Criar canvas com a imagem original centralizada
       const canvasPath = path.join(jobTemp, `canvas_${aiWidth}x${aiHeight}.png`);
       
+      // Calcular o tamanho da imagem que cabe no canvas mantendo proporção
+      const imageSize = Math.min(aiWidth, aiHeight, 1024);
+      
       await new Promise((resolve, reject) => {
         ffmpeg(inputPath)
           .outputOptions([
-            `-vf scale=1024:1024,pad=${aiWidth}:${aiHeight}:(ow-iw)/2:(oh-ih)/2:white`,
+            `-vf scale=${imageSize}:${imageSize},pad=${aiWidth}:${aiHeight}:(ow-iw)/2:(oh-ih)/2:white`,
             '-vframes 1'
           ])
           .output(canvasPath)
           .on('start', () => {
-            console.log(`[${fileName}] Creating canvas ${aiWidth}x${aiHeight} with centered image...`);
+            console.log(`[${fileName}] Creating canvas ${aiWidth}x${aiHeight} with centered ${imageSize}x${imageSize} image...`);
           })
           .on('end', () => {
             console.log(`[${fileName}] Canvas created successfully`);
@@ -1208,7 +1211,7 @@ app.post('/images/process', async (req, res) => {
       const form = new FormData();
       
       console.log(`[${fileName}] Canvas image size: ${fs.statSync(canvasPath).size} bytes`);
-      console.log(`[${fileName}] Local mask size: ${fs.statSync(maskPath).size} bytes`);
+      console.log(`[${fileName}] Resized mask size: ${fs.statSync(maskPath).size} bytes`);
       
       form.append('init_image', fs.createReadStream(canvasPath), {
         filename: 'image.png',
@@ -1230,7 +1233,7 @@ app.post('/images/process', async (req, res) => {
       form.append('samples', '1');
       form.append('steps', '40');
       
-      console.log(`[${fileName}] Sending outpainting request to Stability AI API for ${targetWidth}x${targetHeight}...`);
+      console.log(`[${fileName}] Sending outpainting request to Stability AI API for ${aiWidth}x${aiHeight} (${aiWidth * aiHeight} pixels)...`);
       
       const response = await fetch('https://api.stability.ai/v1/generation/stable-diffusion-v1-5/image-to-image/masking', {
         method: 'POST',
@@ -1257,8 +1260,38 @@ app.post('/images/process', async (req, res) => {
       const base64Image = result.artifacts[0].base64;
       const imageBuffer = Buffer.from(base64Image, 'base64');
       
-      // Salvar a imagem final
-      fs.writeFileSync(outputPath, imageBuffer);
+      // Se redimensionamos para a API, agora precisamos redimensionar de volta para o tamanho final
+      if (aiWidth !== targetWidth || aiHeight !== targetHeight) {
+        console.log(`[${fileName}] Resizing AI result back to ${targetWidth}x${targetHeight}...`);
+        
+        const tempAiPath = path.join(jobTemp, `ai_temp_${aiWidth}x${aiHeight}.png`);
+        fs.writeFileSync(tempAiPath, imageBuffer);
+        
+        await new Promise((resolve, reject) => {
+          ffmpeg(tempAiPath)
+            .outputOptions([
+              `-vf scale=${targetWidth}:${targetHeight}`,
+              '-vframes 1'
+            ])
+            .output(outputPath)
+            .on('start', () => {
+              console.log(`[${fileName}] Upscaling AI result...`);
+            })
+            .on('end', () => {
+              console.log(`[${fileName}] AI result upscaled successfully`);
+              resolve();
+            })
+            .on('error', (err) => {
+              console.error(`[${fileName}] Error upscaling AI result: ${err.message}`);
+              reject(err);
+            })
+            .run();
+        });
+      } else {
+        // Salvar a imagem final diretamente
+        fs.writeFileSync(outputPath, imageBuffer);
+      }
+      
       console.log(`[${fileName}] AI ${targetWidth}x${targetHeight} version saved successfully`);
     };
 
