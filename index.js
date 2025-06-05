@@ -1129,25 +1129,69 @@ app.post('/images/process', async (req, res) => {
     const generateStabilityImage = async (inputPath, outputPath, targetWidth, targetHeight, maskType) => {
       const FormData = require('form-data');
       
-      // Usar máscaras locais
-      const maskPath = path.join(__dirname, 'assets-img', `mask${maskType}.png`);
+      // Calcular dimensões que respeitam o limite de 1,048,576 pixels
+      const maxPixels = 1048576;
+      const aspectRatio = targetWidth / targetHeight;
       
-      if (!fs.existsSync(maskPath)) {
-        throw new Error(`Local mask not found: ${maskPath}`);
+      let aiWidth, aiHeight;
+      if (targetWidth * targetHeight > maxPixels) {
+        // Redimensionar mantendo proporção
+        aiHeight = Math.floor(Math.sqrt(maxPixels / aspectRatio));
+        aiWidth = Math.floor(aiHeight * aspectRatio);
+        
+        // Ajustar para múltiplos de 64 (requirement da Stability AI)
+        aiWidth = Math.floor(aiWidth / 64) * 64;
+        aiHeight = Math.floor(aiHeight / 64) * 64;
+        
+        console.log(`[${fileName}] Resizing from ${targetWidth}x${targetHeight} to ${aiWidth}x${aiHeight} for Stability AI (${aiWidth * aiHeight} pixels)`);
+      } else {
+        aiWidth = targetWidth;
+        aiHeight = targetHeight;
       }
       
+      // Usar máscaras locais redimensionadas
+      const originalMaskPath = path.join(__dirname, 'assets-img', `mask${maskType}.png`);
+      
+      if (!fs.existsSync(originalMaskPath)) {
+        throw new Error(`Local mask not found: ${originalMaskPath}`);
+      }
+      
+      // Redimensionar máscara se necessário
+      const maskPath = path.join(jobTemp, `mask_${aiWidth}x${aiHeight}.png`);
+      
+      await new Promise((resolve, reject) => {
+        ffmpeg(originalMaskPath)
+          .outputOptions([
+            `-vf scale=${aiWidth}:${aiHeight}`,
+            '-vframes 1'
+          ])
+          .output(maskPath)
+          .on('start', () => {
+            console.log(`[${fileName}] Resizing mask to ${aiWidth}x${aiHeight}...`);
+          })
+          .on('end', () => {
+            console.log(`[${fileName}] Mask resized successfully`);
+            resolve();
+          })
+          .on('error', (err) => {
+            console.error(`[${fileName}] Error resizing mask: ${err.message}`);
+            reject(err);
+          })
+          .run();
+      });
+      
       // Criar canvas com a imagem original centralizada
-      const canvasPath = path.join(jobTemp, `canvas_${targetWidth}x${targetHeight}.png`);
+      const canvasPath = path.join(jobTemp, `canvas_${aiWidth}x${aiHeight}.png`);
       
       await new Promise((resolve, reject) => {
         ffmpeg(inputPath)
           .outputOptions([
-            `-vf scale=1024:1024,pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2:white`,
+            `-vf scale=1024:1024,pad=${aiWidth}:${aiHeight}:(ow-iw)/2:(oh-ih)/2:white`,
             '-vframes 1'
           ])
           .output(canvasPath)
           .on('start', () => {
-            console.log(`[${fileName}] Creating canvas ${targetWidth}x${targetHeight} with centered image...`);
+            console.log(`[${fileName}] Creating canvas ${aiWidth}x${aiHeight} with centered image...`);
           })
           .on('end', () => {
             console.log(`[${fileName}] Canvas created successfully`);
