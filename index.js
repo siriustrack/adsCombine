@@ -1017,10 +1017,10 @@ app.post('/images/process', async (req, res) => {
     return res.status(400).json({ error: 'Must provide either imageUrl or imageData' });
   }
 
-  // Validate OpenAI API Key
-  if (!process.env.OPENAI_API_KEY) {
-    console.error(`[${fileName}] Missing OPENAI_API_KEY`);
-    return res.status(500).json({ error: 'OpenAI API key not configured' });
+  // Validate Stability AI API Key
+  if (!process.env.STABILITY_API_KEY) {
+    console.error(`[${fileName}] Missing STABILITY_API_KEY`);
+    return res.status(500).json({ error: 'Stability AI API key not configured' });
   }
 
   // Create imgs directory structure
@@ -1122,116 +1122,84 @@ app.post('/images/process', async (req, res) => {
         .run();
     });
 
-    // 4) Generate AI-completed versions using OpenAI
-    console.log(`[${fileName}] Starting OpenAI image completion...`);
+    // 4) Generate AI-completed versions using Stability AI
+    console.log(`[${fileName}] Starting Stability AI image completion...`);
     
-    // Helper function to call OpenAI API
-    const generateAIImage = async (maskPath, outputPath, targetSize) => {
+    // Helper function to call Stability AI API
+    const generateStabilityImage = async (inputPath, outputPath, targetWidth, targetHeight) => {
       const FormData = require('form-data');
       const form = new FormData();
       
-      // Validar se os arquivos existem
-      if (!fs.existsSync(inputImagePath)) {
-        throw new Error(`Input image not found: ${inputImagePath}`);
-      }
-      if (!fs.existsSync(maskPath)) {
-        throw new Error(`Mask file not found: ${maskPath}`);
+      // Validar se o arquivo existe
+      if (!fs.existsSync(inputPath)) {
+        throw new Error(`Input image not found: ${inputPath}`);
       }
       
-      console.log(`[${fileName}] Input image size: ${fs.statSync(inputImagePath).size} bytes`);
-      console.log(`[${fileName}] Mask image size: ${fs.statSync(maskPath).size} bytes`);
+      console.log(`[${fileName}] Input image size: ${fs.statSync(inputPath).size} bytes`);
       
       // Verificar se a imagem é PNG válida
-      const inputBuffer = fs.readFileSync(inputImagePath);
-      const maskBuffer = fs.readFileSync(maskPath);
+      const inputBuffer = fs.readFileSync(inputPath);
       
       if (!inputBuffer.toString('hex', 0, 8).startsWith('89504e47')) {
         throw new Error('Input image is not a valid PNG file');
       }
-      if (!maskBuffer.toString('hex', 0, 8).startsWith('89504e47')) {
-        throw new Error('Mask image is not a valid PNG file');
-      }
       
-      form.append('image', fs.createReadStream(inputImagePath), {
-        filename: 'image.png',
+      form.append('init_image', fs.createReadStream(inputPath), {
+        filename: 'input.png',
         contentType: 'image/png'
       });
-      form.append('mask', fs.createReadStream(maskPath), {
-        filename: 'mask.png',
-        contentType: 'image/png'
-      });
-      form.append('prompt', 'Continue the scene maintaining the original style and colors');
-      form.append('n', '1');
-      form.append('size', '1024x1024');
       
-      console.log(`[${fileName}] Sending request to OpenAI API...`);
+      // Configurações otimizadas para manter fidelidade ao ads original
+      form.append('image_strength', '0.25'); // Baixa para manter fidelidade
+      form.append('text_prompts[0][text]', 'Extend the image maintaining the exact same style, colors, lighting and composition. Professional advertising background extension.');
+      form.append('text_prompts[0][weight]', '1');
+      form.append('cfg_scale', '8'); // Aumentado para melhor aderência ao prompt
+      form.append('samples', '1');
+      form.append('steps', '40'); // Aumentado para melhor qualidade
+      form.append('height', targetHeight.toString());
+      form.append('width', targetWidth.toString());
       
-      const response = await fetch('https://api.openai.com/v1/images/edits', {
+      console.log(`[${fileName}] Sending request to Stability AI API for ${targetWidth}x${targetHeight}...`);
+      
+      const response = await fetch('https://api.stability.ai/v1/generation/stable-diffusion-v1-5/image-to-image', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Authorization': `Bearer ${process.env.STABILITY_API_KEY}`,
+          'Accept': 'application/json',
           ...form.getHeaders()
         },
         body: form
       });
       
-      console.log(`[${fileName}] OpenAI API response status: ${response.status}`);
+      console.log(`[${fileName}] Stability AI response status: ${response.status}`);
       
       if (!response.ok) {
         const errorText = await response.text();
-        console.error(`[${fileName}] OpenAI API error details: ${errorText}`);
-        throw new Error(`OpenAI API error: ${response.status} ${errorText}`);
+        console.error(`[${fileName}] Stability AI error details: ${errorText}`);
+        throw new Error(`Stability AI error: ${response.status} ${errorText}`);
       }
       
       const result = await response.json();
-      console.log(`[${fileName}] OpenAI API success, got ${result.data.length} images`);
-      const imageUrl = result.data[0].url;
+      console.log(`[${fileName}] Stability AI success, got ${result.artifacts.length} images`);
       
-      // Download the generated image
-      const imageResponse = await fetch(imageUrl);
-      const imageBuffer = await imageResponse.buffer();
+      // Stability AI retorna base64 diretamente
+      const base64Image = result.artifacts[0].base64;
+      const imageBuffer = Buffer.from(base64Image, 'base64');
       
-      // Save the 1024x1024 result temporarily
-      const tempAIPath = path.join(jobTemp, `ai_${targetSize}.png`);
-      fs.writeFileSync(tempAIPath, imageBuffer);
-      
-      // Scale to target size using FFmpeg
-      await new Promise((resolve, reject) => {
-        const [width, height] = targetSize.split('x');
-        ffmpeg(tempAIPath)
-          .outputOptions([
-            `-vf scale=${width}:${height}`,
-            '-vframes 1'
-          ])
-          .output(outputPath)
-          .on('start', () => {
-            console.log(`[${fileName}] FFmpeg AI scaling to ${targetSize} started`);
-          })
-          .on('end', () => {
-            console.log(`[${fileName}] AI ${targetSize} version completed`);
-            resolve();
-          })
-          .on('error', (err) => {
-            console.error(`[${fileName}] Error scaling AI ${targetSize} version: ${err.message}`);
-            reject(err);
-          })
-          .run();
-      });
+      // Salvar a imagem final
+      fs.writeFileSync(outputPath, imageBuffer);
+      console.log(`[${fileName}] AI ${targetWidth}x${targetHeight} version saved successfully`);
     };
 
     // Generate AI Feed version (1080x1350)
     const feedFullyOutputPath = path.join(feedFullyImgsDir, `${fileName}_feed_fully.png`);
-    const maskFeedPath = path.join(__dirname, 'assets-img', 'maskFeed.png');
-    
     console.log(`[${fileName}] Creating AI FEED FULLY version (1080x1350)...`);
-    await generateAIImage(maskFeedPath, feedFullyOutputPath, '1080x1350');
+    await generateStabilityImage(inputImagePath, feedFullyOutputPath, 1080, 1350);
 
     // Generate AI Story version (1080x1920)
     const storyFullyOutputPath = path.join(storyFullyImgsDir, `${fileName}_story_fully.png`);
-    const maskStoryPath = path.join(__dirname, 'assets-img', 'maskStory.png');
-    
     console.log(`[${fileName}] Creating AI STORY FULLY version (1080x1920)...`);
-    await generateAIImage(maskStoryPath, storyFullyOutputPath, '1080x1920');
+    await generateStabilityImage(inputImagePath, storyFullyOutputPath, 1080, 1920);
 
     // 5) Success handling
     console.log(`[${fileName}] Image processing completed successfully`);
@@ -1277,6 +1245,7 @@ app.post('/images/process', async (req, res) => {
     res.status(500).json({ error: `Failed to process image: ${err.message}` });
   }
 });
+
 // Serve static files
 app.use(express.static(publicDir));
 
