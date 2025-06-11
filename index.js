@@ -208,36 +208,42 @@ app.post('/videos', async (req, res) => {
   const warnings = [];
   const videoDimensions = new Array(videos.length); // Initialize with fixed size
   
-  // Get dimensions of all videos
-  await Promise.all(videos.map((_, i) => new Promise((resolve) => { // No reject needed if we handle errors by setting null
+  // Get dimensions of all videos sequentially to avoid potential concurrency issues with ffprobe
+  for (let i = 0; i < videos.length; i++) {
     const filePath = path.join(jobTemp, `${i}.mp4`);
-    ffmpeg.ffprobe(filePath, (err, meta) => {
-      if (err) {
-        warnings.push(`Error probing video ${i}: ${err.message}`);
-        videoDimensions[i] = null; // Store null at the correct index
-      } else {
-        const s = meta.streams.find(s => s.width && s.height);
-        const audioStream = meta.streams.find(s => s.codec_type === 'audio');
-        
-        if (!s) {
-          warnings.push(`Video ${i} has no video stream`);
-          videoDimensions[i] = null; // Store null at the correct index
-        } else {
-          videoDimensions[i] = { // Store at the correct index i
-            width: s.width,
-            height: s.height,
-            duration: parseFloat(s.duration) || 0,
-            path: filePath,
-            audioBitrate: audioStream ? (audioStream.bit_rate || '192k') : '192k'
-          };
-          if (s.width !== width || s.height !== height) {
-            warnings.push(`Video ${i} is ${s.width}x${s.height}, expected ${width}x${height}`);
+    try {
+      const meta = await new Promise((resolve, reject) => {
+        ffmpeg.ffprobe(filePath, (err, metadata) => {
+          if (err) {
+            return reject(err);
           }
+          resolve(metadata);
+        });
+      });
+
+      const s = meta.streams.find(s => s.width && s.height);
+      const audioStream = meta.streams.find(s => s.codec_type === 'audio');
+      
+      if (!s) {
+        warnings.push(`Video ${i} has no video stream`);
+        videoDimensions[i] = null;
+      } else {
+        videoDimensions[i] = {
+          width: s.width,
+          height: s.height,
+          duration: parseFloat(s.duration) || 0,
+          path: filePath,
+          audioBitrate: audioStream ? (audioStream.bit_rate || '192k') : '192k'
+        };
+        if (s.width !== width || s.height !== height) {
+          warnings.push(`Video ${i} is ${s.width}x${s.height}, expected ${width}x${height}`);
         }
       }
-      resolve();
-    });
-  })));
+    } catch (err) {
+      warnings.push(`Error probing video ${i}: ${err.message}`);
+      videoDimensions[i] = null;
+    }
+  }
   
   if (warnings.length) console.warn(`[${fileName}] Warnings: ${warnings.join('; ')}`);
 
@@ -623,32 +629,42 @@ app.post('/videos/create-raw-assets', async (req, res) => {
   const warnings = [];
   const videoDimensions = new Array(videos.length); // Initialize with fixed size
   
-  await Promise.all(videos.map((_, i) => new Promise((resolve) => { // No reject needed
+  // Get dimensions of all videos sequentially to avoid potential concurrency issues with ffprobe
+  for (let i = 0; i < videos.length; i++) {
     const filePath = path.join(jobTemp, `${i}.mp4`);
-    ffmpeg.ffprobe(filePath, (err, meta) => {
-      if (err) {
-        warnings.push(`Error probing video ${i}: ${err.message}`);
-        videoDimensions[i] = null; // Store null at the correct index
+    try {
+      const meta = await new Promise((resolve, reject) => {
+        ffmpeg.ffprobe(filePath, (err, metadata) => {
+          if (err) {
+            return reject(err);
+          }
+          resolve(metadata);
+        });
+      });
+
+      const s = meta.streams.find(s => s.width && s.height);
+      const audioStream = meta.streams.find(s => s.codec_type === 'audio');
+      
+      if (!s) {
+        warnings.push(`Video ${i} has no video stream`);
+        videoDimensions[i] = null;
       } else {
-        const s = meta.streams.find(s => s.width && s.height);
-        const audioStream = meta.streams.find(s => s.codec_type === 'audio');
-        
-        if (!s) {
-          warnings.push(`Video ${i} has no video stream`);
-          videoDimensions[i] = null; // Store null at the correct index
-        } else {
-          videoDimensions[i] = { // Store at the correct index i
-            width: s.width,
-            height: s.height,
-            duration: parseFloat(s.duration) || 0,
-            path: filePath,
-            audioBitrate: audioStream ? (audioStream.bit_rate || '192k') : '192k'
-          };
+        videoDimensions[i] = {
+          width: s.width,
+          height: s.height,
+          duration: parseFloat(s.duration) || 0,
+          path: filePath,
+          audioBitrate: audioStream ? (audioStream.bit_rate || '192k') : '192k'
+        };
+        if (s.width !== width || s.height !== height) {
+          warnings.push(`Video ${i} is ${s.width}x${s.height}, expected ${width}x${height}`);
         }
       }
-      resolve();
-    });
-  })));
+    } catch (err) {
+      warnings.push(`Error probing video ${i}: ${err.message}`);
+      videoDimensions[i] = null;
+    }
+  }
   
   if (warnings.length) console.warn(`[${fileName}] Warnings: ${warnings.join('; ')}`);
 
