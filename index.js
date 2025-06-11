@@ -206,30 +206,30 @@ app.post('/videos', async (req, res) => {
   // 2) Check dimensions and prepare input file list
   console.log(`[${fileName}] Checking video dimensions...`);
   const warnings = [];
-  const videoDimensions = [];
+  const videoDimensions = new Array(videos.length); // Initialize with fixed size
   
   // Get dimensions of all videos
-  await Promise.all(videos.map((_, i) => new Promise((resolve) => {
+  await Promise.all(videos.map((_, i) => new Promise((resolve) => { // No reject needed if we handle errors by setting null
     const filePath = path.join(jobTemp, `${i}.mp4`);
     ffmpeg.ffprobe(filePath, (err, meta) => {
       if (err) {
         warnings.push(`Error probing video ${i}: ${err.message}`);
-        videoDimensions.push(null);
+        videoDimensions[i] = null; // Store null at the correct index
       } else {
         const s = meta.streams.find(s => s.width && s.height);
         const audioStream = meta.streams.find(s => s.codec_type === 'audio');
         
         if (!s) {
           warnings.push(`Video ${i} has no video stream`);
-          videoDimensions.push(null);
+          videoDimensions[i] = null; // Store null at the correct index
         } else {
-          videoDimensions.push({
+          videoDimensions[i] = { // Store at the correct index i
             width: s.width,
             height: s.height,
             duration: parseFloat(s.duration) || 0,
             path: filePath,
             audioBitrate: audioStream ? (audioStream.bit_rate || '192k') : '192k'
-          });
+          };
           if (s.width !== width || s.height !== height) {
             warnings.push(`Video ${i} is ${s.width}x${s.height}, expected ${width}x${height}`);
           }
@@ -621,29 +621,29 @@ app.post('/videos/create-raw-assets', async (req, res) => {
   // 2) Check dimensions and prepare input file list
   console.log(`[${fileName}] Checking video dimensions...`);
   const warnings = [];
-  const videoDimensions = [];
+  const videoDimensions = new Array(videos.length); // Initialize with fixed size
   
-  await Promise.all(videos.map((_, i) => new Promise((resolve) => {
+  await Promise.all(videos.map((_, i) => new Promise((resolve) => { // No reject needed
     const filePath = path.join(jobTemp, `${i}.mp4`);
     ffmpeg.ffprobe(filePath, (err, meta) => {
       if (err) {
         warnings.push(`Error probing video ${i}: ${err.message}`);
-        videoDimensions.push(null);
+        videoDimensions[i] = null; // Store null at the correct index
       } else {
         const s = meta.streams.find(s => s.width && s.height);
         const audioStream = meta.streams.find(s => s.codec_type === 'audio');
         
         if (!s) {
           warnings.push(`Video ${i} has no video stream`);
-          videoDimensions.push(null);
+          videoDimensions[i] = null; // Store null at the correct index
         } else {
-          videoDimensions.push({
+          videoDimensions[i] = { // Store at the correct index i
             width: s.width,
             height: s.height,
             duration: parseFloat(s.duration) || 0,
             path: filePath,
             audioBitrate: audioStream ? (audioStream.bit_rate || '192k') : '192k'
-          });
+          };
         }
       }
       resolve();
