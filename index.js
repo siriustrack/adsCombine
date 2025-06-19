@@ -169,26 +169,35 @@ app.post('/videos', async (req, res) => {
   fs.mkdirSync(jobTemp, { recursive: true });
   console.log(`[${fileName}] Created temp directory at ${jobTemp}`);
 
-  // 1) Download videos
-  console.log(`[${fileName}] Starting download of ${videos.length} videos...`);
+  // 1) Download videos SEQUENTIALLY to guarantee order
+  console.log(`[${fileName}] Starting SEQUENTIAL download of ${videos.length} videos...`);
+  const downloadedVideos = [];
+  
   try {
-    await Promise.all(videos.map((v, i) => {
-      const outPath = path.join(jobTemp, `${i}.mp4`);
-      return fetch(v.url)
-        .then(response => {
-          if (!response.ok) throw new Error(`Failed to download ${v.url}`);
-          return new Promise((resolve, reject) => {
-            const dest = fs.createWriteStream(outPath);
-            response.body.pipe(dest);
-            dest.on('finish', () => {
-              console.log(`[${fileName}] Downloaded video ${i} -> ${outPath}`);
-              resolve();
-            });
-            dest.on('error', reject);
-          });
+    // Download one by one, in exact order
+    for (let i = 0; i < videos.length; i++) {
+      const outPath = path.join(jobTemp, `video_${String(i).padStart(3, '0')}.mp4`); // Use name with padding for alphabetical order
+      console.log(`[${fileName}] Downloading video ${i} from: ${videos[i].url}`);
+      
+      const response = await fetch(videos[i].url);
+      if (!response.ok) {
+        throw new Error(`Failed to download video ${i} from ${videos[i].url}: ${response.status} ${response.statusText}`);
+      }
+      
+      await new Promise((resolve, reject) => {
+        const dest = fs.createWriteStream(outPath);
+        response.body.pipe(dest);
+        dest.on('finish', () => {
+          console.log(`[${fileName}] ✅ Downloaded video ${i} -> ${outPath}`);
+          downloadedVideos.push({ index: i, path: outPath }); // Store index and path
+          resolve();
         });
-    }));
-    console.log(`[${fileName}] All videos downloaded successfully`);
+        dest.on('error', reject);
+      });
+    }
+    
+    console.log(`[${fileName}] All videos downloaded sequentially in correct order`);
+    console.log(`[${fileName}] Download order verification:`, downloadedVideos.map(v => `${v.index}: ${path.basename(v.path)}`));
   } catch (err) {
     console.error(`[${fileName}] Error downloading videos: ${err.message}`);
     try {
@@ -203,14 +212,18 @@ app.post('/videos', async (req, res) => {
     return res.status(500).json({ error: 'Failed to download videos' });
   }
 
-  // 2) Check dimensions and prepare input file list
-  console.log(`[${fileName}] Checking video dimensions...`);
+  // 2) Check dimensions and prepare input file list using correct order
+  console.log(`[${fileName}] Checking video dimensions in correct order...`);
   const warnings = [];
-  const videoDimensions = new Array(videos.length); // Initialize with fixed size
+  const videoDimensions = [];
   
-  // Get dimensions of all videos sequentially to avoid potential concurrency issues with ffprobe
-  for (let i = 0; i < videos.length; i++) {
-    const filePath = path.join(jobTemp, `${i}.mp4`);
+  // Process in exact order of downloads
+  for (let i = 0; i < downloadedVideos.length; i++) {
+    const downloadedVideo = downloadedVideos[i];
+    const filePath = downloadedVideo.path;
+    
+    console.log(`[${fileName}] Probing video ${downloadedVideo.index} at ${filePath}`);
+    
     try {
       const meta = await new Promise((resolve, reject) => {
         ffmpeg.ffprobe(filePath, (err, metadata) => {
@@ -225,23 +238,27 @@ app.post('/videos', async (req, res) => {
       const audioStream = meta.streams.find(s => s.codec_type === 'audio');
       
       if (!s) {
-        warnings.push(`Video ${i} has no video stream`);
-        videoDimensions[i] = null;
+        warnings.push(`Video ${downloadedVideo.index} has no video stream`);
+        videoDimensions.push(null);
       } else {
-        videoDimensions[i] = {
+        videoDimensions.push({
+          originalIndex: downloadedVideo.index,
           width: s.width,
           height: s.height,
           duration: parseFloat(s.duration) || 0,
           path: filePath,
           audioBitrate: audioStream ? (audioStream.bit_rate || '192k') : '192k'
-        };
+        });
+        
+        console.log(`[${fileName}] Video ${downloadedVideo.index}: ${s.width}x${s.height}, duration: ${parseFloat(s.duration) || 0}s`);
+        
         if (s.width !== width || s.height !== height) {
-          warnings.push(`Video ${i} is ${s.width}x${s.height}, expected ${width}x${height}`);
+          warnings.push(`Video ${downloadedVideo.index} is ${s.width}x${s.height}, expected ${width}x${height}`);
         }
       }
     } catch (err) {
-      warnings.push(`Error probing video ${i}: ${err.message}`);
-      videoDimensions[i] = null;
+      warnings.push(`Error probing video ${downloadedVideo.index}: ${err.message}`);
+      videoDimensions.push(null);
     }
   }
   
@@ -251,13 +268,14 @@ app.post('/videos', async (req, res) => {
   console.log(`[${fileName}] Processing started with warnings:`, warnings);
   res.status(200).json({ message: 'Processing started', warnings });
 
-  // 4) Create standardized versions of each video with the target dimensions
-  console.log(`[${fileName}] Standardizing videos to ${width}x${height}...`);
+  // 4) Create standardized versions maintaining order
+  console.log(`[${fileName}] Standardizing videos to ${width}x${height} in correct order...`);
   
   try {
     // Create standardized versions sequentially to avoid overloading resources
     const standardizedVideos = [];
     
+    // Process in correct order
     for (let i = 0; i < videoDimensions.length; i++) {
       const inputVideo = videoDimensions[i];
       if (!inputVideo) {
@@ -265,8 +283,8 @@ app.post('/videos', async (req, res) => {
         continue;
       }
       
-      const standardizedPath = path.join(jobTemp, `standardized-${i}.mp4`);
-      console.log(`[${fileName}] Starting standardization of video ${i} (${inputVideo.width}x${inputVideo.height}) to ${width}x${height}...`);
+      const standardizedPath = path.join(jobTemp, `standardized_${String(i).padStart(3, '0')}.mp4`);
+      console.log(`[${fileName}] Starting standardization of video ${inputVideo.originalIndex} (position ${i}) (${inputVideo.width}x${inputVideo.height}) to ${width}x${height}...`);
       
       await new Promise((resolve, reject) => {
         // Create FFmpeg command to resize and pad the video
@@ -283,20 +301,20 @@ app.post('/videos', async (req, res) => {
           ])
           .output(standardizedPath)
           .on('start', () => {
-            console.log(`[${fileName}] FFmpeg standardization of video ${i} started`);
+            console.log(`[${fileName}] FFmpeg standardization of video ${inputVideo.originalIndex} (position ${i}) started`);
           })
           .on('progress', (progress) => {
             if (progress.percent) {
-              console.log(`[${fileName}] Standardizing video ${i}: ${progress.percent.toFixed(2)}% done`);
+              console.log(`[${fileName}] Standardizing video ${inputVideo.originalIndex} (pos ${i}): ${progress.percent.toFixed(2)}% done`);
             }
           })
           .on('end', () => {
-            console.log(`[${fileName}] Standardized video ${i} successfully`);
+            console.log(`[${fileName}] ✅ Standardized video ${inputVideo.originalIndex} (position ${i}) successfully`);
             standardizedVideos.push(standardizedPath);
             resolve();
           })
           .on('error', (err) => {
-            console.error(`[${fileName}] Error standardizing video ${i}: ${err.message}`);
+            console.error(`[${fileName}] Error standardizing video ${inputVideo.originalIndex} (position ${i}): ${err.message}`);
             reject(err);
           });
           
@@ -304,11 +322,17 @@ app.post('/videos', async (req, res) => {
       });
     }
     
-    // 5) Create a concat file
+    // 5) Create concat file with guaranteed order
     const concatFilePath = path.join(jobTemp, 'concat.txt');
-    const concatFileContent = standardizedVideos.map(file => `file '${file}'`).join('\n');
-    fs.writeFileSync(concatFilePath, concatFileContent);
+    const concatFileContent = standardizedVideos.map((file, index) => {
+      console.log(`[${fileName}] Concat order ${index}: ${path.basename(file)}`);
+      return `file '${file}'`;
+    }).join('\n');
     
+    fs.writeFileSync(concatFilePath, concatFileContent);
+    console.log(`[${fileName}] Concat file created with guaranteed order:`);
+    console.log(concatFileContent);
+
     // 6) Concat all standardized videos with high quality settings
     const outputPath = path.join(publicDir, `${fileName}${extension}`);
     
