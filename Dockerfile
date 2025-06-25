@@ -5,6 +5,7 @@ FROM node:18-slim
 RUN apt-get update && apt-get install -y \
     imagemagick \
     ghostscript \
+    poppler-utils \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
