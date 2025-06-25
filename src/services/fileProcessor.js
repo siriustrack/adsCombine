@@ -3,7 +3,6 @@ const pdf = require('pdf-parse');
 const mammoth = require('mammoth');
 const { OpenAI } = require('openai');
 const logger = require('../lib/logger');
-const redis = require('../lib/redis');
 const { sanitize } = require('../utils/sanitize');
 const { openaiConfig } = require('../config/openai');
 
@@ -16,9 +15,8 @@ async function processTxt(file, conversationId) {
     const response = await axios.get(url, { responseType: 'arraybuffer' });
     const textContent = Buffer.from(response.data).toString('utf-8');
     const sanitizedText = sanitize(textContent);
-    await redis.lpush(conversationId, sanitizedText);
     logger.info('Successfully processed TXT file', { conversationId, fileId });
-    return { status: 'success', fileId };
+    return { status: 'success', fileId, content: sanitizedText };
   } catch (error) {
     logger.error('Error processing TXT file', { conversationId, fileId, error: error.message });
     return { status: 'error', fileId, error: error.message };
@@ -52,9 +50,8 @@ async function processImage(file, conversationId) {
 
     const description = aiResponse.choices[0].message.content;
     const sanitizedDescription = sanitize(description);
-    await redis.lpush(conversationId, sanitizedDescription);
     logger.info('Successfully processed image file', { conversationId, fileId });
-    return { status: 'success', fileId };
+    return { status: 'success', fileId, content: sanitizedDescription };
   } catch (error) {
     logger.error('Error processing image file', { conversationId, fileId, error: error.message });
     return { status: 'error', fileId, error: error.message };
@@ -69,18 +66,46 @@ async function processPdf(file, conversationId) {
     const buffer = Buffer.from(response.data);
     const data = await pdf(buffer);
 
+    let extractedText = '';
     if (data.text && data.text.trim().length > 50) {
-      const sanitizedText = sanitize(data.text);
-      await redis.lpush(conversationId, sanitizedText);
+      extractedText = sanitize(data.text);
       logger.info('Successfully processed PDF with text extraction', { conversationId, fileId });
     } else {
       logger.warn('PDF text content is too short or empty. Fallback to OCR is not yet implemented.', { conversationId, fileId });
     }
-    return { status: 'success', fileId };
+    return { status: 'success', fileId, content: extractedText };
   } catch (error) {
     logger.error('Error processing PDF file', { conversationId, fileId, error: error.message });
     return { status: 'error', fileId, error: error.message };
   }
 }
 
-async function processDocx(file
+async function processDocx(file, conversationId) {
+  const { fileId, url } = file;
+  logger.info('Processing DOCX file', { conversationId, fileId, url });
+  try {
+    const response = await axios.get(url, { responseType: 'arraybuffer' });
+    const buffer = Buffer.from(response.data);
+    const result = await mammoth.extractRawText({ buffer });
+    const textContent = result.value;
+
+    let extractedText = '';
+    if (textContent && textContent.trim()) {
+      extractedText = sanitize(textContent);
+      logger.info('Successfully processed DOCX file', { conversationId, fileId });
+    } else {
+      logger.warn('DOCX content is empty or could not be extracted.', { conversationId, fileId });
+    }
+    return { status: 'success', fileId, content: extractedText };
+  } catch (error) {
+    logger.error('Error processing DOCX file', { conversationId, fileId, error: error.message });
+    return { status: 'error', fileId, error: error.message };
+  }
+}
+
+module.exports = {
+  processTxt,
+  processImage,
+  processPdf,
+  processDocx,
+};

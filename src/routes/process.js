@@ -139,38 +139,4 @@ router.post('/process-message', async (req, res) => {
               result = await processDocx(file, conversationId);
               break;
             default:
-              logger.warn('Unsupported file type, skipping', { fileType: file.fileType });
-              result = { status: 'error', fileId: file.fileId, error: 'Unsupported file type' };
-              break;
-          }
-          return result;
-        });
-
-        const results = await Promise.all(processingPromises);
-        results.forEach(r => {
-          if (r.status === 'success') {
-            processedFiles.push(r.fileId);
-          } else {
-            failedFiles.push({ fileId: r.fileId, error: r.error });
-          }
-        });
-      }
-    }
-
-    res.status(200).json({
-      status: 'ok',
-      processedFiles,
-      failedFiles,
-    });
-
-  } catch (error) {
-    if (error instanceof ZodError) {
-      logger.error('Validation error for /process-message', { errors: error.errors });
-      return res.status(400).json({ error: 'Invalid request body', details: error.errors });
-    }
-    logger.error('Error in /process-message handler', { error: error.message });
-    res.status(500).json({ error: 'Internal server error', message: error.message });
-  }
-});
-
-module.exports = router;
+              logger.warn('Unsuppor
