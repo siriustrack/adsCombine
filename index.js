@@ -1,6 +1,5 @@
 require('dotenv').config();
 const express = require('express');
-const { swaggerUi, swaggerSpec } = require('./swagger');
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args)); // Corrigido import do node-fetch v3
 const fs = require('fs');
 const path = require('path');
@@ -20,8 +19,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(morgan('combined', { stream: { write: message => logger.info(message.trim()) } }));
 
 // —————————————————————————————
-// Swagger UI v3 em /api-docs
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+// API Routes
 app.use('/api', processRouter);
 // —————————————————————————————
 

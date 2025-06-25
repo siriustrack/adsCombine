@@ -5,8 +5,6 @@ const { OpenAI } = require('openai');
 const logger = require('../lib/logger');
 const { sanitize } = require('../utils/sanitize');
 const { openaiConfig } = require('../config/openai');
-const pdfjs = require('pdfjs-dist');
-const { createCanvas } = require('canvas');
 
 const openai = new OpenAI({ apiKey: openaiConfig.apiKey });
 
@@ -69,68 +67,53 @@ async function processPdf(file) {
     const response = await axios.get(url, { responseType: 'arraybuffer' });
     const buffer = Buffer.from(response.data);
 
-    // 2. Try direct text extraction
+    // 2. Try direct text extraction first
     const data = await pdf(buffer);
-    if (data.text && data.text.trim().length > 100) { // Increased threshold
+    if (data.text && data.text.trim().length > 100) {
       logger.info('Successfully processed PDF with direct text extraction', { fileId });
       return sanitize(data.text);
     }
 
-    // 3. Fallback to OCR using pdfjs-dist and canvas
+    // 3. Fallback to OCR using OpenAI vision model directly on PDF
     logger.info('Direct text extraction failed or insufficient. Falling back to OCR.', { fileId });
-
-    const pdfDocument = await pdfjs.getDocument({ data: buffer }).promise;
-    const numPages = pdfDocument.numPages;
-    let fullText = '';
-
-    for (let i = 1; i <= numPages; i++) {
-      const page = await pdfDocument.getPage(i);
-      // Increase scale for better quality and OCR accuracy
-      const viewport = page.getViewport({ scale: 2.0 });
-      const canvas = createCanvas(viewport.width, viewport.height);
-      const context = canvas.getContext('2d');
-      const renderContext = {
-        canvasContext: context,
-        viewport: viewport,
-      };
-
-      await page.render(renderContext).promise;
-      // Clean up page resources to free up memory
-      page.cleanup();
-
-      // Get image as Base64
-      const base64Image = canvas.toDataURL('image/png').split(',')[1];
-
-      logger.info(`Processing PDF page ${i}/${numPages} via OCR`, { fileId });
-
-      const aiResponse = await openai.chat.completions.create({
-        model: openaiConfig.models.image, // Using the vision model
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: 'Extract all text from this document page. Return only the text content in PT-BR.' },
-              {
-                type: 'image_url',
-                image_url: {
-                  url: `data:image/png;base64,${base64Image}`,
-                },
+    
+    // Convert buffer to base64 and try OCR directly on the PDF
+    const base64Pdf = buffer.toString('base64');
+    
+    const aiResponse = await openai.chat.completions.create({
+      model: openaiConfig.models.image,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { 
+              type: 'text', 
+              text: 'Extract all text from this PDF document. Return only the text content in PT-BR. If you cannot read the PDF directly, please let me know.' 
+            },
+            {
+              type: 'image_url',
+              image_url: {
+                url: `data:application/pdf;base64,${base64Pdf}`,
               },
-            ],
-          },
-        ],
-      });
+            },
+          ],
+        },
+      ],
+    });
 
-      const pageText = aiResponse.choices[0].message.content || '';
-      fullText += pageText + '\n\n'; // Add space between pages
+    const extractedText = aiResponse.choices[0].message.content || '';
+    
+    if (extractedText && extractedText.trim().length > 50) {
+      logger.info('Successfully processed PDF with direct PDF OCR', { fileId });
+      return sanitize(extractedText);
+    } else {
+      logger.warn('PDF OCR extraction yielded insufficient text', { fileId });
+      return sanitize('Conteúdo do PDF não pôde ser extraído adequadamente.');
     }
-
-    logger.info('Successfully processed PDF with OCR', { fileId, pages: numPages });
-    return sanitize(fullText);
 
   } catch (error) {
     logger.error('Error processing PDF file', { fileId, error: error.message });
-    throw error; // Re-throw to be caught by the route handler
+    throw error;
   }
 }
 
