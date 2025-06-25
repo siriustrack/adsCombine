@@ -9,32 +9,37 @@ const ffmpeg = require('fluent-ffmpeg');
 const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
 const ffprobeInstaller = require('@ffprobe-installer/ffprobe');
 const serveIndex = require('serve-index');
+const logger = require('./src/lib/logger');
+const processRouter = require('./src/routes/process');
+
 ffmpeg.setFfprobePath(ffprobeInstaller.path);
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
-app.use(morgan('combined'));
+app.use(morgan('combined', { stream: { write: message => logger.info(message.trim()) } }));
 
 // —————————————————————————————
 // Swagger UI v3 em /api-docs
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+app.use('/api', processRouter);
 // —————————————————————————————
 
 // Enable more detailed error logging
 app.use((err, req, res, next) => {
-  console.error('Express error:', err);
+  logger.error('Express error:', err);
   res.status(500).json({ error: err.message });
 });
 
 // Configure error handling for unhandled Promise rejections
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  logger.error('Unhandled Rejection at:', { promise, reason });
 });
 
 // Configure error handling for uncaught exceptions
 process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
+  logger.error('Uncaught Exception:', err);
+  process.exit(1);
 });
 
 // Configs
@@ -70,18 +75,18 @@ const videosMeta = [];
 // Bearer authentication middleware
 app.use((req, res, next) => {
   // Skip auth check for static files
-  if (req.path === '/' || req.path.startsWith('/videos') === false) {
+  if (req.path === '/' || req.path.startsWith('/files') || req.path.startsWith('/api-docs') || req.path.startsWith('/api/process-message')) {
     return next();
   }
   
   const auth = req.headers.authorization;
   if (!auth || !auth.startsWith('Bearer ')) {
-    console.error(`Unauthorized access attempt`);
+    logger.error(`Unauthorized access attempt`);
     return res.status(401).json({ error: 'Unauthorized' });
   }
   const token = auth.split(' ')[1];
   if (token !== TOKEN) {
-    console.error(`Forbidden: Invalid token`);
+    logger.error(`Forbidden: Invalid token`);
     return res.status(403).json({ error: 'Forbidden' });
   }
   next();

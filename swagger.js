@@ -30,7 +30,7 @@ const swaggerDefinition = {
 const options = {
   swaggerDefinition,
   // Onde buscar os comentários JSDoc:
-  apis: ['./index.js']  
+  apis: ['./index.js', './src/routes/*.js']  
 };
 
 const swaggerSpec = swaggerJsdoc(options);
