@@ -5,9 +5,8 @@ const { OpenAI } = require('openai');
 const logger = require('../lib/logger');
 const { sanitize } = require('../utils/sanitize');
 const { openaiConfig } = require('../config/openai');
-const { fromPath } = require('pdf2pic');
-const fs = require('fs').promises;
-const path = require('path');
+const pdfjs = require('pdfjs-dist/legacy/build/pdf.js');
+const { createCanvas } = require('canvas');
 
 const openai = new OpenAI({ apiKey: openaiConfig.apiKey });
 
@@ -65,16 +64,10 @@ async function processPdf(file) {
   const { fileId, url } = file;
   logger.info('Processing PDF file', { fileId, url });
 
-  const tempDir = path.join(__dirname, '..', '..', 'temp', `pdf-${fileId}-${Date.now()}`);
-  const tempPdfPath = path.join(tempDir, 'downloaded.pdf');
-
   try {
-    await fs.mkdir(tempDir, { recursive: true });
-
-    // 1. Download PDF
+    // 1. Download PDF into a buffer
     const response = await axios.get(url, { responseType: 'arraybuffer' });
     const buffer = Buffer.from(response.data);
-    await fs.writeFile(tempPdfPath, buffer);
 
     // 2. Try direct text extraction
     const data = await pdf(buffer);
@@ -83,30 +76,32 @@ async function processPdf(file) {
       return sanitize(data.text);
     }
 
-    // 3. Fallback to OCR if direct extraction fails or yields little text
+    // 3. Fallback to OCR using pdfjs-dist and canvas
     logger.info('Direct text extraction failed or insufficient. Falling back to OCR.', { fileId });
 
-    const options = {
-      density: 300, // DPI, higher for better quality
-      saveFilename: "page",
-      savePath: tempDir,
-      format: "png",
-      width: 1024, // pixels
-      height: 1024 // pixels
-    };
-    const convert = fromPath(tempPdfPath, options);
-    const pageImages = await convert.bulk(-1, true); // Convert all pages
-
-    if (!pageImages || pageImages.length === 0) {
-        throw new Error('PDF conversion to images failed.');
-    }
-
+    const pdfDocument = await pdfjs.getDocument({ data: buffer }).promise;
+    const numPages = pdfDocument.numPages;
     let fullText = '';
-    for (let i = 0; i < pageImages.length; i++) {
-      const page = pageImages[i];
-      logger.info(`Processing PDF page ${i + 1}/${pageImages.length} via OCR`, { fileId });
-      const imageBuffer = await fs.readFile(page.path);
-      const base64Image = imageBuffer.toString('base64');
+
+    for (let i = 1; i <= numPages; i++) {
+      const page = await pdfDocument.getPage(i);
+      // Increase scale for better quality and OCR accuracy
+      const viewport = page.getViewport({ scale: 2.0 });
+      const canvas = createCanvas(viewport.width, viewport.height);
+      const context = canvas.getContext('2d');
+      const renderContext = {
+        canvasContext: context,
+        viewport: viewport,
+      };
+
+      await page.render(renderContext).promise;
+      // Clean up page resources to free up memory
+      page.cleanup();
+
+      // Get image as Base64
+      const base64Image = canvas.toDataURL('image/png').split(',')[1];
+
+      logger.info(`Processing PDF page ${i}/${numPages} via OCR`, { fileId });
 
       const aiResponse = await openai.chat.completions.create({
         model: openaiConfig.models.image, // Using the vision model
@@ -130,20 +125,12 @@ async function processPdf(file) {
       fullText += pageText + '\n\n'; // Add space between pages
     }
 
-    logger.info('Successfully processed PDF with OCR', { fileId, pages: pageImages.length });
+    logger.info('Successfully processed PDF with OCR', { fileId, pages: numPages });
     return sanitize(fullText);
 
   } catch (error) {
     logger.error('Error processing PDF file', { fileId, error: error.message });
     throw error; // Re-throw to be caught by the route handler
-  } finally {
-    // 4. Cleanup temporary files
-    try {
-        await fs.rm(tempDir, { recursive: true, force: true });
-        logger.info('Cleaned up temporary PDF directory', { tempDir });
-    } catch (cleanupError) {
-        logger.error('Failed to clean up temporary PDF directory', { tempDir, error: cleanupError.message });
-    }
   }
 }
 
