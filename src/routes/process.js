@@ -11,7 +11,7 @@ const FileInfoSchema = z.object({
   fileId: z.string(),
   url: z.string().url(),
   mimeType: z.string(),
-  fileType: z.enum(['txt', 'pdf', 'jpeg', 'png', 'jpg', 'docx']),
+  fileType: z.enum(['txt', 'pdf', 'jpeg', 'png', 'jpg', 'docx', 'image']),
 }).passthrough();
 
 const BodySchema = z.object({
@@ -65,7 +65,7 @@ const ProcessMessageSchema = z.array(MessageSchema);
  *                             type: string
  *                           fileType:
  *                             type: string
- *                             enum: ['txt', 'pdf', 'jpeg', 'png', 'jpg', 'docx']
+ *                             enum: ['txt', 'pdf', 'jpeg', 'png', 'jpg', 'docx', 'image']
  *                         required:
  *                           - fileId
  *                           - url
@@ -132,6 +132,7 @@ router.post('/process-message', async (req, res) => {
             case 'jpeg':
             case 'jpg':
             case 'png':
+            case 'image':
               result = await processImage(file, conversationId);
               break;
             case 'docx':

@@ -83,32 +83,4 @@ async function processPdf(file, conversationId) {
   }
 }
 
-async function processDocx(file, conversationId) {
-  const { fileId, url } = file;
-  logger.info('Processing DOCX file', { conversationId, fileId, url });
-  try {
-    const response = await axios.get(url, { responseType: 'arraybuffer' });
-    const buffer = Buffer.from(response.data);
-    const result = await mammoth.extractRawText({ buffer });
-    const textContent = result.value;
-
-    if (textContent && textContent.trim()) {
-      const sanitizedText = sanitize(textContent);
-      await redis.lpush(conversationId, sanitizedText);
-      logger.info('Successfully processed DOCX file', { conversationId, fileId });
-    } else {
-      logger.warn('DOCX content is empty or could not be extracted.', { conversationId, fileId });
-    }
-    return { status: 'success', fileId };
-  } catch (error) {
-    logger.error('Error processing DOCX file', { conversationId, fileId, error: error.message });
-    return { status: 'error', fileId, error: error.message };
-  }
-}
-
-module.exports = {
-  processTxt,
-  processImage,
-  processPdf,
-  processDocx,
-};
+async function processDocx(file
