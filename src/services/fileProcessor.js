@@ -85,7 +85,7 @@ async function processPdf(file) {
     const tempPdf = tmp.fileSync({ postfix: '.pdf' });
     fs.writeFileSync(tempPdf.name, buffer);
     // Create temp dir for images
-    const tempDir = tmp.dirSync();
+    const tempDir = tmp.dirSync({ unsafeCleanup: true });
     // Convert PDF to PNG pages via pdftoppm
     execSync(`pdftoppm -png "${tempPdf.name}" "${path.join(tempDir.name, 'page')}"`);
     // Read generated PNGs
