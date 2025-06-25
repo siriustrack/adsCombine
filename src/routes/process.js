@@ -137,4 +137,63 @@ router.post('/process-message', async (req, res) => {
               case 'jpeg':
               case 'jpg':
               case 'png':
-         
+              case 'image':
+                textContent = await processImage(file);
+                break;
+              case 'docx':
+                textContent = await processDocx(file);
+                break;
+              default:
+                logger.warn('Unsupported file type, skipping', { fileType: file.fileType, fileId: file.fileId });
+                throw new Error('Unsupported file type');
+            }
+            processedFiles.push(file.fileId);
+            return textContent;
+          } catch (error) {
+            logger.error('Failed to process file', { fileId: file.fileId, error: error.message });
+            failedFiles.push({ fileId: file.fileId, error: error.message });
+            return null; // Retorna nulo para arquivos que falharam
+          }
+        });
+
+        const results = await Promise.all(processingPromises);
+        results.forEach(text => {
+          if (text) {
+            allExtractedText += text + '\n\n';
+          }
+        });
+      }
+    }
+
+    const conversationId = messages[0].conversationId;
+    const filename = `${conversationId}-${Date.now()}.txt`;
+    const textsDir = path.join(__dirname, '..', '..', 'public', 'texts');
+    
+    // Garante que o diretório exista
+    fs.mkdirSync(textsDir, { recursive: true });
+    
+    const filePath = path.join(textsDir, filename);
+    fs.writeFileSync(filePath, allExtractedText.trim());
+
+    const downloadUrl = `${req.protocol}://${req.get('host')}/texts/${filename}`;
+
+    logger.info('Successfully processed messages and created text file', { conversationId, downloadUrl });
+
+    res.status(200).json({
+      conversationId,
+      downloadUrl,
+      processedFiles,
+      failedFiles,
+    });
+
+  } catch (error) {
+    if (error instanceof ZodError) {
+      logger.error('Validation error for /process-message', { errors: error.errors });
+      return res.status(400).json({ error: 'Invalid request body', details: error.errors });
+    }
+    logger.error('Error in /process-message handler', { error: error.message });
+    res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+});
+
+module.exports = router;
