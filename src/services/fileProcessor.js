@@ -74,42 +74,44 @@ async function processPdf(file) {
       return sanitize(data.text);
     }
 
-    // 3. Fallback to OCR using OpenAI vision model directly on PDF
-    logger.info('Direct text extraction failed or insufficient. Falling back to OCR.', { fileId });
-    
-    // Convert buffer to base64 and try OCR directly on the PDF
-    const base64Pdf = buffer.toString('base64');
-    
-    const aiResponse = await openai.chat.completions.create({
-      model: openaiConfig.models.image,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { 
-              type: 'text', 
-              text: 'Extract all text from this PDF document. Return only the text content in PT-BR. If you cannot read the PDF directly, please let me know.' 
-            },
-            {
-              type: 'image_url',
-              image_url: {
-                url: `data:application/pdf;base64,${base64Pdf}`,
-              },
-            },
-          ],
-        },
-      ],
-    });
+    // 3. Fallback to OCR using page-by-page image conversion
+    logger.info('Direct text extraction failed or insufficient. Falling back to per-page OCR.', { fileId });
+    const fs = require('fs');
+    const path = require('path');
+    const tmp = require('tmp');
+    const { execSync } = require('child_process');
 
-    const extractedText = aiResponse.choices[0].message.content || '';
-    
-    if (extractedText && extractedText.trim().length > 50) {
-      logger.info('Successfully processed PDF with direct PDF OCR', { fileId });
-      return sanitize(extractedText);
-    } else {
-      logger.warn('PDF OCR extraction yielded insufficient text', { fileId });
-      return sanitize('Conteúdo do PDF não pôde ser extraído adequadamente.');
+    // Write PDF buffer to temp file
+    const tempPdf = tmp.fileSync({ postfix: '.pdf' });
+    fs.writeFileSync(tempPdf.name, buffer);
+    // Create temp dir for images
+    const tempDir = tmp.dirSync();
+    // Convert PDF to PNG pages via pdftoppm
+    execSync(`pdftoppm -png "${tempPdf.name}" "${path.join(tempDir.name, 'page')}"`);
+    // Read generated PNGs
+    const pages = fs.readdirSync(tempDir.name)
+      .filter(f => f.endsWith('.png'))
+      .sort();
+    let ocrResult = '';
+    // OCR each page
+    for (const pageFile of pages) {
+      const imgPath = path.join(tempDir.name, pageFile);
+      const imgBase64 = fs.readFileSync(imgPath).toString('base64');
+      const aiResp = await openai.chat.completions.create({
+        model: openaiConfig.models.image,
+        messages: [
+          { role: 'system', content: 'Extraia o texto desta imagem de forma precisa e retorne somente o texto em PT-BR.' },
+          { type: 'image_url', image_url: { url: `data:image/png;base64,${imgBase64}` } }
+        ]
+      });
+      ocrResult += aiResp.choices[0].message.content + '\n\n';
     }
+    // Cleanup tmp files
+    tempPdf.removeCallback();
+    tempDir.removeCallback();
+    const finalText = sanitize(ocrResult);
+    logger.info('Successfully processed PDF with per-page OCR', { fileId });
+    return finalText;
 
   } catch (error) {
     logger.error('Error processing PDF file', { fileId, error: error.message });
