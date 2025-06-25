@@ -2,9 +2,10 @@ const express = require('express');
 const router = express.Router();
 const { z, ZodError } = require('zod');
 const logger = require('../lib/logger');
-const redis = require('../lib/redis');
 const { sanitize } = require('../utils/sanitize');
 const { processTxt, processImage, processPdf, processDocx } = require('../services/fileProcessor');
+const fs = require('fs');
+const path = require('path');
 
 // Zod schema for validation
 const FileInfoSchema = z.object({
@@ -73,15 +74,19 @@ const ProcessMessageSchema = z.array(MessageSchema);
  *                           - fileType
  *     responses:
  *       '200':
- *         description: Processamento concluído.
+ *         description: Processamento concluído e URL para download do texto concatenado.
  *         content:
  *           application/json:
  *             schema:
  *               type: object
  *               properties:
- *                 status:
+ *                 conversationId:
  *                   type: string
- *                   example: ok
+ *                   description: O ID da conversa da primeira mensagem processada.
+ *                 downloadUrl:
+ *                   type: string
+ *                   format: uri
+ *                   description: A URL pública para baixar o arquivo .txt com todo o conteúdo de texto extraído.
  *                 processedFiles:
  *                   type: array
  *                   items:
@@ -102,75 +107,34 @@ router.post('/process-message', async (req, res) => {
     
     logger.info('Received /process-message request', { messageCount: messages.length });
 
-    if (!redis) {
-      throw new Error('Redis client is not available. Check REDIS_URL in .env file.');
+    if (messages.length === 0) {
+      return res.status(400).json({ error: 'Request body must contain at least one message.' });
     }
 
+    let allExtractedText = '';
     const processedFiles = [];
     const failedFiles = [];
 
     for (const message of messages) {
-      const { conversationId, body } = message;
+      const { body } = message;
       const { content, files } = body;
 
       if (content) {
-        const sanitizedContent = sanitize(content);
-        await redis.lpush(conversationId, sanitizedContent);
-        logger.info('Pushed text content to Redis', { conversationId });
+        allExtractedText += sanitize(content) + '\n\n';
       }
 
       if (files && files.length > 0) {
         const processingPromises = files.map(async (file) => {
-          let result;
-          switch (file.fileType) {
-            case 'txt':
-              result = await processTxt(file, conversationId);
-              break;
-            case 'pdf':
-              result = await processPdf(file, conversationId);
-              break;
-            case 'jpeg':
-            case 'jpg':
-            case 'png':
-            case 'image':
-              result = await processImage(file, conversationId);
-              break;
-            case 'docx':
-              result = await processDocx(file, conversationId);
-              break;
-            default:
-              logger.warn('Unsupported file type, skipping', { fileType: file.fileType });
-              result = { status: 'error', fileId: file.fileId, error: 'Unsupported file type' };
-              break;
-          }
-          return result;
-        });
-
-        const results = await Promise.all(processingPromises);
-        results.forEach(r => {
-          if (r.status === 'success') {
-            processedFiles.push(r.fileId);
-          } else {
-            failedFiles.push({ fileId: r.fileId, error: r.error });
-          }
-        });
-      }
-    }
-
-    res.status(200).json({
-      status: 'ok',
-      processedFiles,
-      failedFiles,
-    });
-
-  } catch (error) {
-    if (error instanceof ZodError) {
-      logger.error('Validation error for /process-message', { errors: error.errors });
-      return res.status(400).json({ error: 'Invalid request body', details: error.errors });
-    }
-    logger.error('Error in /process-message handler', { error: error.message });
-    res.status(500).json({ error: 'Internal server error', message: error.message });
-  }
-});
-
-module.exports = router;
+          try {
+            let textContent = '';
+            switch (file.fileType) {
+              case 'txt':
+                textContent = await processTxt(file);
+                break;
+              case 'pdf':
+                textContent = await processPdf(file);
+                break;
+              case 'jpeg':
+              case 'jpg':
+              case 'png':
+         

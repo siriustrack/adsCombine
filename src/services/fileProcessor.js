@@ -8,24 +8,24 @@ const { openaiConfig } = require('../config/openai');
 
 const openai = new OpenAI({ apiKey: openaiConfig.apiKey });
 
-async function processTxt(file, conversationId) {
+async function processTxt(file) {
   const { fileId, url } = file;
-  logger.info('Processing TXT file', { conversationId, fileId, url });
+  logger.info('Processing TXT file', { fileId, url });
   try {
     const response = await axios.get(url, { responseType: 'arraybuffer' });
     const textContent = Buffer.from(response.data).toString('utf-8');
     const sanitizedText = sanitize(textContent);
-    logger.info('Successfully processed TXT file', { conversationId, fileId });
-    return { status: 'success', fileId, content: sanitizedText };
+    logger.info('Successfully processed TXT file', { fileId });
+    return sanitizedText;
   } catch (error) {
-    logger.error('Error processing TXT file', { conversationId, fileId, error: error.message });
-    return { status: 'error', fileId, error: error.message };
+    logger.error('Error processing TXT file', { fileId, error: error.message });
+    throw error;
   }
 }
 
-async function processImage(file, conversationId) {
+async function processImage(file) {
   const { fileId, url } = file;
-  logger.info('Processing image file', { conversationId, fileId, url });
+  logger.info('Processing image file', { fileId, url });
   try {
     const response = await axios.get(url, { responseType: 'arraybuffer' });
     const base64Image = Buffer.from(response.data).toString('base64');
@@ -50,17 +50,17 @@ async function processImage(file, conversationId) {
 
     const description = aiResponse.choices[0].message.content;
     const sanitizedDescription = sanitize(description);
-    logger.info('Successfully processed image file', { conversationId, fileId });
-    return { status: 'success', fileId, content: sanitizedDescription };
+    logger.info('Successfully processed image file', { fileId });
+    return sanitizedDescription;
   } catch (error) {
-    logger.error('Error processing image file', { conversationId, fileId, error: error.message });
-    return { status: 'error', fileId, error: error.message };
+    logger.error('Error processing image file', { fileId, error: error.message });
+    throw error;
   }
 }
 
-async function processPdf(file, conversationId) {
+async function processPdf(file) {
   const { fileId, url } = file;
-  logger.info('Processing PDF file', { conversationId, fileId, url });
+  logger.info('Processing PDF file', { fileId, url });
   try {
     const response = await axios.get(url, { responseType: 'arraybuffer' });
     const buffer = Buffer.from(response.data);
@@ -69,20 +69,20 @@ async function processPdf(file, conversationId) {
     let extractedText = '';
     if (data.text && data.text.trim().length > 50) {
       extractedText = sanitize(data.text);
-      logger.info('Successfully processed PDF with text extraction', { conversationId, fileId });
+      logger.info('Successfully processed PDF with text extraction', { fileId });
     } else {
-      logger.warn('PDF text content is too short or empty. Fallback to OCR is not yet implemented.', { conversationId, fileId });
+      logger.warn('PDF text content is too short or empty. Fallback to OCR is not yet implemented.', { fileId });
     }
-    return { status: 'success', fileId, content: extractedText };
+    return extractedText;
   } catch (error) {
-    logger.error('Error processing PDF file', { conversationId, fileId, error: error.message });
-    return { status: 'error', fileId, error: error.message };
+    logger.error('Error processing PDF file', { fileId, error: error.message });
+    throw error;
   }
 }
 
-async function processDocx(file, conversationId) {
+async function processDocx(file) {
   const { fileId, url } = file;
-  logger.info('Processing DOCX file', { conversationId, fileId, url });
+  logger.info('Processing DOCX file', { fileId, url });
   try {
     const response = await axios.get(url, { responseType: 'arraybuffer' });
     const buffer = Buffer.from(response.data);
@@ -92,20 +92,6 @@ async function processDocx(file, conversationId) {
     let extractedText = '';
     if (textContent && textContent.trim()) {
       extractedText = sanitize(textContent);
-      logger.info('Successfully processed DOCX file', { conversationId, fileId });
+      logger.info('Successfully processed DOCX file', { fileId });
     } else {
-      logger.warn('DOCX content is empty or could not be extracted.', { conversationId, fileId });
-    }
-    return { status: 'success', fileId, content: extractedText };
-  } catch (error) {
-    logger.error('Error processing DOCX file', { conversationId, fileId, error: error.message });
-    return { status: 'error', fileId, error: error.message };
-  }
-}
-
-module.exports = {
-  processTxt,
-  processImage,
-  processPdf,
-  processDocx,
-};
+      logger.warn('DOCX content is empty or could n
