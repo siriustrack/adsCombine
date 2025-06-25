@@ -94,4 +94,18 @@ async function processDocx(file) {
       extractedText = sanitize(textContent);
       logger.info('Successfully processed DOCX file', { fileId });
     } else {
-      logger.warn('DOCX content is empty or could n
+      logger.warn('DOCX content is empty or could not be extracted.', { fileId });
+    }
+    return extractedText;
+  } catch (error) {
+    logger.error('Error processing DOCX file', { fileId, error: error.message });
+    throw error;
+  }
+}
+
+module.exports = {
+  processTxt,
+  processImage,
+  processPdf,
+  processDocx,
+};
