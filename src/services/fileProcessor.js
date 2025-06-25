@@ -5,7 +5,7 @@ const { OpenAI } = require('openai');
 const logger = require('../lib/logger');
 const { sanitize } = require('../utils/sanitize');
 const { openaiConfig } = require('../config/openai');
-const pdfjs = require('pdfjs-dist/legacy/build/pdf.js');
+const pdfjs = require('pdfjs-dist');
 const { createCanvas } = require('canvas');
 
 const openai = new OpenAI({ apiKey: openaiConfig.apiKey });
