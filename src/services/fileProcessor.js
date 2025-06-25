@@ -100,8 +100,13 @@ async function processPdf(file) {
       const aiResp = await openai.chat.completions.create({
         model: openaiConfig.models.image,
         messages: [
-          { role: 'system', content: 'Extraia o texto desta imagem de forma precisa e retorne somente o texto em PT-BR.' },
-          { type: 'image_url', image_url: { url: `data:image/png;base64,${imgBase64}` } }
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Extraia o texto desta imagem de forma precisa e retorne somente o texto em PT-BR.' },
+              { type: 'image_url', image_url: { url: `data:image/png;base64,${imgBase64}` } }
+            ]
+          }
         ]
       });
       ocrResult += aiResp.choices[0].message.content + '\n\n';
