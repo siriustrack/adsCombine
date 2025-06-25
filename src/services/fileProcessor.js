@@ -5,6 +5,9 @@ const { OpenAI } = require('openai');
 const logger = require('../lib/logger');
 const { sanitize } = require('../utils/sanitize');
 const { openaiConfig } = require('../config/openai');
+const { fromPath } = require('pdf2pic');
+const fs = require('fs').promises;
+const path = require('path');
 
 const openai = new OpenAI({ apiKey: openaiConfig.apiKey });
 
@@ -36,7 +39,7 @@ async function processImage(file) {
         {
           role: 'user',
           content: [
-            { type: 'text', text: 'Describe this image in detail.' },
+            { type: 'text', text: 'Describe this image in detail. Return in PT_BR.' },
             {
               type: 'image_url',
               image_url: {
@@ -61,22 +64,86 @@ async function processImage(file) {
 async function processPdf(file) {
   const { fileId, url } = file;
   logger.info('Processing PDF file', { fileId, url });
+
+  const tempDir = path.join(__dirname, '..', '..', 'temp', `pdf-${fileId}-${Date.now()}`);
+  const tempPdfPath = path.join(tempDir, 'downloaded.pdf');
+
   try {
+    await fs.mkdir(tempDir, { recursive: true });
+
+    // 1. Download PDF
     const response = await axios.get(url, { responseType: 'arraybuffer' });
     const buffer = Buffer.from(response.data);
-    const data = await pdf(buffer);
+    await fs.writeFile(tempPdfPath, buffer);
 
-    let extractedText = '';
-    if (data.text && data.text.trim().length > 50) {
-      extractedText = sanitize(data.text);
-      logger.info('Successfully processed PDF with text extraction', { fileId });
-    } else {
-      logger.warn('PDF text content is too short or empty. Fallback to OCR is not yet implemented.', { fileId });
+    // 2. Try direct text extraction
+    const data = await pdf(buffer);
+    if (data.text && data.text.trim().length > 100) { // Increased threshold
+      logger.info('Successfully processed PDF with direct text extraction', { fileId });
+      return sanitize(data.text);
     }
-    return extractedText;
+
+    // 3. Fallback to OCR if direct extraction fails or yields little text
+    logger.info('Direct text extraction failed or insufficient. Falling back to OCR.', { fileId });
+
+    const options = {
+      density: 300, // DPI, higher for better quality
+      saveFilename: "page",
+      savePath: tempDir,
+      format: "png",
+      width: 1024, // pixels
+      height: 1024 // pixels
+    };
+    const convert = fromPath(tempPdfPath, options);
+    const pageImages = await convert.bulk(-1, true); // Convert all pages
+
+    if (!pageImages || pageImages.length === 0) {
+        throw new Error('PDF conversion to images failed.');
+    }
+
+    let fullText = '';
+    for (let i = 0; i < pageImages.length; i++) {
+      const page = pageImages[i];
+      logger.info(`Processing PDF page ${i + 1}/${pageImages.length} via OCR`, { fileId });
+      const imageBuffer = await fs.readFile(page.path);
+      const base64Image = imageBuffer.toString('base64');
+
+      const aiResponse = await openai.chat.completions.create({
+        model: openaiConfig.models.image, // Using the vision model
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Extract all text from this document page. Return only the text content in PT-BR.' },
+              {
+                type: 'image_url',
+                image_url: {
+                  url: `data:image/png;base64,${base64Image}`,
+                },
+              },
+            ],
+          },
+        ],
+      });
+
+      const pageText = aiResponse.choices[0].message.content || '';
+      fullText += pageText + '\n\n'; // Add space between pages
+    }
+
+    logger.info('Successfully processed PDF with OCR', { fileId, pages: pageImages.length });
+    return sanitize(fullText);
+
   } catch (error) {
     logger.error('Error processing PDF file', { fileId, error: error.message });
-    throw error;
+    throw error; // Re-throw to be caught by the route handler
+  } finally {
+    // 4. Cleanup temporary files
+    try {
+        await fs.rm(tempDir, { recursive: true, force: true });
+        logger.info('Cleaned up temporary PDF directory', { tempDir });
+    } catch (cleanupError) {
+        logger.error('Failed to clean up temporary PDF directory', { tempDir, error: cleanupError.message });
+    }
   }
 }
 
