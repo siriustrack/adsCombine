@@ -1380,24 +1380,4 @@ app.post('/images/process', async (req, res) => {
       storyFullyUrl
     });
     
-    console.log(`[${fileName}] Response sent with URLs: feed=${feedUrl}, story=${storyUrl}, original=${originalUrl}, feedFully=${feedFullyUrl}, storyFully=${storyFullyUrl}`);
-    
-  } catch (err) {
-    console.error(`[${fileName}] Image processing error: ${err.message}`);
-    
-    // Cleanup on error
-    try {
-      fs.rmSync(jobTemp, { recursive: true, force: true });
-    } catch (cleanupErr) {
-      console.error(`[${fileName}] Error cleaning up: ${cleanupErr.message}`);
-    }
-    
-    res.status(500).json({ error: `Failed to process image: ${err.message}` });
-  }
-});
-
-// Serve static files
-app.use(express.static(publicDir));
-
-// Start server
-app.listen(PORT, () => console.log(`🚀 Service listening on port ${PORT}`));
+    console.log(`[${fileName}] Response sent with URLs: feed=${feedUrl}, sto
