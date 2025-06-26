@@ -117,11 +117,7 @@ router.post('/process-message', async (req, res) => {
 
     for (const message of messages) {
       const { body } = message;
-      const { content, files } = body;
-
-      if (content) {
-        allExtractedText += sanitize(content) + '\n\n';
-      }
+      const { files } = body;
 
       if (files && files.length > 0) {
         const processingPromises = files.map(async (file) => {
@@ -148,7 +144,9 @@ router.post('/process-message', async (req, res) => {
                 throw new Error('Unsupported file type');
             }
             processedFiles.push(file.fileId);
-            return textContent;
+            const fileName = path.basename(new URL(file.url).pathname);
+            const header = `## Transcricao do arquivo: ${fileName}:\n\n`;
+            return header + textContent;
           } catch (error) {
             logger.error('Failed to process file', { fileId: file.fileId, error: error.message });
             failedFiles.push({ fileId: file.fileId, error: error.message });
@@ -159,7 +157,7 @@ router.post('/process-message', async (req, res) => {
         const results = await Promise.all(processingPromises);
         results.forEach(text => {
           if (text) {
-            allExtractedText += text + '\n\n';
+            allExtractedText += text + '\n\n---\n\n';
           }
         });
       }
