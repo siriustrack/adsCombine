@@ -21,6 +21,7 @@
     "openai": "^4.52.0",
     "pdf-parse": "^1.1.1",
     "serve-index": "^1.9.1",
+    "sharp": "^0.32.0",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
     "winston": "^3.13.0",

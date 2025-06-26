@@ -5,6 +5,9 @@ const { OpenAI } = require('openai');
 const logger = require('../lib/logger');
 const { sanitize } = require('../utils/sanitize');
 const { openaiConfig } = require('../config/openai');
+const tmp = require('tmp');
+const { execSync } = require('child_process');
+const sharp = require('sharp');
 
 const openai = new OpenAI({ apiKey: openaiConfig.apiKey });
 
@@ -80,6 +83,7 @@ async function processPdf(file) {
     const path = require('path');
     const tmp = require('tmp');
     const { execSync } = require('child_process');
+    const sharp = require('sharp');
 
     // Write PDF buffer to temp file
     const tempPdf = tmp.fileSync({ postfix: '.pdf' });
@@ -92,30 +96,31 @@ async function processPdf(file) {
     const pages = fs.readdirSync(tempDir.name)
       .filter(f => f.endsWith('.png'))
       .sort();
-    let ocrResult = '';
-    // OCR each page
+
+    // Preprocess images and run local Tesseract OCR
+    const preprocessDir = tmp.dirSync({ unsafeCleanup: true });
+    const ocrResults = [];
     for (const pageFile of pages) {
       const imgPath = path.join(tempDir.name, pageFile);
-      const imgBase64 = fs.readFileSync(imgPath).toString('base64');
-      const aiResp = await openai.chat.completions.create({
-        model: openaiConfig.models.image,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: 'Extraia o texto desta imagem de forma precisa e retorne somente o texto em PT-BR.' },
-              { type: 'image_url', image_url: { url: `data:image/png;base64,${imgBase64}` } }
-            ]
-          }
-        ]
-      });
-      ocrResult += aiResp.choices[0].message.content + '\n\n';
+      const preprocessPath = path.join(preprocessDir.name, pageFile);
+      await sharp(imgPath)
+        .grayscale()
+        .normalize()
+        .threshold(150)
+        .toFile(preprocessPath);
+      const text = execSync(
+        `tesseract "${preprocessPath}" stdout -l por --oem 1 --psm 3`,
+        { encoding: 'utf-8' }
+      );
+      ocrResults.push(text.trim());
     }
     // Cleanup tmp files
+    preprocessDir.removeCallback();
     tempPdf.removeCallback();
     tempDir.removeCallback();
-    const finalText = sanitize(ocrResult);
-    logger.info('Successfully processed PDF with per-page OCR', { fileId });
+
+    const finalText = sanitize(ocrResults.join('\n\n'));
+    logger.info('Successfully processed PDF with local Tesseract OCR', { fileId });
     return finalText;
 
   } catch (error) {
