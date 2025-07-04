@@ -17,9 +17,12 @@ async function processTxt(file) {
   try {
     const response = await axios.get(url, { responseType: 'arraybuffer' });
     const textContent = Buffer.from(response.data).toString('utf-8');
-    const sanitizedText = sanitize(textContent);
+    
+    // Aplicar apenas sanitização básica de HTML/caracteres gerais
+    const finalText = sanitize(textContent);
+    
     logger.info('Successfully processed TXT file', { fileId });
-    return sanitizedText;
+    return finalText;
   } catch (error) {
     logger.error('Error processing TXT file', { fileId, error: error.message });
     throw error;
@@ -52,9 +55,12 @@ async function processImage(file) {
     });
 
     const description = aiResponse.choices[0].message.content;
-    const sanitizedDescription = sanitize(description);
+    
+    // Aplicar apenas sanitização básica de HTML/caracteres gerais
+    const finalDescription = sanitize(description);
+    
     logger.info('Successfully processed image file', { fileId });
-    return sanitizedDescription;
+    return finalDescription;
   } catch (error) {
     logger.error('Error processing image file', { fileId, error: error.message });
     throw error;

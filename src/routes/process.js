@@ -4,6 +4,7 @@ const { z, ZodError } = require('zod');
 const logger = require('../lib/logger');
 const { sanitize } = require('../utils/sanitize');
 const { processTxt, processImage, processPdf, processDocx } = require('../services/fileProcessor');
+const { sanitizeText } = require('../utils/textSanitizer');
 const fs = require('fs');
 const path = require('path');
 
@@ -171,7 +172,10 @@ router.post('/process-message', async (req, res) => {
     fs.mkdirSync(textsDir, { recursive: true });
     
     const filePath = path.join(textsDir, filename);
-    fs.writeFileSync(filePath, allExtractedText.trim());
+    
+    // Sanitiza o texto antes de salvar para remover caracteres problemáticos
+    const sanitizedText = sanitizeText(allExtractedText.trim());
+    fs.writeFileSync(filePath, sanitizedText);
 
     const downloadUrl = `${req.protocol}://${req.get('host')}/texts/${filename}`;
 
