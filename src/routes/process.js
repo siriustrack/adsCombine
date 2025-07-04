@@ -194,4 +194,145 @@ router.post('/process-message', async (req, res) => {
   }
 });
 
+/**
+ * @openapi
+ * /delete-texts:
+ *   delete:
+ *     summary: Exclui arquivos de texto da pasta public/texts
+ *     tags:
+ *       - Processamento
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               filename:
+ *                 type: string
+ *                 description: Nome específico do arquivo a ser excluído (opcional). Se não fornecido, todos os arquivos .txt serão excluídos.
+ *               conversationId:
+ *                 type: string
+ *                 description: ID da conversa para excluir apenas arquivos relacionados (opcional).
+ *     responses:
+ *       '200':
+ *         description: Arquivos excluídos com sucesso.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   description: Mensagem de sucesso
+ *                 deletedFiles:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   description: Lista de arquivos excluídos
+ *                 deletedCount:
+ *                   type: number
+ *                   description: Número de arquivos excluídos
+ *       '404':
+ *         description: Nenhum arquivo encontrado para exclusão.
+ *       '500':
+ *         description: Erro interno do servidor.
+ */
+router.delete('/delete-texts', async (req, res) => {
+  try {
+    const { filename, conversationId } = req.body || {};
+    
+    logger.info('Received /delete-texts request', { filename, conversationId });
+
+    const textsDir = path.join(__dirname, '..', '..', 'public', 'texts');
+    
+    // Verifica se o diretório existe
+    if (!fs.existsSync(textsDir)) {
+      logger.warn('Texts directory does not exist', { textsDir });
+      return res.status(404).json({ 
+        error: 'Texts directory not found',
+        deletedFiles: [],
+        deletedCount: 0
+      });
+    }
+
+    // Lê todos os arquivos do diretório
+    const allFiles = fs.readdirSync(textsDir);
+    const txtFiles = allFiles.filter(file => file.endsWith('.txt'));
+
+    if (txtFiles.length === 0) {
+      logger.info('No txt files found in texts directory');
+      return res.status(404).json({ 
+        message: 'No txt files found to delete',
+        deletedFiles: [],
+        deletedCount: 0
+      });
+    }
+
+    let filesToDelete = [];
+
+    if (filename) {
+      // Excluir arquivo específico
+      if (txtFiles.includes(filename)) {
+        filesToDelete = [filename];
+      } else {
+        logger.warn('Specific file not found', { filename });
+        return res.status(404).json({ 
+          error: `File ${filename} not found`,
+          deletedFiles: [],
+          deletedCount: 0
+        });
+      }
+    } else if (conversationId) {
+      // Excluir arquivos de uma conversa específica
+      filesToDelete = txtFiles.filter(file => file.startsWith(conversationId));
+      if (filesToDelete.length === 0) {
+        logger.warn('No files found for conversation', { conversationId });
+        return res.status(404).json({ 
+          message: `No files found for conversation ${conversationId}`,
+          deletedFiles: [],
+          deletedCount: 0
+        });
+      }
+    } else {
+      // Excluir todos os arquivos txt
+      filesToDelete = txtFiles;
+    }
+
+    const deletedFiles = [];
+    const failedFiles = [];
+
+    // Excluir os arquivos
+    for (const file of filesToDelete) {
+      try {
+        const filePath = path.join(textsDir, file);
+        fs.unlinkSync(filePath);
+        deletedFiles.push(file);
+        logger.info('File deleted successfully', { file });
+      } catch (error) {
+        logger.error('Failed to delete file', { file, error: error.message });
+        failedFiles.push({ file, error: error.message });
+      }
+    }
+
+    const response = {
+      message: `Successfully deleted ${deletedFiles.length} file(s)`,
+      deletedFiles,
+      deletedCount: deletedFiles.length
+    };
+
+    if (failedFiles.length > 0) {
+      response.failedFiles = failedFiles;
+      response.message += `. Failed to delete ${failedFiles.length} file(s)`;
+    }
+
+    logger.info('Delete operation completed', response);
+    res.status(200).json(response);
+
+  } catch (error) {
+    logger.error('Error in /delete-texts handler', { error: error.message });
+    res.status(500).json({ error: 'Internal server error', message: error.message });
+  }
+});
+
 module.exports = router;
