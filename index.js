@@ -79,7 +79,7 @@ const videosMeta = [];
 // Bearer authentication middleware
 app.use((req, res, next) => {
   // Skip auth check for static files and specific endpoints
-  if (req.path === '/' || req.path.startsWith('/files') || req.path.startsWith('/api-docs') || req.path.startsWith('/api/process-message')) {
+  if (req.path === '/' || req.path.startsWith('/files') || req.path.startsWith('/texts') || req.path.startsWith('/api-docs') || req.path.startsWith('/api/process-message')) {
     return next();
   }
   
