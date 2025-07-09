@@ -13,8 +13,7 @@ const path = require('path');
 const { Worker } = require('worker_threads');
 const os = require('os');
 
-// Número máximo de workers baseado nos cores disponíveis (deixando alguns cores livres para o sistema)
-const MAX_WORKERS = Math.max(1, Math.floor(os.cpus().length * 0.75));
+const MAX_WORKERS = os.cpus().length
 
 const openai = new OpenAI({ apiKey: openaiConfig.apiKey });
 
