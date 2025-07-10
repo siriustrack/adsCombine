@@ -1,6 +1,5 @@
-// swagger.js
-const swaggerJsdoc  = require('swagger-jsdoc');
-const swaggerUi     = require('swagger-ui-express');
+import swaggerJsdoc from 'swagger-jsdoc';
+import swaggerUi from 'swagger-ui-express';
 
 const swaggerDefinition = {
   openapi: '3.0.0',
@@ -29,10 +28,8 @@ const swaggerDefinition = {
 
 const options = {
   swaggerDefinition,
-  // Onde buscar os comentários JSDoc:
-  apis: ['./index.js', './src/routes/*.js']  
+  apis: ['./index.ts', './src/routes/*.ts']  
 };
 
-const swaggerSpec = swaggerJsdoc(options);
-
-module.exports = { swaggerUi, swaggerSpec };
+export const swaggerSpec = swaggerJsdoc(options);
+export { swaggerUi };

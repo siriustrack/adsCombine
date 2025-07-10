@@ -6,6 +6,7 @@ node_modules/
 
 # Tempo­rary files during processamento
 temp/
+dist/
 
 # Vídeos gerados/publicados
 public/*

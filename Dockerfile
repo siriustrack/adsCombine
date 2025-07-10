@@ -1,7 +1,37 @@
-# Use an official Node.js runtime as a parent image
-FROM node:18-slim
+## Dependencies stage
+FROM node:lts-bullseye AS deps
 
-# Install system dependencies required for PDF processing with OCR
+WORKDIR /app
+
+RUN curl -fsSL https://bun.sh/install | bash
+
+ENV PATH="/root/.bun/bin:${PATH}"
+
+COPY package.json bun.lock* ./
+
+RUN bun install --frozen-lockfile
+
+## Build stage
+FROM node:lts-bullseye AS builder
+
+WORKDIR /app
+
+COPY --from=deps /root/.bun /root/.bun
+
+ENV PATH="/root/.bun/bin:${PATH}"
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+
+RUN bun run build
+
+## Production stage
+FROM node:lts-slim AS production
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+
 RUN apt-get update && apt-get install -y \
     imagemagick \
     ghostscript \
@@ -10,22 +40,22 @@ RUN apt-get update && apt-get install -y \
     tesseract-ocr-por \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+RUN mkdir -p public temp public/texts && \
+    chown -R appuser:appuser /app
 
-# Set the working directory in the container
-WORKDIR /app
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
+COPY assets-img/ ./assets-img/
+COPY --from=builder /app/dist ./dist
 
-# Copy package.json and package-lock.json to leverage Docker cache
-COPY package*.json ./
+RUN chown -R appuser:appuser /app
 
-# Install app dependencies
-# Use --omit=dev to avoid installing devDependencies in production
-RUN npm install --omit=dev
+USER appuser
 
-# Bundle app source
-COPY . .
-
-# Make port 3000 available to the world outside this container
 EXPOSE 3000
 
-# Define the command to run your app
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD bun -e "const response = await fetch('http://localhost:3000/api/health'); process.exit(response.ok ? 0 : 1);"
+
 CMD ["npm", "start"]

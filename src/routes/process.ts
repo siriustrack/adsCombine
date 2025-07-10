@@ -1,29 +1,28 @@
-const express = require('express');
+import express, { type Request, type Response } from 'express';
+import fs from 'node:fs';
+import path from 'node:path';
+import { z, ZodError } from 'zod';
+import logger from '../lib/logger';
+import { processDocx, processImage, processPdf, processTxt } from '../services/fileProcessor';
+import { sanitizeText } from '../utils/textSanitizer';
 const router = express.Router();
-const { z, ZodError } = require('zod');
-const logger = require('../lib/logger');
-const { sanitize } = require('../utils/sanitize');
-const { processTxt, processImage, processPdf, processDocx } = require('../services/fileProcessor');
-const { sanitizeText } = require('../utils/textSanitizer');
-const fs = require('fs');
-const path = require('path');
 
-// Zod schema for validation
+
 const FileInfoSchema = z.object({
   fileId: z.string(),
   url: z.string().url(),
   mimeType: z.string(),
   fileType: z.enum(['txt', 'pdf', 'jpeg', 'png', 'jpg', 'docx', 'image']),
-}).passthrough();
+}).loose();
 
 const BodySchema = z.object({
-    content: z.string().optional(),
-    files: z.array(FileInfoSchema).optional(),
+  content: z.string().optional(),
+  files: z.array(FileInfoSchema).optional(),
 });
 
 const MessageSchema = z.object({
-    conversationId: z.string(),
-    body: BodySchema
+  conversationId: z.string(),
+  body: BodySchema
 }).passthrough();
 
 const ProcessMessageSchema = z.array(MessageSchema);
@@ -101,11 +100,11 @@ const ProcessMessageSchema = z.array(MessageSchema);
  *       '500':
  *         description: Erro interno do servidor.
  */
-router.post('/process-message', async (req, res) => {
+router.post('/process-message', async (req: Request, res: Response) => {
   try {
     const rawMessages = Array.isArray(req.body) ? req.body : [req.body];
     const messages = ProcessMessageSchema.parse(rawMessages);
-    
+
     logger.info('Received /process-message request', { messageCount: messages.length });
 
     if (messages.length === 0) {
@@ -113,8 +112,8 @@ router.post('/process-message', async (req, res) => {
     }
 
     let allExtractedText = '';
-    const processedFiles = [];
-    const failedFiles = [];
+    const processedFiles: string[] = [];
+    const failedFiles: { fileId: string; error: string }[] = [];
 
     for (const message of messages) {
       const { body } = message;
@@ -148,10 +147,10 @@ router.post('/process-message', async (req, res) => {
             const fileName = path.basename(new URL(file.url).pathname);
             const header = `## Transcricao do arquivo: ${fileName}:\n\n`;
             return header + textContent;
-          } catch (error) {
+          } catch (error: any) {
             logger.error('Failed to process file', { fileId: file.fileId, error: error.message });
             failedFiles.push({ fileId: file.fileId, error: error.message });
-            return null; // Retorna nulo para arquivos que falharam
+            return null;
           }
         });
 
@@ -167,13 +166,11 @@ router.post('/process-message', async (req, res) => {
     const conversationId = messages[0].conversationId;
     const filename = `${conversationId}-${Date.now()}.txt`;
     const textsDir = path.join(__dirname, '..', '..', 'public', 'texts');
-    
-    // Garante que o diretório exista
+
     fs.mkdirSync(textsDir, { recursive: true });
-    
+
     const filePath = path.join(textsDir, filename);
-    
-    // Sanitiza o texto antes de salvar para remover caracteres problemáticos
+
     const sanitizedText = sanitizeText(allExtractedText.trim());
     fs.writeFileSync(filePath, sanitizedText);
 
@@ -181,145 +178,113 @@ router.post('/process-message', async (req, res) => {
 
     logger.info('Successfully processed messages and created text file', { conversationId, downloadUrl });
 
-    res.status(200).json({
+    return res.status(200).json({
       conversationId,
       downloadUrl,
       processedFiles,
       failedFiles,
     });
 
-  } catch (error) {
+  } catch (error: any) {
     if (error instanceof ZodError) {
-      logger.error('Validation error for /process-message', { errors: error.errors });
-      return res.status(400).json({ error: 'Invalid request body', details: error.errors });
+      logger.error('Validation error for /process-message', { errors: error.issues });
+      return res.status(400).json({ error: 'Invalid request body', details: error.issues });
     }
     logger.error('Error in /process-message handler', { error: error.message });
-    res.status(500).json({ error: 'Internal server error', message: error.message });
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
   }
 });
 
-/**
- * @openapi
- * /delete-texts:
- *   delete:
- *     summary: Exclui arquivos de texto da pasta public/texts
- *     tags:
- *       - Processamento
- *     requestBody:
- *       required: false
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               filename:
- *                 type: string
- *                 description: Nome específico do arquivo a ser excluído (opcional). Se não fornecido, todos os arquivos .txt serão excluídos.
- *               conversationId:
- *                 type: string
- *                 description: ID da conversa para excluir apenas arquivos relacionados (opcional).
- *     responses:
- *       '200':
- *         description: Arquivos excluídos com sucesso.
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 message:
- *                   type: string
- *                   description: Mensagem de sucesso
- *                 deletedFiles:
- *                   type: array
- *                   items:
- *                     type: string
- *                   description: Lista de arquivos excluídos
- *                 deletedCount:
- *                   type: number
- *                   description: Número de arquivos excluídos
- *       '404':
- *         description: Nenhum arquivo encontrado para exclusão.
- *       '500':
- *         description: Erro interno do servidor.
- */
-router.delete('/delete-texts', async (req, res) => {
+interface DeleteTextsBody {
+  filename?: string;
+  conversationId?: string;
+}
+
+interface FailedFile {
+  file: string;
+  error: string;
+}
+
+router.delete('/delete-texts', async (req: Request, res: Response) => {
   try {
-    const { filename, conversationId } = req.body || {};
-    
+    const { filename, conversationId }: DeleteTextsBody = req.body || {};
+
     logger.info('Received /delete-texts request', { filename, conversationId });
 
     const textsDir = path.join(__dirname, '..', '..', 'public', 'texts');
-    
-    // Verifica se o diretório existe
+
     if (!fs.existsSync(textsDir)) {
       logger.warn('Texts directory does not exist', { textsDir });
-      return res.status(404).json({ 
+      return res.status(404).json({
         error: 'Texts directory not found',
         deletedFiles: [],
         deletedCount: 0
       });
     }
 
-    // Lê todos os arquivos do diretório
     const allFiles = fs.readdirSync(textsDir);
     const txtFiles = allFiles.filter(file => file.endsWith('.txt'));
 
     if (txtFiles.length === 0) {
       logger.info('No txt files found in texts directory');
-      return res.status(404).json({ 
+      return res.status(404).json({
         message: 'No txt files found to delete',
         deletedFiles: [],
         deletedCount: 0
       });
     }
 
-    let filesToDelete = [];
+    let filesToDelete: string[] = [];
 
     if (filename) {
-      // Excluir arquivo específico
+
       if (txtFiles.includes(filename)) {
         filesToDelete = [filename];
       } else {
         logger.warn('Specific file not found', { filename });
-        return res.status(404).json({ 
+        return res.status(404).json({
           error: `File ${filename} not found`,
           deletedFiles: [],
           deletedCount: 0
         });
       }
     } else if (conversationId) {
-      // Excluir arquivos de uma conversa específica
+
       filesToDelete = txtFiles.filter(file => file.startsWith(conversationId));
       if (filesToDelete.length === 0) {
         logger.warn('No files found for conversation', { conversationId });
-        return res.status(404).json({ 
+        return res.status(404).json({
           message: `No files found for conversation ${conversationId}`,
           deletedFiles: [],
           deletedCount: 0
         });
       }
     } else {
-      // Excluir todos os arquivos txt
+
       filesToDelete = txtFiles;
     }
 
-    const deletedFiles = [];
-    const failedFiles = [];
+    const deletedFiles: string[] = [];
+    const failedFiles: FailedFile[] = [];
 
-    // Excluir os arquivos
     for (const file of filesToDelete) {
       try {
         const filePath = path.join(textsDir, file);
         fs.unlinkSync(filePath);
         deletedFiles.push(file);
         logger.info('File deleted successfully', { file });
-      } catch (error) {
+      } catch (error: any) {
         logger.error('Failed to delete file', { file, error: error.message });
         failedFiles.push({ file, error: error.message });
       }
     }
 
-    const response = {
+    const response: {
+      message: string;
+      deletedFiles: string[];
+      deletedCount: number;
+      failedFiles?: FailedFile[];
+    } = {
       message: `Successfully deleted ${deletedFiles.length} file(s)`,
       deletedFiles,
       deletedCount: deletedFiles.length
@@ -331,12 +296,12 @@ router.delete('/delete-texts', async (req, res) => {
     }
 
     logger.info('Delete operation completed', response);
-    res.status(200).json(response);
+    return res.status(200).json(response);
 
-  } catch (error) {
+  } catch (error: any) {
     logger.error('Error in /delete-texts handler', { error: error.message });
-    res.status(500).json({ error: 'Internal server error', message: error.message });
+    return res.status(500).json({ error: 'Internal server error', message: error.message });
   }
 });
 
-module.exports = router;
+export default router;

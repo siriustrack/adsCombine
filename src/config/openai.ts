@@ -1,5 +1,4 @@
-
-module.exports.openaiConfig = {
+export const openaiConfig = {
   apiKey: process.env.OPENAI_API_KEY,
   models: {
     text: process.env.OPENAI_MODEL_TEXT || 'gpt-4o-mini',
