@@ -23,11 +23,15 @@
     "strictPropertyInitialization": false, // Ajustado para flexibilidade
     "noFallthroughCasesInSwitch": true,
     "forceConsistentCasingInFileNames": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "paths": {
+      "@core/*": ["core/*"],
+      "@api/*": ["api/*"],
+      "@config/*": ["config/*"],
+      "@lib/*": ["lib/*"],
+      "lib/*": ["lib/*"]
+    }
   },
-  "include": [
-    "src/**/*.ts"
-  ],
   "exclude": [
     "node_modules",
     "dist"
