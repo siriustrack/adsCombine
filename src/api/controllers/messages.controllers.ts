@@ -33,7 +33,7 @@ export class MessagesController {
 
   constructor(private readonly messagesService: MessagesService) { }
 
-  async processMessagesHandler(req: Request, res: Response) {
+  processMessagesHandler = async (req: Request, res: Response) => {
     try {
       const rawMessages = Array.isArray(req.body) ? req.body : [req.body];
 
@@ -42,6 +42,7 @@ export class MessagesController {
       logger.info('Received /process-message request', { messageCount: messages.length });
 
       const messageContext = { messages, host: req.get('host')!, protocol: req.protocol };
+
 
       const response = await this.messagesService.processMessages(messageContext);
 
@@ -56,7 +57,7 @@ export class MessagesController {
     }
   }
 
-  async deleteTextsHandler(req: Request, res: Response) {
+  deleteTextsHandler = async (req: Request, res: Response) => {
     try {
       const body = DeleteTextsBodySchema.parse(req.body);
 

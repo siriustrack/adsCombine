@@ -31,7 +31,7 @@ export class VideosController {
 
   constructor(private readonly videosServices: VideosServices) { }
 
-  async createVideoHandler(req: Request, res: Response) {
+  createVideoHandler = async (req: Request, res: Response) => {
     const data = VideoRequestSchema.parse(req.body);
 
     console.log(`[${data.fileName}] Received request: ${JSON.stringify({
@@ -50,12 +50,12 @@ export class VideosController {
 
   }
 
-  async getVideosMetaHandler(req: Request, res: Response) {
+  getVideosMetaHandler = async (req: Request, res: Response) => {
     const meta = await this.videosServices.getVideosMeta();
     res.json(meta);
   }
 
-  async deleteVideosMetaHandler(req: Request, res: Response) {
+  deleteVideosMetaHandler = async (req: Request, res: Response) => {
     const { fileName } = req.body;
 
     const response = await this.videosServices.deleteVideosMeta(fileName);
@@ -68,7 +68,7 @@ export class VideosController {
     return res.json({ message: 'Deleted' });
   }
 
-  async createRawAssetsHandler(req: Request, res: Response) {
+  createRawAssetsHandler = async (req: Request, res: Response) => {
     const data = RawAssetsRequestSchema.parse(req.body);
 
     console.log(`[${data.fileName}] Received create-raw-assets request: ${JSON.stringify({
