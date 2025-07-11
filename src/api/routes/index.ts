@@ -18,12 +18,12 @@ router.use(
   }),
   serveIndex(PUBLIC_DIR, { icons: true }) as any
 );
-router.get('/api/health', (req: Request, res: Response) => {
-  res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
-});
 router.use('/videos', videosRouter)
 router.use('/images', imagesRouter)
 router.use('/api', processRouter);
+router.get('/api/health', (req: Request, res: Response) => {
+  res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
+});
 
 
 
