@@ -7,7 +7,7 @@
     "dev": "tsnd --env-file=.env --respawn --transpile-only --exit-child -r tsconfig-paths/register src/api/server.ts",
     "build": "swc src -d dist --copy-files",
     "build:watch": "swc src -d dist --copy-files --watch",
-    "start": "node --env-file=.env dist/src/api/server.js",
+    "start": "node dist/src/api/server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
