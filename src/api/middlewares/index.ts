@@ -6,8 +6,16 @@ export const handleGlobalRequestExceptions: ErrorRequestHandler = (err, req, res
   res.status(500).json({ error: err.message });
 }
 
+const authorizedPaths = [
+  '/',
+  '/files',
+  '/texts',
+  '/api/process-message',
+  '/favicon.ico',
+]
+
 export const handleAuthMiddleware: RequestHandler = (req, res, next) => {
-  if (req.path === '/' || req.path.startsWith('/files') || req.path.startsWith('/texts') || req.path.startsWith('/api/process-message')) {
+  if (authorizedPaths.includes(req.path)) {
     return next();
   }
 
