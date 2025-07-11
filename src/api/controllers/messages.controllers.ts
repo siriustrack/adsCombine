@@ -41,8 +41,10 @@ export class MessagesController {
 
       logger.info('Received /process-message request', { messageCount: messages.length });
 
-      const response = await this.messagesService.processMessages({ messages, host: req.get('host')!, protocol: req.protocol });
-      
+      const messageContext = { messages, host: req.get('host')!, protocol: req.protocol };
+
+      const response = await this.messagesService.processMessages(messageContext);
+
       return res.status(200).json(response);
     } catch (error: any) {
       if (error instanceof ZodError) {
