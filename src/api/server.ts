@@ -5,8 +5,8 @@ import ffmpeg from 'fluent-ffmpeg';
 import morgan from 'morgan';
 import { env } from '@config/env';
 import logger from 'lib/logger';
-import router from 'api/routes/messages.routes';
 import { handleAuthMiddleware, handleGlobalRequestExceptions } from './middlewares';
+import router from './routes';
 
 ffmpeg.setFfprobePath(ffprobeInstaller.path);
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
