@@ -7,7 +7,6 @@ export const handleGlobalRequestExceptions: ErrorRequestHandler = (err, req, res
 }
 
 const authorizedPaths = [
-  '/',
   '/files',
   '/texts',
   '/api/process-message',
@@ -15,9 +14,11 @@ const authorizedPaths = [
 ]
 
 export const handleAuthMiddleware: RequestHandler = (req, res, next) => {
-  if (authorizedPaths.includes(req.path)) {
+  if (authorizedPaths.some(path => req.path.startsWith(path))) {
     return next();
   }
+
+  console.log(`Skipping auth for path: ${req.path}`);
 
   const auth = req.headers.authorization;
   if (!auth?.startsWith('Bearer ')) {
