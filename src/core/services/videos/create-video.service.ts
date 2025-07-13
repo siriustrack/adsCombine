@@ -118,7 +118,7 @@ export class CreateVideoService {
 
     const { value: stats, error } = await wrapPromiseResult(fs.stat(outputPath));
 
-    if (error) {
+    if (error || !stats) {
       logger.error(error);
       return;
     }
@@ -156,10 +156,10 @@ export class CreateVideoService {
 
       const { value: response, error: fetchError } = await wrapPromiseResult(fetch(videos[i].url));
 
-      if (fetchError || !response.ok) {
+      if (fetchError || !response?.ok) {
         return errResult(
           new Error(
-            `Failed to download video ${i} from ${videos[i].url}: ${response.status} ${response.statusText}`
+            `Failed to download video ${i} from ${videos[i].url}: ${response?.status} ${response?.statusText}`
           )
         );
       }
