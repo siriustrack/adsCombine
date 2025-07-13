@@ -38,16 +38,6 @@ export interface Service<TInput = unknown, TOutput = unknown> {
 }
 
 /**
- * Utility type para extrair o tipo de input de um serviço
- */
-export type ServiceInput<T> = T extends Service<infer TInput, unknown> ? TInput : never;
-
-/**
- * Utility type para extrair o tipo de output de um serviço
- */
-export type ServiceOutput<T> = T extends Service<unknown, infer TOutput> ? TOutput : never;
-
-/**
  * Response type para Express
  */
 type ExpressResponse = {
