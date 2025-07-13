@@ -8,8 +8,7 @@ const envSchema = z.object({
   PORT: z.coerce.number().default(3000),
   PROCESSING_CONCURRENCY: z.coerce.number().default(5),
   STABILITY_API_KEY: z.string().min(1),
-  TOKEN: z.string().min(1)
+  TOKEN: z.string().min(1),
 });
-
 
 export const env = envSchema.parse(process.env);

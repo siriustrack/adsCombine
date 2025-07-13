@@ -1,20 +1,15 @@
-import { ErrorRequestHandler, RequestHandler } from 'express';
+import type { ErrorRequestHandler, RequestHandler } from 'express';
 import logger from 'lib/logger';
 
-export const handleGlobalRequestExceptions: ErrorRequestHandler = (err, req, res, next) => {
+export const handleGlobalRequestExceptions: ErrorRequestHandler = (err, _req, res, _next) => {
   logger.error('Express error:', err);
   res.status(500).json({ error: err.message });
-}
+};
 
-const authorizedPaths = [
-  '/files',
-  '/texts',
-  '/api/process-message',
-  '/favicon.ico',
-]
+const authorizedPaths = ['/files', '/texts', '/api/process-message', '/favicon.ico'];
 
 export const handleAuthMiddleware: RequestHandler = (req, res, next) => {
-  if (authorizedPaths.some(path => req.path.startsWith(path))) {
+  if (authorizedPaths.some((path) => req.path.startsWith(path))) {
     return next();
   }
 
@@ -31,4 +26,4 @@ export const handleAuthMiddleware: RequestHandler = (req, res, next) => {
     return res.status(403).json({ error: 'Forbidden' });
   }
   next();
-}
+};

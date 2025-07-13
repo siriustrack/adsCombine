@@ -1,12 +1,9 @@
-import { MessagesService } from 'core/services/messages.services';
+import { ImagesController } from './images.controllers';
 import { MessagesController } from './messages.controllers';
 import { VideosController } from './videos.controllers';
-import { VideosServices } from '../../core/services/videos.services';
 
-const messagesController = new MessagesController(new MessagesService());
-const videosController = new VideosController(new VideosServices());
+const messagesController = new MessagesController();
+const videosController = new VideosController();
+const imagesController = new ImagesController();
 
-export {
-  messagesController,
-  videosController
-}
+export { messagesController, videosController, imagesController };

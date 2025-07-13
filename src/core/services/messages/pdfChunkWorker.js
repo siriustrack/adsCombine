@@ -3,12 +3,11 @@ import path from 'node:path';
 import { parentPort, workerData } from 'node:worker_threads';
 import sharp from 'sharp';
 
-
 async function preprocessImage(imgPath, preprocessPath) {
   await sharp(imgPath)
     .resize(null, 2000, {
       withoutEnlargement: false,
-      kernel: sharp.kernel.lanczos3
+      kernel: sharp.kernel.lanczos3,
     })
     .grayscale()
     .normalize()
@@ -17,16 +16,16 @@ async function preprocessImage(imgPath, preprocessPath) {
     .toFile(preprocessPath);
 }
 
-async function performOCR(preprocessPath, pageFile){
+async function performOCR(preprocessPath, pageFile) {
   let text = '';
   const psmModes = [1, 3, 6];
 
   for (const psmMode of psmModes) {
     try {
-      text = execSync(
-        `tesseract "${preprocessPath}" stdout -l por --oem 1 --psm ${psmMode}`,
-        { encoding: 'utf-8', timeout: 15000 }
-      );
+      text = execSync(`tesseract "${preprocessPath}" stdout -l por --oem 1 --psm ${psmMode}`, {
+        encoding: 'utf-8',
+        timeout: 15000,
+      });
 
       if (text && text.trim().length >= 50) {
         break;
@@ -71,9 +70,8 @@ async function processChunk() {
   sortOcrResults(ocrResults);
 
   if (parentPort) {
-    parentPort.postMessage(ocrResults.map(result => result.text));
+    parentPort.postMessage(ocrResults.map((result) => result.text));
   }
 }
-
 
 processChunk();

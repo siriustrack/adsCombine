@@ -1,75 +1,71 @@
-import { MessagesService } from 'core/services/messages.services';
-import { Request, Response } from 'express';
-import { z, ZodError } from 'zod';
+import { deleteTextsService, processMessagesService } from '@core/services/messages';
+import { wrapPromiseResult } from '@lib/result.types';
+import type { Request, Response } from 'express';
+import { type ZodError, z } from 'zod';
 import logger from '../../lib/logger';
 
-const FileInfoSchema = z.object({
-  fileId: z.string(),
-  url: z.url(),
-  mimeType: z.string(),
-  fileType: z.enum(['txt', 'pdf', 'jpeg', 'png', 'jpg', 'docx', 'image']),
-}).loose();
+const FileInfoSchema = z
+  .object({
+    fileId: z.string(),
+    url: z.url(),
+    mimeType: z.string(),
+    fileType: z.enum(['txt', 'pdf', 'jpeg', 'png', 'jpg', 'docx', 'image']),
+  })
+  .loose();
 
 const BodySchema = z.object({
   content: z.string().optional(),
   files: z.array(FileInfoSchema).optional(),
 });
 
-const MessageSchema = z.object({
-  conversationId: z.string(),
-  body: BodySchema
-}).loose();
+const MessageSchema = z
+  .object({
+    conversationId: z.string(),
+    body: BodySchema,
+  })
+  .loose();
 
 const ProcessMessageSchema = z.array(MessageSchema);
 export type ProcessMessage = z.infer<typeof ProcessMessageSchema>;
 
-const DeleteTextsBodySchema = z.object({
-  filename: z.string().optional(),
-  conversationId: z.string().optional(),
-}).strict();
+const DeleteTextsBodySchema = z
+  .object({
+    filename: z.string().optional(),
+    conversationId: z.string().optional(),
+  })
+  .strict();
 export type DeleteTextsBody = z.infer<typeof DeleteTextsBodySchema>;
 
 export class MessagesController {
-
-  constructor(private readonly messagesService: MessagesService) { }
-
   processMessagesHandler = async (req: Request, res: Response) => {
-    try {
-      const rawMessages = Array.isArray(req.body) ? req.body : [req.body];
+    const rawMessages = Array.isArray(req.body) ? req.body : [req.body];
 
-      const messages = ProcessMessageSchema.parse(rawMessages);
+    const { value: messages, error } = await wrapPromiseResult<ProcessMessage, ZodError>(
+      ProcessMessageSchema.parseAsync(rawMessages)
+    );
 
-      logger.info('Received /process-message request', { messageCount: messages.length });
-
-      const messageContext = { messages, host: req.get('host')!, protocol: req.protocol };
-
-
-      const response = await this.messagesService.processMessages(messageContext);
-
-      return res.status(200).json(response);
-    } catch (error: any) {
-      if (error instanceof ZodError) {
-        logger.error('Validation error for /process-message', { errors: error.issues });
-        return res.status(400).json({ error: 'Invalid request body', details: error.issues });
-      }
-      logger.error('Error in /process-message handler', { error: error.message });
-      return res.status(500).json({ error: 'Internal server error', message: error.message });
+    if (error) {
+      logger.error('Validation error for /process-message', { errors: error.issues });
+      return res.status(400).json({ error: 'Invalid request body', details: error.issues });
     }
-  }
+
+    logger.info('Received /process-message request', { messageCount: messages.length });
+
+    const messageContext = { messages, host: req.get('host')!, protocol: req.protocol };
+
+    const response = await processMessagesService.execute(messageContext);
+
+    return res.status(200).json(response);
+  };
 
   deleteTextsHandler = async (req: Request, res: Response) => {
-    try {
-      const body = DeleteTextsBodySchema.parse(req.body);
+    const body = DeleteTextsBodySchema.parse(req.body);
 
-      logger.info('Received /delete-texts request', body);
+    logger.info('Received /delete-texts request', body);
 
-      const response = await this.messagesService.deleteTexts(body);
+    const response = await deleteTextsService.execute(body);
 
-      return res.status(response.status).json(response);
+    return res.status(response.status).json(response);
 
-    } catch (error: any) {
-      logger.error('Error in /delete-texts handler', { error: error.message });
-      return res.status(500).json({ error: 'Internal server error', message: error.message });
-    }
-  }
+  };
 }

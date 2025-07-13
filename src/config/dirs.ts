@@ -1,5 +1,5 @@
-import path from 'node:path';
 import fs from 'node:fs';
+import path from 'node:path';
 
 export const PUBLIC_DIR = path.join(__dirname, '..', '..', 'public');
 export const TEMP_DIR = path.join(__dirname, '..', '..', 'temp');
@@ -13,7 +13,6 @@ export const ASSETS_IMG = path.join(__dirname, '..', '..', 'assets-img');
 export const FEED_DIR = path.join(PUBLIC_DIR, 'feed');
 export const STORY_TARJAS_DIR = path.join(PUBLIC_DIR, 'story_tarjas');
 export const STORY_FULLSCREEN_DIR = path.join(PUBLIC_DIR, 'story_fullscreen');
-
 
 if (!fs.existsSync(PUBLIC_DIR)) fs.mkdirSync(PUBLIC_DIR);
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR);
