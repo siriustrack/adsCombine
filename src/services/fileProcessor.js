@@ -98,6 +98,7 @@ async function processImage(file) {
               ],
             },
           ],
+        }, {
           timeout: 25000, // Timeout específico para a API OpenAI
         });
 
