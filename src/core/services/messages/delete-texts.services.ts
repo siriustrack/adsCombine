@@ -20,7 +20,9 @@ export class DeleteTextsService {
   }> {
     logger.info('Received /delete-texts request', { filename, conversationId });
 
-    const { value: allFiles, error } = await wrapPromiseResult<string[], Error>(fs.readdir(TEXTS_DIR));
+    const { value: allFiles, error } = await wrapPromiseResult<string[], Error>(
+      fs.readdir(TEXTS_DIR)
+    );
 
     if (error) {
       logger.error('Failed to read texts directory', { error: error.message });

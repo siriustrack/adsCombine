@@ -9,4 +9,3 @@ export class ImagesController {
     return handleServiceResult(res, processImageService.execute({ imageUrl, imageData, fileName }));
   }
 }
-

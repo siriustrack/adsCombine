@@ -66,6 +66,5 @@ export class MessagesController {
     const response = await deleteTextsService.execute(body);
 
     return res.status(response.status).json(response);
-
   };
 }

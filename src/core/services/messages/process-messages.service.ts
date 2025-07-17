@@ -296,7 +296,9 @@ export class ProcessMessagesService {
     logger.info('Processing PDF file', { fileId, url });
 
     const timeoutPromise = this.createTimeoutPromise(GLOBAL_TIMEOUT);
-    const { value: response, error } = await wrapPromiseResult<AxiosResponse, Error>(axios.get(url, { responseType: 'arraybuffer' }));
+    const { value: response, error } = await wrapPromiseResult<AxiosResponse, Error>(
+      axios.get(url, { responseType: 'arraybuffer' })
+    );
 
     if (error) {
       logger.error('Error fetching PDF file', {
@@ -307,10 +309,12 @@ export class ProcessMessagesService {
       return errResult(new Error(`Failed to fetch PDF file: ${error.message}`));
     }
 
-
     const buffer = Buffer.from(response.data);
 
-    const { value: extractedText, error: extractionError } = await this.extractDirectTextFromPdf(buffer, fileId);
+    const { value: extractedText, error: extractionError } = await this.extractDirectTextFromPdf(
+      buffer,
+      fileId
+    );
 
     if (extractionError) {
       logger.error('Error extracting text from PDF', { fileId, error: extractionError.message });
@@ -339,15 +343,15 @@ export class ProcessMessagesService {
 
   private createTimeoutPromise(timeout: number): Promise<never> {
     return new Promise<never>((_, reject) => {
-      setTimeout(
-        () => reject(new Error('PDF processing timed out after 60 seconds')),
-        timeout
-      );
+      setTimeout(() => reject(new Error('PDF processing timed out after 60 seconds')), timeout);
     });
   }
 
-  private async extractDirectTextFromPdf(buffer: Buffer, fileId: string): Promise<Result<string, Error>> {
-    const { value: data, error } = await wrapPromiseResult<pdf.Result, Error>(pdf(buffer))
+  private async extractDirectTextFromPdf(
+    buffer: Buffer,
+    fileId: string
+  ): Promise<Result<string, Error>> {
+    const { value: data, error } = await wrapPromiseResult<pdf.Result, Error>(pdf(buffer));
 
     if (error) {
       logger.error('Erro ao extrair texto do PDF', { fileId, error: error.message });
@@ -482,7 +486,11 @@ export class ProcessMessagesService {
     return lineCount;
   }
 
-  private filterOcrLines(allLines: string[], lineCount: Record<string, number>, totalChunks: number): string[] {
+  private filterOcrLines(
+    allLines: string[],
+    lineCount: Record<string, number>,
+    totalChunks: number
+  ): string[] {
     const preservePatterns = this.getPreservePatterns();
     const maxRepetitions = Math.ceil(totalChunks * 0.8);
 
@@ -522,12 +530,13 @@ export class ProcessMessagesService {
   }
 
   private isGenericLine(line: string): boolean {
-    return line.length < 20 && (
-      line.includes('Página') ||
-      line.includes('página') ||
-      Boolean(line.match(/^\d+$/)) ||
-      Boolean(line.match(/^[-\s]+$/)) ||
-      Boolean(line.match(/^\w+\s-\s\d{2}\/\d{2}\/\d{4}\s\d{2}:\d{2}:\d{2}$/))
+    return (
+      line.length < 20 &&
+      (line.includes('Página') ||
+        line.includes('página') ||
+        Boolean(line.match(/^\d+$/)) ||
+        Boolean(line.match(/^[-\s]+$/)) ||
+        Boolean(line.match(/^\w+\s-\s\d{2}\/\d{2}\/\d{4}\s\d{2}:\d{2}:\d{2}$/)))
     );
   }
 
@@ -557,7 +566,12 @@ export class ProcessMessagesService {
     return finalText;
   }
 
-  private logProcessingCompletion(fileId: string, finalText: string, extractedText: string, ocrText: string): void {
+  private logProcessingCompletion(
+    fileId: string,
+    finalText: string,
+    extractedText: string,
+    ocrText: string
+  ): void {
     logger.info('Successfully processed PDF with parallel OCR', {
       fileId,
       finalTextLength: finalText.length,
@@ -568,7 +582,7 @@ export class ProcessMessagesService {
   }
 
   private cleanupTempFiles(...tempObjects: Array<{ removeCallback: () => void }>) {
-    tempObjects.forEach(obj => obj?.removeCallback?.());
+    tempObjects.forEach((obj) => obj?.removeCallback?.());
   }
 
   private processChunk(

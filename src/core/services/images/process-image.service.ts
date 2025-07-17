@@ -49,7 +49,9 @@ export class ProcessImageService implements Service {
 
     const jobId = `img-${fileName}-${Date.now()}`;
     const jobTemp = path.join(TEMP_DIR, jobId);
-    const { error } = await wrapPromiseResult<string | undefined, Error>(fs.mkdir(jobTemp, { recursive: true }));
+    const { error } = await wrapPromiseResult<string | undefined, Error>(
+      fs.mkdir(jobTemp, { recursive: true })
+    );
 
     if (error) {
       console.error(`[${fileName}] Error creating temp directory: ${error.message}`);
@@ -63,7 +65,12 @@ export class ProcessImageService implements Service {
 
     const inputImagePath = path.join(jobTemp, 'input.png');
 
-    const processResult = await this.processInputImage(imageData, imageUrl, inputImagePath, fileName);
+    const processResult = await this.processInputImage(
+      imageData,
+      imageUrl,
+      inputImagePath,
+      fileName
+    );
     if (processResult.error) {
       return processResult;
     }
@@ -78,15 +85,17 @@ export class ProcessImageService implements Service {
     const feedFullyOutputPath = path.join(FEED_FULLY_IMGS_DIR, `${fileName}_feed_fully.png`);
     console.log(`[${fileName}] Creating AI FEED FULLY version (1080x1350)...`);
 
-    const { error: feedFullyError } = await wrapPromiseResult(this.generateStabilityImage({
-      inputPath: inputImagePath,
-      outputPath: feedFullyOutputPath,
-      targetWidth: 1080,
-      targetHeight: 1350,
-      maskType: 'Feed',
-      fileName,
-      jobTemp
-    }));
+    const { error: feedFullyError } = await wrapPromiseResult(
+      this.generateStabilityImage({
+        inputPath: inputImagePath,
+        outputPath: feedFullyOutputPath,
+        targetWidth: 1080,
+        targetHeight: 1350,
+        maskType: 'Feed',
+        fileName,
+        jobTemp,
+      })
+    );
 
     if (feedFullyError) {
       console.error(`[${fileName}] Error creating AI FEED FULLY version:`, feedFullyError);
@@ -99,15 +108,17 @@ export class ProcessImageService implements Service {
     const storyFullyOutputPath = path.join(STORY_FULLY_IMGS_DIR, `${fileName}_story_fully.png`);
     console.log(`[${fileName}] Creating AI STORY FULLY version (1080x1920)...`);
 
-    const { error: storyFullyError } = await wrapPromiseResult(this.generateStabilityImage({
-      inputPath: inputImagePath,
-      outputPath: storyFullyOutputPath,
-      targetWidth: 1080,
-      targetHeight: 1920,
-      maskType: 'Story',
-      fileName,
-      jobTemp
-    }));
+    const { error: storyFullyError } = await wrapPromiseResult(
+      this.generateStabilityImage({
+        inputPath: inputImagePath,
+        outputPath: storyFullyOutputPath,
+        targetWidth: 1080,
+        targetHeight: 1920,
+        maskType: 'Story',
+        fileName,
+        jobTemp,
+      })
+    );
     if (storyFullyError) {
       console.error(`[${fileName}] Error creating AI STORY FULLY version:`, storyFullyError);
       return errResult({
@@ -120,7 +131,9 @@ export class ProcessImageService implements Service {
 
     const originalOutputPath = path.join(IMGS_DIR, `${fileName}_original.png`);
 
-    const { error: copyError } = await wrapPromiseResult(fs.copyFile(inputImagePath, originalOutputPath));
+    const { error: copyError } = await wrapPromiseResult(
+      fs.copyFile(inputImagePath, originalOutputPath)
+    );
     if (copyError) {
       console.error(`[${fileName}] Error copying original file:`, copyError);
       return errResult({
@@ -130,7 +143,9 @@ export class ProcessImageService implements Service {
     }
     console.log(`[${fileName}] Original image saved to ${originalOutputPath}`);
 
-    const { error: cleanupError } = await wrapPromiseResult(fs.rm(jobTemp, { recursive: true, force: true }));
+    const { error: cleanupError } = await wrapPromiseResult(
+      fs.rm(jobTemp, { recursive: true, force: true })
+    );
     if (cleanupError) {
       console.error(`[${fileName}] Error cleaning temp directory:`, cleanupError);
       // Continue despite cleanup error
@@ -161,14 +176,21 @@ export class ProcessImageService implements Service {
     });
   }
 
-  private async processInputImage(imageData: string | undefined, imageUrl: string | undefined, inputImagePath: string, fileName: string): Promise<Result<void, { status: number; message: string }>> {
+  private async processInputImage(
+    imageData: string | undefined,
+    imageUrl: string | undefined,
+    inputImagePath: string,
+    fileName: string
+  ): Promise<Result<void, { status: number; message: string }>> {
     if (imageData) {
       console.log(`[${fileName}] Processing base64 image data...`);
 
       const base64Data = imageData.replace(/^data:image\/[a-zA-Z]+;base64,/, '');
       const imageBuffer = Buffer.from(base64Data, 'base64');
 
-      const { error: writeError } = await wrapPromiseResult(fs.writeFile(inputImagePath, imageBuffer));
+      const { error: writeError } = await wrapPromiseResult(
+        fs.writeFile(inputImagePath, imageBuffer)
+      );
       if (writeError) {
         console.error(`[${fileName}] Error writing base64 image:`, writeError);
         return errResult({
@@ -190,14 +212,18 @@ export class ProcessImageService implements Service {
       }
 
       if (!response!.ok) {
-        console.error(`[${fileName}] Image download failed: ${response!.status} ${response!.statusText}`);
+        console.error(
+          `[${fileName}] Image download failed: ${response!.status} ${response!.statusText}`
+        );
         return errResult({
           status: 500,
           message: `Failed to download image: ${response!.status} ${response!.statusText}`,
         });
       }
 
-      const { value: arrayBuffer, error: bufferError } = await wrapPromiseResult(response!.arrayBuffer());
+      const { value: arrayBuffer, error: bufferError } = await wrapPromiseResult(
+        response!.arrayBuffer()
+      );
       if (bufferError) {
         console.error(`[${fileName}] Error reading image buffer:`, bufferError);
         return errResult({
@@ -208,7 +234,9 @@ export class ProcessImageService implements Service {
 
       const imageBuffer = Buffer.from(arrayBuffer!);
 
-      const { error: writeError } = await wrapPromiseResult(fs.writeFile(inputImagePath, imageBuffer));
+      const { error: writeError } = await wrapPromiseResult(
+        fs.writeFile(inputImagePath, imageBuffer)
+      );
       if (writeError) {
         console.error(`[${fileName}] Error writing downloaded image:`, writeError);
         return errResult({
@@ -222,7 +250,10 @@ export class ProcessImageService implements Service {
     return okResult(undefined);
   }
 
-  private async createBasicVersions(inputImagePath: string, fileName: string): Promise<Result<void, { status: number; message: string }>> {
+  private async createBasicVersions(
+    inputImagePath: string,
+    fileName: string
+  ): Promise<Result<void, { status: number; message: string }>> {
     const feedOutputPath = path.join(FEED_IMGS_DIR, `${fileName}_feed.png`);
     console.log(`[${fileName}] Creating FEED version (1080x1350)...`);
 
@@ -292,8 +323,23 @@ export class ProcessImageService implements Service {
     return okResult(undefined);
   }
 
-  private async generateStabilityImage(
-    { inputPath, outputPath, targetWidth, targetHeight, maskType, fileName, jobTemp }: { inputPath: string; outputPath: string; targetWidth: number; targetHeight: number; maskType: string; fileName: string; jobTemp: string }) {
+  private async generateStabilityImage({
+    inputPath,
+    outputPath,
+    targetWidth,
+    targetHeight,
+    maskType,
+    fileName,
+    jobTemp,
+  }: {
+    inputPath: string;
+    outputPath: string;
+    targetWidth: number;
+    targetHeight: number;
+    maskType: string;
+    fileName: string;
+    jobTemp: string;
+  }) {
     const maxPixels = 1048576;
     const aspectRatio = targetWidth / targetHeight;
 
@@ -317,7 +363,13 @@ export class ProcessImageService implements Service {
 
     const maskPath = path.join(jobTemp, `mask_${aiWidth}x${aiHeight}.png`);
 
-    const { error: maskError } = await this.resizeMaskForAI(originalMaskPath, maskPath, aiWidth, aiHeight, fileName);
+    const { error: maskError } = await this.resizeMaskForAI(
+      originalMaskPath,
+      maskPath,
+      aiWidth,
+      aiHeight,
+      fileName
+    );
     if (maskError) {
       console.error(`[${fileName}] Error resizing mask:`, maskError);
       throw new Error(`Failed to resize mask: ${maskError}`);
@@ -327,18 +379,34 @@ export class ProcessImageService implements Service {
 
     const imageSize = Math.min(aiWidth, aiHeight, 1024);
 
-    const { error: canvasError } = await this.createCanvasForAI(inputPath, canvasPath, imageSize, aiWidth, aiHeight, fileName);
+    const { error: canvasError } = await this.createCanvasForAI(
+      inputPath,
+      canvasPath,
+      imageSize,
+      aiWidth,
+      aiHeight,
+      fileName
+    );
     if (canvasError) {
       console.error(`[${fileName}] Error creating canvas:`, canvasError);
       throw new Error(`Failed to create canvas: ${canvasError}`);
     }
 
-    const { value: form, error: formError } = await this.prepareFormData(canvasPath, maskPath, fileName);
+    const { value: form, error: formError } = await this.prepareFormData(
+      canvasPath,
+      maskPath,
+      fileName
+    );
     if (formError) {
       throw formError;
     }
 
-    const { value: imageBuffer, error: stabilityError } = await this.callStabilityAPI(form, aiWidth, aiHeight, fileName);
+    const { value: imageBuffer, error: stabilityError } = await this.callStabilityAPI(
+      form,
+      aiWidth,
+      aiHeight,
+      fileName
+    );
     if (stabilityError) {
       console.error(`[${fileName}] Error calling Stability AI:`, stabilityError);
       throw new Error(`Failed to call Stability AI: ${stabilityError}`);
@@ -355,7 +423,13 @@ export class ProcessImageService implements Service {
         throw new Error(`Failed to write temp AI file: ${writeError}`);
       }
 
-      const { error: upscaleError } = await this.upscaleAIResult(tempAiPath, outputPath, targetWidth, targetHeight, fileName);
+      const { error: upscaleError } = await this.upscaleAIResult(
+        tempAiPath,
+        outputPath,
+        targetWidth,
+        targetHeight,
+        fileName
+      );
       if (upscaleError) {
         console.error(`[${fileName}] Error upscaling AI result:`, upscaleError);
         throw new Error(`Failed to upscale AI result: ${upscaleError}`);
@@ -369,23 +443,30 @@ export class ProcessImageService implements Service {
     }
 
     console.log(`[${fileName}] AI ${targetWidth}x${targetHeight} version saved successfully`);
-  };
+  }
 
-  private async callStabilityAPI(form: FormData, aiWidth: number, aiHeight: number, fileName: string): Promise<Result<Buffer, Error>> {
+  private async callStabilityAPI(
+    form: FormData,
+    aiWidth: number,
+    aiHeight: number,
+    fileName: string
+  ): Promise<Result<Buffer, Error>> {
     console.log(
       `[${fileName}] Sending outpainting request to Stability AI API for ${aiWidth}x${aiHeight} (${aiWidth * aiHeight} pixels)...`
     );
 
-    const { value: response, error: fetchError } = await wrapPromiseResult(fetch('https://api.stability.ai/v2beta/stable-image/edit/inpaint', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.STABILITY_API_KEY}`,
-        Accept: 'image/*',
-        ...form.getHeaders(),
-      },
-      // @ts-ignore - FormData compatibility issue with fetch types
-      body: form,
-    }));
+    const { value: response, error: fetchError } = await wrapPromiseResult(
+      fetch('https://api.stability.ai/v2beta/stable-image/edit/inpaint', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${process.env.STABILITY_API_KEY}`,
+          Accept: 'image/*',
+          ...form.getHeaders(),
+        },
+        // @ts-ignore - FormData compatibility issue with fetch types
+        body: form,
+      })
+    );
 
     if (fetchError) {
       console.error(`[${fileName}] Error calling Stability AI:`, fetchError);
@@ -401,7 +482,9 @@ export class ProcessImageService implements Service {
       return errResult(new Error(`Stability AI message: ${response!.status} ${errorMessage}`));
     }
 
-    const { value: arrayBuffer, error: bufferError } = await wrapPromiseResult(response!.arrayBuffer());
+    const { value: arrayBuffer, error: bufferError } = await wrapPromiseResult(
+      response!.arrayBuffer()
+    );
     if (bufferError) {
       console.error(`[${fileName}] Error reading response buffer:`, bufferError);
       return errResult(new Error(`Failed to read response buffer: ${bufferError}`));
@@ -415,7 +498,13 @@ export class ProcessImageService implements Service {
     return okResult(imageBuffer);
   }
 
-  private async resizeMaskForAI(originalMaskPath: string, maskPath: string, aiWidth: number, aiHeight: number, fileName: string): Promise<Result<void, Error>> {
+  private async resizeMaskForAI(
+    originalMaskPath: string,
+    maskPath: string,
+    aiWidth: number,
+    aiHeight: number,
+    fileName: string
+  ): Promise<Result<void, Error>> {
     const resizeMaskPromise = new Promise<void>((resolve, reject) => {
       ffmpeg(originalMaskPath)
         .outputOptions([`-vf scale=${aiWidth}:${aiHeight}`, '-vframes 1'])
@@ -442,7 +531,14 @@ export class ProcessImageService implements Service {
     return okResult(undefined);
   }
 
-  private async createCanvasForAI(inputPath: string, canvasPath: string, imageSize: number, aiWidth: number, aiHeight: number, fileName: string): Promise<Result<void, Error>> {
+  private async createCanvasForAI(
+    inputPath: string,
+    canvasPath: string,
+    imageSize: number,
+    aiWidth: number,
+    aiHeight: number,
+    fileName: string
+  ): Promise<Result<void, Error>> {
     const createCanvasPromise = new Promise<void>((resolve, reject) => {
       ffmpeg(inputPath)
         .outputOptions([
@@ -474,7 +570,13 @@ export class ProcessImageService implements Service {
     return okResult(undefined);
   }
 
-  private async upscaleAIResult(tempAiPath: string, outputPath: string, targetWidth: number, targetHeight: number, fileName: string): Promise<Result<void, Error>> {
+  private async upscaleAIResult(
+    tempAiPath: string,
+    outputPath: string,
+    targetWidth: number,
+    targetHeight: number,
+    fileName: string
+  ): Promise<Result<void, Error>> {
     const upscalePromise = new Promise<void>((resolve, reject) => {
       ffmpeg(tempAiPath)
         .outputOptions([`-vf scale=${targetWidth}:${targetHeight}`, '-vframes 1'])
@@ -501,10 +603,16 @@ export class ProcessImageService implements Service {
     return okResult(undefined);
   }
 
-  private async prepareFormData(canvasPath: string, maskPath: string, fileName: string): Promise<Result<FormData, Error>> {
+  private async prepareFormData(
+    canvasPath: string,
+    maskPath: string,
+    fileName: string
+  ): Promise<Result<FormData, Error>> {
     const form = new FormData();
 
-    const { value: canvasStat, error: canvasStatError } = await wrapPromiseResult(fs.stat(canvasPath));
+    const { value: canvasStat, error: canvasStatError } = await wrapPromiseResult(
+      fs.stat(canvasPath)
+    );
     if (canvasStatError) {
       console.error(`[${fileName}] Error getting canvas stats:`, canvasStatError);
       return errResult(new Error(`Failed to get canvas stats: ${canvasStatError}`));

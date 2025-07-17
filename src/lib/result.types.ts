@@ -24,5 +24,5 @@ export const errResult = <E>(error: E): Result<never, E> => {
 };
 
 export const okResult = <T>(value: T): Result<T, never> => {
-  return { value, error: null as never};
+  return { value, error: null as never };
 };

@@ -35,7 +35,7 @@ export class CreateRawAssetsService {
   constructor(
     private videosMeta: VideoMeta[],
     private webhookService: WebhookService
-  ) { }
+  ) {}
 
   async execute({ extension, fileName, videos, webhookDestination }: RawAssetsRequestBody) {
     const jobId = `assets-${fileName}-${Date.now()}`;
@@ -66,10 +66,7 @@ export class CreateRawAssetsService {
       return;
     }
 
-    const {
-      value,
-      error: probeError
-    } = await this.probeRawAssetVideos(videos, jobTemp, fileName);
+    const { value, error: probeError } = await this.probeRawAssetVideos(videos, jobTemp, fileName);
 
     if (probeError) {
       logger.error(probeError);

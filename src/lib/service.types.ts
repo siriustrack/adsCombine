@@ -20,10 +20,10 @@ export interface ServiceError {
 
 /**
  * Interface base para todos os serviços da aplicação
- * 
+ *
  * @template TInput - Tipo dos dados de entrada
  * @template TOutput - Tipo dos dados de saída (apenas a propriedade `data`)
- * 
+ *
  * @example
  * ```typescript
  * class MyService implements Service<{ id: string }, { name: string }> {
@@ -76,10 +76,10 @@ export async function handleServiceResult<T>(
   servicePromise: Promise<Result<ServiceSuccess<T>, ServiceError>>
 ) {
   const result = await servicePromise;
-  
+
   if (result.error) {
     return sendErrorResponse(res, result.error);
   }
-  
+
   return sendSuccessResponse(res, result.value!);
 }

@@ -21,7 +21,7 @@ export class CreateVideoService {
   constructor(
     private videosMeta: VideoMeta[],
     private webhookService: WebhookService
-  ) { }
+  ) {}
 
   async execute({
     bitrate,
@@ -46,7 +46,11 @@ export class CreateVideoService {
     console.log(`[${fileName}] Created temp directory at ${jobTemp}`);
 
     console.log(`[${fileName}] Starting SEQUENTIAL download of ${videos.length} videos...`);
-    const { value: downloadedVideos, error: downloadError } = await this.downloadVideos(videos, jobTemp, fileName);
+    const { value: downloadedVideos, error: downloadError } = await this.downloadVideos(
+      videos,
+      jobTemp,
+      fileName
+    );
 
     if (downloadError) {
       logger.error(downloadError);
@@ -66,7 +70,7 @@ export class CreateVideoService {
     if (warnings.length) {
       console.warn(`[${fileName}] Warnings: ${warnings.join('; ')}`);
       await this.removeTempDirectory(jobTemp, fileName);
-      return
+      return;
     }
 
     console.log(`[${fileName}] Standardizing videos to ${width}x${height} in correct order...`);
@@ -132,7 +136,6 @@ export class CreateVideoService {
     this.videosMeta.push({ webhookDestination, fileName, extension, width, height, downloadUrl });
   }
 
-
   private async removeTempDirectory(jobTemp: string, fileName: string): Promise<void> {
     const { error } = await wrapPromiseResult<void, Error>(
       fs.rm(jobTemp, { recursive: true, force: true })
@@ -164,23 +167,23 @@ export class CreateVideoService {
         );
       }
 
-      const { error } = await wrapPromiseResult<void, Error>(new Promise<void>((resolve, reject) => {
-        const dest = createWriteStream(outPath);
-        Readable.fromWeb(response.body as ReadableStream).pipe(dest);
-        dest.on('finish', () => {
-          console.log(`[${fileName}] ✅ Downloaded video ${i} -> ${outPath}`);
-          downloadedVideos.push({ index: i, path: outPath });
-          resolve();
-        });
-        dest.on('error', reject);
-      }));
-
+      const { error } = await wrapPromiseResult<void, Error>(
+        new Promise<void>((resolve, reject) => {
+          const dest = createWriteStream(outPath);
+          Readable.fromWeb(response.body as ReadableStream).pipe(dest);
+          dest.on('finish', () => {
+            console.log(`[${fileName}] ✅ Downloaded video ${i} -> ${outPath}`);
+            downloadedVideos.push({ index: i, path: outPath });
+            resolve();
+          });
+          dest.on('error', reject);
+        })
+      );
 
       if (error) {
         console.error(`[${fileName}] Error downloading video ${i}: ${error.message}`);
         return errResult(new Error(`Failed to download video ${i}: ${error.message}`));
       }
-
     }
 
     return okResult(downloadedVideos);
@@ -309,53 +312,57 @@ export class CreateVideoService {
         `[${fileName}] Starting standardization of video ${inputVideo.originalIndex} (position ${i}) (${inputVideo.width}x${inputVideo.height}) to ${width}x${height}...`
       );
 
-      const { error } = await wrapPromiseResult<void, Error>(new Promise<void>((resolve, reject) => {
-        const command = ffmpeg(inputVideo.path)
-          .outputOptions([
-            `-vf scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`,
-            '-c:v libx264',
-            '-preset medium',
-            '-crf 18',
-            '-c:a aac',
-            '-b:a 320k',
-            '-ar 48000',
-            '-ac 2',
-          ])
-          .output(standardizedPath)
-          .on('start', () => {
-            console.log(
-              `[${fileName}] FFmpeg standardization of video ${inputVideo.originalIndex} (position ${i}) started`
-            );
-          })
-          .on('progress', (progress) => {
-            if (progress.percent) {
+      const { error } = await wrapPromiseResult<void, Error>(
+        new Promise<void>((resolve, reject) => {
+          const command = ffmpeg(inputVideo.path)
+            .outputOptions([
+              `-vf scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`,
+              '-c:v libx264',
+              '-preset medium',
+              '-crf 18',
+              '-c:a aac',
+              '-b:a 320k',
+              '-ar 48000',
+              '-ac 2',
+            ])
+            .output(standardizedPath)
+            .on('start', () => {
               console.log(
-                `[${fileName}] Standardizing video ${inputVideo.originalIndex} (pos ${i}): ${progress.percent.toFixed(2)}% done`
+                `[${fileName}] FFmpeg standardization of video ${inputVideo.originalIndex} (position ${i}) started`
               );
-            }
-          })
-          .on('end', () => {
-            console.log(
-              `[${fileName}] ✅ Standardized video ${inputVideo.originalIndex} (position ${i}) successfully`
-            );
-            standardizedVideos.push(standardizedPath);
-            resolve();
-          })
-          .on('error', (err) => {
-            console.error(
-              `[${fileName}] Error standardizing video ${inputVideo.originalIndex} (position ${i}): ${err.message}`
-            );
-            reject(err);
-          });
+            })
+            .on('progress', (progress) => {
+              if (progress.percent) {
+                console.log(
+                  `[${fileName}] Standardizing video ${inputVideo.originalIndex} (pos ${i}): ${progress.percent.toFixed(2)}% done`
+                );
+              }
+            })
+            .on('end', () => {
+              console.log(
+                `[${fileName}] ✅ Standardized video ${inputVideo.originalIndex} (position ${i}) successfully`
+              );
+              standardizedVideos.push(standardizedPath);
+              resolve();
+            })
+            .on('error', (err) => {
+              console.error(
+                `[${fileName}] Error standardizing video ${inputVideo.originalIndex} (position ${i}): ${err.message}`
+              );
+              reject(err);
+            });
 
-        command.run();
-      }));
+          command.run();
+        })
+      );
 
       if (error) {
         console.error(
           `[${fileName}] Error standardizing video ${inputVideo.originalIndex} (position ${i}): ${error.message}`
         );
-        return errResult(new Error(`Failed to standardize video ${inputVideo.originalIndex}: ${error.message}`));
+        return errResult(
+          new Error(`Failed to standardize video ${inputVideo.originalIndex}: ${error.message}`)
+        );
       }
     }
 
@@ -379,7 +386,9 @@ export class CreateVideoService {
       })
       .join('\n');
 
-    const { error } = await wrapPromiseResult<void, Error>(fs.writeFile(concatFilePath, concatFileContent));
+    const { error } = await wrapPromiseResult<void, Error>(
+      fs.writeFile(concatFilePath, concatFileContent)
+    );
 
     if (error) {
       console.error(`[${fileName}] Error writing concat file: ${error.message}`);
