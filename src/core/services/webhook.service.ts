@@ -1,4 +1,5 @@
 import { wrapPromiseResult } from '@lib/result.types';
+import axios from 'axios';
 
 export class WebhookService {
   async notifyWebhook(
@@ -7,11 +8,7 @@ export class WebhookService {
     fileName: string
   ): Promise<void> {
     const { error, value } = await wrapPromiseResult<Response, Error>(
-      fetch(webhookDestination, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
+      axios.post(webhookDestination, payload)
     );
 
     if (error) {
