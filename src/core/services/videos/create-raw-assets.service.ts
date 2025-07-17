@@ -2,10 +2,10 @@ import { createWriteStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import type { ReadableStream } from 'node:stream/web';
 import logger from '@lib/logger';
 import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types';
 import type { RawAssetsRequestBody } from 'api/controllers/videos.controllers';
+import axios from 'axios';
 import {
   FEED_DIR,
   PUBLIC_DIR,
@@ -119,15 +119,17 @@ export class CreateRawAssetsService {
       Promise.all(
         videos.map(async (v, i) => {
           const outPath = path.join(jobTemp, `${i}.mp4`);
-          const response = await fetch(v.url);
-          if (!response.ok) throw new Error(`Failed to download ${v.url}`);
+          const response = await axios.get<ArrayBuffer>(v.url, {
+            responseType: 'arraybuffer',
+          });
+          if (!response) throw new Error(`Failed to download ${v.url}`);
           return await new Promise<undefined>((resolve, reject) => {
             const dest = createWriteStream(outPath);
-            if (!response.body) {
+            if (!response.data) {
               reject(new Error(`No response body for video ${i}`));
               return;
             }
-            Readable.fromWeb(response.body as ReadableStream).pipe(dest);
+            Readable.from(Buffer.from(response.data)).pipe(dest);
             dest.on('finish', () => {
               console.log(`[${fileName}] Downloaded video ${i} -> ${outPath}`);
               resolve(undefined);
