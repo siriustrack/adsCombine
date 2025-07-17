@@ -13,6 +13,7 @@ import {
 import { env } from '@config/env';
 import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types';
 import type { Service } from '@lib/service.types';
+import axios, { type AxiosResponse } from 'axios';
 import ffmpeg from 'fluent-ffmpeg';
 import FormData from 'form-data';
 
@@ -202,37 +203,20 @@ export class ProcessImageService implements Service {
     } else if (imageUrl) {
       console.log(`[${fileName}] Downloading image from URL...`);
 
-      const { value: response, error: fetchError } = await wrapPromiseResult(fetch(imageUrl));
-      if (fetchError) {
-        console.error(`[${fileName}] Error downloading image:`, fetchError);
+      const { value: response, error: axiosError } = await wrapPromiseResult<
+        AxiosResponse<ArrayBuffer>,
+        Error
+      >(axios.get(imageUrl, { responseType: 'arraybuffer' }));
+
+      if (axiosError) {
+        console.error(`[${fileName}] Error downloading image:`, axiosError);
         return errResult({
           status: 500,
-          message: `Failed to download image: ${fetchError}`,
+          message: `Failed to download image: ${axiosError}`,
         });
       }
 
-      if (!response!.ok) {
-        console.error(
-          `[${fileName}] Image download failed: ${response!.status} ${response!.statusText}`
-        );
-        return errResult({
-          status: 500,
-          message: `Failed to download image: ${response!.status} ${response!.statusText}`,
-        });
-      }
-
-      const { value: arrayBuffer, error: bufferError } = await wrapPromiseResult(
-        response!.arrayBuffer()
-      );
-      if (bufferError) {
-        console.error(`[${fileName}] Error reading image buffer:`, bufferError);
-        return errResult({
-          status: 500,
-          message: `Failed to read image buffer: ${bufferError}`,
-        });
-      }
-
-      const imageBuffer = Buffer.from(arrayBuffer!);
+      const imageBuffer = Buffer.from(response.data);
 
       const { error: writeError } = await wrapPromiseResult(
         fs.writeFile(inputImagePath, imageBuffer)
@@ -455,42 +439,25 @@ export class ProcessImageService implements Service {
       `[${fileName}] Sending outpainting request to Stability AI API for ${aiWidth}x${aiHeight} (${aiWidth * aiHeight} pixels)...`
     );
 
-    const { value: response, error: fetchError } = await wrapPromiseResult(
-      fetch('https://api.stability.ai/v2beta/stable-image/edit/inpaint', {
-        method: 'POST',
+    const { value: response, error: axiosError } = await wrapPromiseResult(
+      axios.post<ArrayBuffer>('https://api.stability.ai/v2beta/stable-image/edit/inpaint', form, {
         headers: {
           Authorization: `Bearer ${process.env.STABILITY_API_KEY}`,
           Accept: 'image/*',
           ...form.getHeaders(),
         },
-        // @ts-ignore - FormData compatibility issue with fetch types
-        body: form,
       })
     );
 
-    if (fetchError) {
-      console.error(`[${fileName}] Error calling Stability AI:`, fetchError);
-      return errResult(new Error(`Stability AI fetch failed: ${fetchError}`));
+    if (axiosError) {
+      console.error(`[${fileName}] Error calling Stability AI:`, axiosError);
+      return errResult(new Error(`Stability AI fetch failed: ${axiosError}`));
     }
 
     console.log(`[${fileName}] Stability AI response status: ${response!.status}`);
 
-    if (!response!.ok) {
-      const { value: errorText, error: textError } = await wrapPromiseResult(response!.text());
-      const errorMessage = textError ? 'Unable to read error details' : errorText;
-      console.error(`[${fileName}] Stability AI error details: ${errorMessage}`);
-      return errResult(new Error(`Stability AI message: ${response!.status} ${errorMessage}`));
-    }
+    const imageBuffer = Buffer.from(response?.data!);
 
-    const { value: arrayBuffer, error: bufferError } = await wrapPromiseResult(
-      response!.arrayBuffer()
-    );
-    if (bufferError) {
-      console.error(`[${fileName}] Error reading response buffer:`, bufferError);
-      return errResult(new Error(`Failed to read response buffer: ${bufferError}`));
-    }
-
-    const imageBuffer = Buffer.from(arrayBuffer!);
     console.log(
       `[${fileName}] Stability AI success, received image buffer of ${imageBuffer.length} bytes`
     );
