@@ -125,7 +125,12 @@ export class ProcessMessagesService {
     const { value: finalText, error } = await wrapPromiseResult<string, Error>(
       Promise.race([
         (async () => {
-          const response = await axios.get(url, { responseType: 'arraybuffer' });
+          const response = await axios.get(url, {
+            responseType: 'arraybuffer',
+            params: {
+              token: process.env.SUPABASE_TOKEN,
+            },
+          });
           const textContent = Buffer.from(response.data).toString('utf-8');
           return sanitize(textContent);
         })(),
@@ -168,7 +173,12 @@ export class ProcessMessagesService {
     const IMAGE_TIMEOUT = 30000;
 
     const { error, value: response } = await wrapPromiseResult<AxiosResponse, Error>(
-      axios.get(url, { responseType: 'arraybuffer' })
+      axios.get(url, {
+        responseType: 'arraybuffer',
+        params: {
+          token: process.env.SUPABASE_TOKEN,
+        },
+      })
     );
 
     if (error) {
@@ -247,7 +257,12 @@ export class ProcessMessagesService {
     const { value: textContent, error } = await wrapPromiseResult<string, Error>(
       Promise.race([
         (async () => {
-          const response = await axios.get(url, { responseType: 'arraybuffer' });
+          const response = await axios.get(url, {
+            responseType: 'arraybuffer',
+            params: {
+              token: process.env.SUPABASE_TOKEN,
+            },
+          });
           const buffer = Buffer.from(response.data);
           const result = await mammoth.extractRawText({ buffer });
           return result.value;
@@ -297,7 +312,7 @@ export class ProcessMessagesService {
 
     const timeoutPromise = this.createTimeoutPromise(GLOBAL_TIMEOUT);
     const { value: response, error } = await wrapPromiseResult<AxiosResponse, Error>(
-      axios.get(url, { responseType: 'arraybuffer' })
+      axios.get(url, { responseType: 'arraybuffer', params: { token: process.env.SUPABASE_TOKEN } })
     );
 
     if (error) {
