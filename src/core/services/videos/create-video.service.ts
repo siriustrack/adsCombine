@@ -2,10 +2,10 @@ import { createWriteStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import type { ReadableStream } from 'node:stream/web';
 import logger from '@lib/logger';
 import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types';
 import type { VideoRequestBody } from 'api/controllers/videos.controllers';
+import axios, { type AxiosError, type AxiosResponse } from 'axios';
 import { PUBLIC_DIR, TEMP_DIR } from 'config/dirs';
 import { env } from 'config/env';
 import ffmpeg from 'fluent-ffmpeg';
@@ -157,12 +157,15 @@ export class CreateVideoService {
       const outPath = path.join(jobTemp, `video_${String(i).padStart(3, '0')}.mp4`);
       console.log(`[${fileName}] Downloading video ${i} from: ${videos[i].url}`);
 
-      const { value: response, error: fetchError } = await wrapPromiseResult(fetch(videos[i].url));
+      const { value: response, error: fetchError } = await wrapPromiseResult<
+        AxiosResponse<ArrayBuffer>,
+        AxiosError
+      >(axios.get(videos[i].url, { responseType: 'arraybuffer' }));
 
-      if (fetchError || !response?.ok) {
+      if (fetchError || !response) {
         return errResult(
           new Error(
-            `Failed to download video ${i} from ${videos[i].url}: ${response?.status} ${response?.statusText}`
+            `Failed to download video ${i} from ${videos[i].url}: ${fetchError?.message} ${fetchError?.response?.status} ${fetchError?.response?.statusText}`
           )
         );
       }
@@ -170,7 +173,7 @@ export class CreateVideoService {
       const { error } = await wrapPromiseResult<void, Error>(
         new Promise<void>((resolve, reject) => {
           const dest = createWriteStream(outPath);
-          Readable.fromWeb(response.body as ReadableStream).pipe(dest);
+          Readable.from(Buffer.from(response.data)).pipe(dest);
           dest.on('finish', () => {
             console.log(`[${fileName}] ✅ Downloaded video ${i} -> ${outPath}`);
             downloadedVideos.push({ index: i, path: outPath });
