@@ -5,7 +5,7 @@ import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import logger from '@lib/logger';
 import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types';
-import type { ProcessMessage } from 'api/controllers/messages.controllers';
+import type { FileInfo, ProcessMessage } from 'api/controllers/messages.controllers';
 import axios, { type AxiosResponse } from 'axios';
 import { TEXTS_DIR } from 'config/dirs';
 import { openaiConfig } from 'config/openai';
@@ -41,10 +41,12 @@ export class ProcessMessagesService {
 
     for (const message of messages) {
       const { body } = message;
-      const { files } = body;
+      const { files, userId } = body;
+
+
 
       if (files && files.length > 0) {
-        const processingPromises = files.map(async (file) => {
+        const processingPromises = files.map(file => this.updateURLForFile(file, userId!)).map(async (file) => {
           let result: Result<string, Error>;
 
           switch (file.fileType) {
@@ -113,6 +115,28 @@ export class ProcessMessagesService {
       filename,
       downloadUrl,
     };
+  }
+
+  updateURLForFile(file: FileInfo, userId: string): FileInfo {
+    const currentUrl = file.url
+    if (currentUrl.includes('/storage/v1/object/public/conversation-files')) {
+      const filePath = currentUrl.split('/storage/v1/object/public/conversation-files/')[1]
+
+
+      const updatedFileInfo = {
+        ...file,
+        url: `${process.env.SUPABASE_GET_FILE_CONTENT_URL}?file_path=${filePath}&user_id=${userId}`,
+      };
+
+      logger.info('Updated file URL for processing', {
+        fileId: file.fileId,
+        originalUrl: currentUrl,
+        updatedUrl: updatedFileInfo.url,
+      });
+
+      return updatedFileInfo
+    }
+    return file;
   }
 
   private async processTxt(file: FileInput): Promise<Result<string, Error>> {
