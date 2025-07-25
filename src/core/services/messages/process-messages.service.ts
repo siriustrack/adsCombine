@@ -648,8 +648,18 @@ export class ProcessMessagesService {
           fileId,
         },
       });
-      worker.on('message', resolve);
+      
+      worker.on('message', (result) => {
+        // Check if the result is an error object
+        if (result && typeof result === 'object' && result.error) {
+          reject(new Error(result.error));
+        } else {
+          resolve(result);
+        }
+      });
+      
       worker.on('error', reject);
+      
       worker.on('exit', (code) => {
         if (code !== 0) {
           reject(new Error(`Worker stopped with exit code ${code}`));
