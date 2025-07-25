@@ -33,7 +33,6 @@ export type ProcessMessage = z.infer<typeof ProcessMessageSchema>;
 
 const DeleteTextsBodySchema = z
   .object({
-    filename: z.string().optional(),
     conversationId: z.string().optional(),
   })
   .strict();
