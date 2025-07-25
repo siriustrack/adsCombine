@@ -102,7 +102,14 @@ export class ProcessMessagesService {
     const conversationId = messages[0].conversationId;
     const filename = `${conversationId}-${Date.now()}.txt`;
 
-    await fs.promises.mkdir(join(TEXTS_DIR, conversationId), { recursive: true });
+    const { error: mkdirError } = await wrapPromiseResult(
+      fs.promises.mkdir(join(TEXTS_DIR, conversationId), { recursive: true })
+    );
+
+    if (mkdirError) {
+      logger.error('Failed to create texts directory', { error: mkdirError, conversationId });
+      return errResult({ status: 500, message: 'Failed to create texts directory' });
+    }
 
     const filePath = path.join(TEXTS_DIR, conversationId, filename);
 
@@ -127,7 +134,7 @@ export class ProcessMessagesService {
 
       const updatedFileInfo = {
         ...file,
-        url: `${process.env.SUPABASE_GET_FILE_CONTENT_URL}?file_path=${filePath}&user_id=${userId}`,
+        url: `${process.env.SUPABASE_GET_FILE_CONTENT_URL}?file_path=${filePath}&user_id=${userId}&token=${process.env.SUPABASE_TOKEN}`,
       };
 
       logger.info('Updated file URL for processing', {
@@ -153,9 +160,6 @@ export class ProcessMessagesService {
         (async () => {
           const response = await axios.get(url, {
             responseType: 'arraybuffer',
-            params: {
-              token: process.env.SUPABASE_TOKEN,
-            },
           });
           const textContent = Buffer.from(response.data).toString('utf-8');
           return sanitize(textContent);
@@ -201,9 +205,6 @@ export class ProcessMessagesService {
     const { error, value: response } = await wrapPromiseResult<AxiosResponse, Error>(
       axios.get(url, {
         responseType: 'arraybuffer',
-        params: {
-          token: process.env.SUPABASE_TOKEN,
-        },
       })
     );
 
@@ -285,9 +286,6 @@ export class ProcessMessagesService {
         (async () => {
           const response = await axios.get(url, {
             responseType: 'arraybuffer',
-            params: {
-              token: process.env.SUPABASE_TOKEN,
-            },
           });
           const buffer = Buffer.from(response.data);
           const result = await mammoth.extractRawText({ buffer });
@@ -338,7 +336,7 @@ export class ProcessMessagesService {
 
     const timeoutPromise = this.createTimeoutPromise(GLOBAL_TIMEOUT);
     const { value: response, error } = await wrapPromiseResult<AxiosResponse, Error>(
-      axios.get(url, { responseType: 'arraybuffer', params: { token: process.env.SUPABASE_TOKEN } })
+      axios.get(url, { responseType: 'arraybuffer' })
     );
 
     if (error) {
@@ -367,17 +365,24 @@ export class ProcessMessagesService {
       return okResult(sanitize(extractedText));
     }
 
-    const ocrResult = await this.performOcrProcessing(buffer, fileId, timeoutPromise);
+    const { value: ocrResult, error: ocrError } = await wrapPromiseResult(
+      this.performOcrProcessing(buffer, fileId, timeoutPromise)
+    );
 
-    if (ocrResult.error) {
-      return ocrResult.error.message.includes('timed out')
-        ? okResult(sanitize(extractedText))
-        : ocrResult;
+    if (ocrError) {
+      logger.error('Error in OCR processing', { fileId, error: ocrError });
+      return errResult(new Error(`Erro no processamento OCR: ${ocrError}`));
     }
 
-    const finalText = this.combineTextResults(extractedText, ocrResult.value, fileId);
+    if (ocrResult!.error) {
+      return ocrResult!.error.message.includes('timed out')
+        ? okResult(sanitize(extractedText))
+        : ocrResult!;
+    }
 
-    this.logProcessingCompletion(fileId, finalText, extractedText, ocrResult.value);
+    const finalText = this.combineTextResults(extractedText, ocrResult!.value!, fileId);
+
+    this.logProcessingCompletion(fileId, finalText, extractedText, ocrResult!.value!);
 
     return okResult(finalText);
   }

@@ -38,9 +38,21 @@ export class DeleteTextsService {
 
     logger.info('Found files to delete', { count: allFiles.length });
 
-    await wrapPromiseResult<void, Error>(
+    const { error: deleteError } = await wrapPromiseResult<void, Error>(
       fs.rmdir(join(TEXTS_DIR, conversationId!), { recursive: true })
-    )
+    );
+
+    if (deleteError) {
+      logger.error('Failed to delete texts directory', { error: deleteError.message });
+
+      return {
+        error: true,
+        status: 500,
+        message: 'Failed to delete texts directory',
+        deletedFiles: [],
+        deletedCount: 0,
+      };
+    }
 
     const response: {
       message: string;
