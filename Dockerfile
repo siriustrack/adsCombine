@@ -50,11 +50,17 @@ RUN groupadd -r appuser && useradd -r -g appuser appuser
 RUN mkdir -p public temp public/texts && \
     chown -R appuser:appuser /app
 
-COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/node_modules ./node_modules
 
-RUN rm -rf node_modules/sharp && \
-    npm install --platform=linux --arch=x64 --ignore-scripts=false --foreground-scripts sharp@0.32.0
+# Set npm config to handle peer dependency conflicts
+RUN npm config set legacy-peer-deps true
+
+# Rebuild Sharp for the current platform without affecting other dependencies
+# If rebuild fails, try reinstalling with legacy peer deps
+RUN npm rebuild sharp --platform=linux --arch=x64 || \
+    (rm -rf node_modules/sharp && \
+     npm install --platform=linux --arch=x64 --ignore-scripts=false --foreground-scripts sharp@0.32.0)
 
 COPY assets-img/ ./assets-img/
 COPY --from=builder /app/dist ./dist
