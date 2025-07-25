@@ -1,7 +1,7 @@
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-import path from 'node:path';
+import path, { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import logger from '@lib/logger';
 import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types';
@@ -102,11 +102,13 @@ export class ProcessMessagesService {
     const conversationId = messages[0].conversationId;
     const filename = `${conversationId}-${Date.now()}.txt`;
 
-    const filePath = path.join(TEXTS_DIR, filename);
+    await fs.promises.mkdir(join(TEXTS_DIR, conversationId), { recursive: true });
+
+    const filePath = path.join(TEXTS_DIR, conversationId, filename);
 
     const sanitizedText = sanitizeText(allExtractedText.trim());
     fs.writeFileSync(filePath, sanitizedText);
-    const downloadUrl = `${protocol}://${host}/texts/${filename}`;
+    const downloadUrl = `${protocol}://${host}/texts/${conversationId}/${filename}`;
 
     return {
       conversationId,
