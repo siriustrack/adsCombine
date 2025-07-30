@@ -12,11 +12,14 @@ import { openaiConfig } from 'config/openai';
 import mammoth from 'mammoth';
 import { OpenAI } from 'openai';
 import pdf from 'pdf-parse';
-// biome-ignore lint/correctness/noUnusedImports: <explanation>
-import _ from 'sharp'; // <--- ADICIONE ESTA LINHA
+import sharp from 'sharp'; // Substitua a linha "import _ from 'sharp';" por esta
 import tmp from 'tmp';
 import { sanitize } from 'utils/sanitize';
 import { sanitizeText } from 'utils/textSanitizer';
+
+// Force sharp to initialize its native bindings in the main thread
+// before any workers are created. This prevents the race condition.
+sharp.cache(false);
 
 interface FileInput {
   fileId: string;
@@ -340,34 +343,29 @@ export class ProcessMessagesService {
     }
 
     // Analyze PDF structure and visual content upfront
-    const { tempPdf, tempDir, pages, hasVisualContent } = await this.analyzePdfContent(
-      buffer,
-      fileId
-    );
+    const { tempPdf, totalPages, hasVisualContent } = await this.analyzePdfContent(buffer, fileId);
 
     if (this.shouldSkipOcr(extractedText, hasVisualContent, fileId)) {
-      this.cleanupTempFiles(tempPdf, tempDir);
+      this.cleanupTempFiles(tempPdf);
       return okResult(sanitize(extractedText));
     }
-
     // Use existing converted pages for OCR processing
-    if (pages.length === 0) {
-      this.cleanupTempFiles(tempPdf, tempDir);
+    if (totalPages === 0) {
+      this.cleanupTempFiles(tempPdf);
       return okResult(sanitize(extractedText));
     }
 
-    const chunks = this.createProcessingChunks(pages, fileId);
-    const preprocessDir = tmp.dirSync({ unsafeCleanup: true });
+    const chunks = this.createProcessingChunks(totalPages, fileId);
 
     const ocrPromise = Promise.all(
-      chunks.map((chunk) => this.processChunk(chunk, fileId, tempDir.name, preprocessDir.name))
+      chunks.map((chunk) => this.processChunk(chunk, fileId, tempPdf.name))
     );
 
     const { value: ocrResults, error: ocrError } = await wrapPromiseResult<string[][], Error>(
       Promise.race([ocrPromise, timeoutPromise])
     );
 
-    this.cleanupTempFiles(tempPdf, tempDir, preprocessDir);
+    this.cleanupTempFiles(tempPdf);
 
     if (ocrError) {
       logger.error('Error in OCR processing', { fileId, error: ocrError });
@@ -473,75 +471,33 @@ export class ProcessMessagesService {
   private async analyzePdfContent(buffer: Buffer, fileId: string) {
     const tempPdf = tmp.fileSync({ postfix: '.pdf' });
     fs.writeFileSync(tempPdf.name, buffer);
-    const tempDir = tmp.dirSync({ unsafeCleanup: true });
+    // O diretório temporário principal não é mais necessário aqui, pois cada worker cuidará do seu.
+    // const tempDir = tmp.dirSync({ unsafeCleanup: true });
 
     try {
-      // Convert PDF to images for both analysis and potential OCR
-      execSync(`pdftoppm -png "${tempPdf.name}" "${path.join(tempDir.name, 'page')}"`);
+      // Apenas obtemos o número de páginas, sem converter
+      const pdfInfoOutput = execSync(`pdfinfo "${tempPdf.name}"`, { encoding: 'utf-8' });
+      const pagesMatch = pdfInfoOutput.match(/Pages:\s*(\d+)/);
+      const totalPages = pagesMatch ? parseInt(pagesMatch[1], 10) : 0;
 
-      const pages = fs
-        .readdirSync(tempDir.name)
-        .filter((f) => f.endsWith('.png'))
-        .sort((a, b) => {
-          const matchA = a.match(/\d+/);
-          const matchB = b.match(/\d+/);
-          const pageNumA = matchA ? parseInt(matchA[0]) : 0;
-          const pageNumB = matchB ? parseInt(matchB[0]) : 0;
-          return pageNumA - pageNumB;
-        });
+      // A análise de conteúdo visual não é mais viável aqui sem as imagens.
+      // Vamos assumir que se o OCR for acionado, há conteúdo visual.
+      // A lógica em `shouldSkipOcr` já lida bem com isso.
+      logger.info('PDF analysis completed', { fileId, totalPages });
 
-      // Analyze visual content from the generated images
-      let hasVisualContent = false;
-
-      if (pages.length > 0) {
-        const maxPagesToAnalyze = Math.min(OCR_SETTINGS.MAX_PAGES_TO_ANALYZE, pages.length);
-        let totalSize = 0;
-        let hasLargeImages = false;
-
-        for (let i = 0; i < maxPagesToAnalyze; i++) {
-          const imagePath = path.join(tempDir.name, pages[i]);
-          const imageStats = fs.statSync(imagePath);
-          totalSize += imageStats.size;
-
-          if (imageStats.size > VISUAL_CONTENT_THRESHOLDS.LARGE_IMAGE) {
-            hasLargeImages = true;
-          }
-        }
-
-        const averageSize = totalSize / maxPagesToAnalyze;
-        hasVisualContent =
-          hasLargeImages ||
-          averageSize > VISUAL_CONTENT_THRESHOLDS.AVERAGE_SIZE ||
-          totalSize > VISUAL_CONTENT_THRESHOLDS.TOTAL_SIZE;
-
-        logger.info('Visual content analysis completed', {
-          fileId,
-          hasVisualContent,
-          averageImageSize: Math.round(averageSize),
-          totalSize,
-          pagesAnalyzed: maxPagesToAnalyze,
-          totalPages: pages.length,
-          hasLargeImages,
-          visualContentThresholds: {
-            largeImageThreshold: `${VISUAL_CONTENT_THRESHOLDS.LARGE_IMAGE / 1000}KB`,
-            averageThreshold: `${VISUAL_CONTENT_THRESHOLDS.AVERAGE_SIZE / 1000}KB`,
-            totalThreshold: `${VISUAL_CONTENT_THRESHOLDS.TOTAL_SIZE / 1000}KB`,
-          },
-        });
-      }
-
-      return { tempPdf, tempDir, pages, hasVisualContent };
+      // Retornamos o caminho do PDF e o total de páginas
+      return { tempPdf, totalPages, hasVisualContent: true }; // Simplificado
     } catch (error) {
-      logger.warn('Failed to analyze PDF content, assuming visual content exists', {
+      logger.warn('Failed to analyze PDF content', {
         fileId,
         error: error instanceof Error ? error.message : String(error),
       });
-      return { tempPdf, tempDir, pages: [], hasVisualContent: true };
+      // Se pdfinfo falhar, não podemos continuar.
+      return { tempPdf, totalPages: 0, hasVisualContent: false };
     }
   }
 
-  private createProcessingChunks(pages: string[], fileId: string): string[][] {
-    const totalPages = pages.length;
+  private createProcessingChunks(totalPages: number, fileId: string): { first: number; last: number }[] {
     logger.info(`PDF com ${totalPages} páginas`, { fileId });
 
     if (totalPages === 0) {
@@ -551,12 +507,12 @@ export class ProcessMessagesService {
 
     const numChunks = Math.min(OCR_SETTINGS.MAX_CHUNKS, totalPages, this.MAX_WORKERS);
     const pagesPerChunk = Math.ceil(totalPages / numChunks);
-    const chunks: string[][] = [];
+    const chunks: { first: number; last: number }[] = [];
 
-    for (let i = 0; i < numChunks; i++) {
-      const start = i * pagesPerChunk;
-      const end = Math.min(start + pagesPerChunk, totalPages);
-      chunks.push(pages.slice(start, end));
+    for (let i = 0; i < totalPages; i += pagesPerChunk) {
+      const first = i + 1;
+      const last = Math.min(i + pagesPerChunk, totalPages);
+      chunks.push({ first, last });
     }
 
     logger.info(`Dividindo PDF em ${chunks.length} chunks para processamento paralelo`, {
@@ -696,24 +652,22 @@ export class ProcessMessagesService {
     });
   }
 
-  private cleanupTempFiles(...tempObjects: Array<{ removeCallback: () => void }>) {
+  private cleanupTempFiles(...tempObjects: Array<{ removeCallback: () => void } | undefined>) {
     tempObjects.forEach((obj) => obj?.removeCallback?.());
   }
 
   private processChunk(
-    chunkPages: string[],
+    chunkRange: { first: number; last: number },
     fileId: string,
-    chunkDir: string,
-    preprocessDir: string
+    pdfPath: string
   ): Promise<string[]> {
     return new Promise((resolve, reject) => {
       const workerPath = path.resolve(__dirname, 'pdfChunkWorker.js');
 
       const worker = new Worker(workerPath, {
         workerData: {
-          pageFiles: chunkPages,
-          chunkDir,
-          preprocessDir,
+          pageRange: chunkRange,
+          pdfPath,
           fileId,
         },
       });
