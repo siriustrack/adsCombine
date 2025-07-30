@@ -20,7 +20,30 @@ interface FileInput {
   fileId: string;
   url: string;
   mimeType: string;
+  fileType?: string;
 }
+
+// Configuration constants
+const PROCESSING_TIMEOUTS = {
+  TXT: 10000,
+  IMAGE: 30000,
+  DOCX: 20000,
+  PDF_GLOBAL: 58000,
+  OPENAI: 25000,
+} as const;
+
+const VISUAL_CONTENT_THRESHOLDS = {
+  LARGE_IMAGE: 100000,     // 100KB
+  AVERAGE_SIZE: 50000,     // 50KB
+  TOTAL_SIZE: 120000,      // 120KB
+  MAX_TEXT_FOR_OCR: 50000, // 50KB text threshold
+} as const;
+
+const OCR_SETTINGS = {
+  MAX_PAGES_TO_ANALYZE: 3,
+  MAX_CHUNKS: 5,
+  MAX_REPETITIONS_FACTOR: 0.8,
+} as const;
 
 export class ProcessMessagesService {
   private readonly openai = new OpenAI({ apiKey: openaiConfig.apiKey });
@@ -35,71 +58,125 @@ export class ProcessMessagesService {
     protocol: string;
     host: string;
   }) {
-    let allExtractedText = '';
     const processedFiles: string[] = [];
     const failedFiles: { fileId: string; error: string }[] = [];
+    const extractedTexts: string[] = [];
 
     for (const message of messages) {
       const { body } = message;
       const { files, userId } = body;
 
-
-
       if (files && files.length > 0) {
-        const processingPromises = files.map(file => this.updateURLForFile(file, userId!)).map(async (file) => {
-          let result: Result<string, Error>;
-
-          switch (file.fileType) {
-            case 'txt':
-              result = await this.processTxt(file);
-              break;
-            case 'pdf':
-              result = await this.processPdf(file);
-              break;
-            case 'jpeg':
-            case 'jpg':
-            case 'png':
-            case 'image':
-              result = await this.processImage(file);
-              break;
-            case 'docx':
-              result = await this.processDocx(file);
-              break;
-            default:
-              logger.warn('Unsupported file type, skipping', {
-                fileType: file.fileType,
-                fileId: file.fileId,
-              });
-              result = errResult(new Error('Unsupported file type'));
-          }
-
-          const { value: textContent, error } = result;
-
-          if (error) {
-            logger.error('Failed to process file', { fileId: file.fileId, error: error.message });
-            failedFiles.push({ fileId: file.fileId, error: error.message });
-            return null;
-          }
-
-          processedFiles.push(file.fileId);
-
-          const fileName = path.basename(new URL(file.url).pathname);
-          const header = `## Transcricao do arquivo: ${fileName}:\n\n`;
-
-          return header + textContent;
-        });
-
-        const results = await Promise.all(processingPromises);
-
-        results.forEach((text) => {
-          if (text) {
-            allExtractedText += `${text}\n\n---\n\n`;
+        const results = await this.processFiles(files, userId!);
+        
+        results.forEach((result) => {
+          if (result.success && result.text) {
+            processedFiles.push(result.fileId);
+            extractedTexts.push(result.text);
+          } else if (result.error) {
+            failedFiles.push({ fileId: result.fileId, error: result.error });
           }
         });
       }
     }
 
-    const conversationId = messages[0].conversationId;
+    return this.saveProcessedText(extractedTexts.join('\n\n---\n\n'), messages[0].conversationId, protocol, host, processedFiles, failedFiles);
+  }
+
+  private async processFiles(files: FileInfo[], userId: string) {
+    const processingPromises = files
+      .map(file => this.updateURLForFile(file, userId))
+      .map(async (file) => {
+        const result = await this.processFile(file);
+        
+        if (result.error) {
+          logger.error('Failed to process file', { fileId: file.fileId, error: result.error.message });
+          return { fileId: file.fileId, error: result.error.message, success: false };
+        }
+
+        const fileName = path.basename(new URL(file.url).pathname);
+        const header = `## Transcricao do arquivo: ${fileName}:\n\n`;
+        
+        return { 
+          fileId: file.fileId, 
+          text: header + result.value, 
+          success: true 
+        };
+      });
+
+    return Promise.all(processingPromises);
+  }
+
+  private async processFile(file: FileInput): Promise<Result<string, Error>> {
+    const fileTypeMap = {
+      txt: () => this.processTxt(file),
+      pdf: () => this.processPdf(file),
+      jpeg: () => this.processImage(file),
+      jpg: () => this.processImage(file),
+      png: () => this.processImage(file),
+      image: () => this.processImage(file),
+      docx: () => this.processDocx(file),
+    };
+
+    const processor = fileTypeMap[file.fileType as keyof typeof fileTypeMap];
+    
+    if (!processor) {
+      logger.warn('Unsupported file type, skipping', {
+        fileType: file.fileType,
+        fileId: file.fileId,
+      });
+      return errResult(new Error('Unsupported file type'));
+    }
+
+    return processor();
+  }
+
+  private async processWithTimeout<T>(
+    processor: () => Promise<T>,
+    timeout: number,
+    timeoutError: string,
+    userErrorMessage: string,
+    fileId: string
+  ): Promise<Result<T, Error>> {
+    const { value, error } = await wrapPromiseResult<T, Error>(
+      Promise.race([
+        processor(),
+        new Promise<T>((_, reject) =>
+          setTimeout(() => reject(new Error(timeoutError)), timeout)
+        ),
+      ])
+    );
+
+    if (error) {
+      logger.error('Error processing file', {
+        fileId,
+        error: error.message,
+        stack: error.stack,
+      });
+
+      if (error.message.includes('timed out')) {
+        return errResult(new Error(userErrorMessage));
+      }
+
+      return errResult(error);
+    }
+
+    logger.info('Successfully processed file', {
+      fileId,
+      resultLength: typeof value === 'string' ? value.length : 'N/A',
+    });
+
+    return okResult(value);
+  }
+
+  private async saveProcessedText(
+    allExtractedText: string, 
+    conversationId: string, 
+    protocol: string, 
+    host: string,
+    processedFiles: string[],
+    failedFiles: { fileId: string; error: string }[]
+  ) {
     const filename = `${conversationId}-${Date.now()}.txt`;
 
     const { error: mkdirError } = await wrapPromiseResult(
@@ -112,9 +189,9 @@ export class ProcessMessagesService {
     }
 
     const filePath = path.join(TEXTS_DIR, conversationId, filename);
-
     const sanitizedText = sanitizeText(allExtractedText.trim());
     fs.writeFileSync(filePath, sanitizedText);
+    
     const downloadUrl = `${protocol}://${host}/texts/${conversationId}/${filename}`;
 
     return {
@@ -150,191 +227,84 @@ export class ProcessMessagesService {
 
   private async processTxt(file: FileInput): Promise<Result<string, Error>> {
     const { fileId, url } = file;
-
     logger.info('Processing TXT file', { fileId, url });
 
-    const TXT_TIMEOUT = 10000;
-
-    const { value: finalText, error } = await wrapPromiseResult<string, Error>(
-      Promise.race([
-        (async () => {
-          const response = await axios.get(url, {
-            responseType: 'arraybuffer',
-          });
-          const textContent = Buffer.from(response.data).toString('utf-8');
-          return sanitize(textContent);
-        })(),
-        new Promise<string>((_, reject) =>
-          setTimeout(() => reject(new Error('TXT processing timed out')), TXT_TIMEOUT)
-        ),
-      ])
+    return this.processWithTimeout(
+      async () => {
+        const response = await axios.get(url, { responseType: 'arraybuffer' });
+        const textContent = Buffer.from(response.data).toString('utf-8');
+        return sanitize(textContent);
+      },
+      PROCESSING_TIMEOUTS.TXT,
+      'TXT processing timed out',
+      'O processamento deste arquivo de texto excedeu o tempo limite.',
+      fileId
     );
-
-    if (error) {
-      logger.error('Error processing TXT file', {
-        fileId,
-        error: error.message,
-        stack: error.stack,
-      });
-
-      if (error.message.includes('timed out')) {
-        return errResult(
-          new Error('O processamento deste arquivo de texto excedeu o tempo limite.')
-        );
-      }
-
-      return errResult(error);
-    }
-
-    logger.info('Successfully processed TXT file', {
-      fileId,
-      textLength: finalText.length,
-      processingTime: 'under 10s',
-    });
-
-    return okResult(finalText);
   }
 
   private async processImage(file: FileInput): Promise<Result<string, Error>> {
     const { fileId, url } = file;
-
     logger.info('Processing image file', { fileId, url });
 
-    const IMAGE_TIMEOUT = 30000;
-
-    const { error, value: response } = await wrapPromiseResult<AxiosResponse, Error>(
-      axios.get(url, {
-        responseType: 'arraybuffer',
-      })
-    );
-
-    if (error) {
-      logger.error('Error fetching image file', {
-        fileId,
-        error: error.message,
-        stack: error.stack,
-      });
-      return errResult(new Error(`Failed to fetch image file: ${error.message}`));
-    }
-
-    const imageBuffer = Buffer.from(response.data);
-
-    const { value: description, error: descriptionError } = await wrapPromiseResult<string, Error>(
-      Promise.race([
-        (async () => {
-          const base64Image = imageBuffer.toString('base64');
-          const aiResponse = await this.openai.chat.completions.create(
-            {
-              model: openaiConfig.models.image,
-              messages: [
-                {
-                  role: 'user',
-                  content: [
-                    { type: 'text', text: 'Describe this image in detail. Return in PT_BR.' },
-                    {
-                      type: 'image_url',
-                      image_url: {
-                        url: `data:${file.mimeType};base64,${base64Image}`,
-                      },
+    return this.processWithTimeout(
+      async () => {
+        const response = await axios.get(url, { responseType: 'arraybuffer' });
+        const imageBuffer = Buffer.from(response.data);
+        const base64Image = imageBuffer.toString('base64');
+        
+        const aiResponse = await this.openai.chat.completions.create(
+          {
+            model: openaiConfig.models.image,
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  { type: 'text', text: 'Describe this image in detail. Return in PT_BR.' },
+                  {
+                    type: 'image_url',
+                    image_url: {
+                      url: `data:${file.mimeType};base64,${base64Image}`,
                     },
-                  ],
-                },
-              ],
-            },
-            { timeout: 25000 }
-          );
-          return aiResponse.choices[0].message.content || 'No description generated.';
-        })(),
-        new Promise<string>((_, reject) =>
-          setTimeout(() => reject(new Error('Image processing timed out')), IMAGE_TIMEOUT)
-        ),
-      ])
+                  },
+                ],
+              },
+            ],
+          },
+          { timeout: PROCESSING_TIMEOUTS.OPENAI }
+        );
+        
+        const description = aiResponse.choices[0].message.content || 'No description generated.';
+        return sanitize(description);
+      },
+      PROCESSING_TIMEOUTS.IMAGE,
+      'Image processing timed out',
+      'O processamento desta imagem excedeu o tempo limite.',
+      fileId
     );
-
-    if (descriptionError) {
-      logger.error('Error processing image file', {
-        fileId,
-        error: descriptionError.message,
-        stack: descriptionError.stack,
-      });
-
-      if (descriptionError.message.includes('timed out')) {
-        return errResult(new Error('O processamento desta imagem excedeu o tempo limite.'));
-      }
-
-      return errResult(descriptionError);
-    }
-
-    const finalDescription = sanitize(description);
-
-    logger.info('Successfully processed image file', {
-      fileId,
-      descriptionLength: finalDescription.length,
-      processingTime: 'under 30s',
-    });
-
-    return okResult(finalDescription);
   }
 
   private async processDocx({ fileId, url }: FileInput): Promise<Result<string, Error>> {
     logger.info('Processing DOCX file', { fileId, url });
 
-    const DOCX_TIMEOUT = 20000;
-
-    const { value: textContent, error } = await wrapPromiseResult<string, Error>(
-      Promise.race([
-        (async () => {
-          const response = await axios.get(url, {
-            responseType: 'arraybuffer',
-          });
-          const buffer = Buffer.from(response.data);
-          const result = await mammoth.extractRawText({ buffer });
-          return result.value;
-        })(),
-        new Promise<string>((_, reject) =>
-          setTimeout(() => reject(new Error('DOCX processing timed out')), DOCX_TIMEOUT)
-        ),
-      ])
+    return this.processWithTimeout(
+      async () => {
+        const response = await axios.get(url, { responseType: 'arraybuffer' });
+        const buffer = Buffer.from(response.data);
+        const result = await mammoth.extractRawText({ buffer });
+        return result.value ? sanitize(result.value) : '';
+      },
+      PROCESSING_TIMEOUTS.DOCX,
+      'DOCX processing timed out',
+      'O processamento deste arquivo DOCX excedeu o tempo limite.',
+      fileId
     );
-
-    if (error) {
-      logger.error('Error processing DOCX file', {
-        fileId,
-        error: error.message,
-        stack: error.stack,
-      });
-
-      if (error.message.includes('timed out')) {
-        return errResult(new Error('O processamento deste arquivo DOCX excedeu o tempo limite.'));
-      }
-
-      return errResult(error);
-    }
-
-    let extractedText = '';
-
-    if (textContent?.trim()) {
-      extractedText = sanitize(textContent);
-
-      logger.info('Successfully processed DOCX file', {
-        fileId,
-        textLength: extractedText.length,
-        processingTime: 'under 20s',
-      });
-    } else {
-      logger.warn('DOCX content is empty or could not be extracted.', { fileId });
-    }
-
-    return okResult(extractedText);
   }
 
   private async processPdf(file: FileInput): Promise<Result<string, Error>> {
     const { fileId, url } = file;
-    const GLOBAL_TIMEOUT = 58000;
-
     logger.info('Processing PDF file', { fileId, url });
 
-    const timeoutPromise = this.createTimeoutPromise(GLOBAL_TIMEOUT);
+    const timeoutPromise = this.createTimeoutPromise(PROCESSING_TIMEOUTS.PDF_GLOBAL);
     const { value: response, error } = await wrapPromiseResult<AxiosResponse, Error>(
       axios.get(url, { responseType: 'arraybuffer' })
     );
@@ -360,31 +330,47 @@ export class ProcessMessagesService {
       return errResult(new Error(`Erro ao extrair texto do PDF: ${extractionError.message}`));
     }
 
-    if (this.isHighQualityText(extractedText)) {
-      logger.info('PDF contém texto extraível de alta qualidade, pulando OCR', { fileId });
+    // Analyze PDF structure and visual content upfront
+    const { tempPdf, tempDir, pages, hasVisualContent } = await this.analyzePdfContent(buffer, fileId);
+
+    if (this.shouldSkipOcr(extractedText, hasVisualContent, fileId)) {
+      this.cleanupTempFiles(tempPdf, tempDir);
       return okResult(sanitize(extractedText));
     }
 
-    const { value: ocrResult, error: ocrError } = await wrapPromiseResult(
-      this.performOcrProcessing(buffer, fileId, timeoutPromise)
+    // Use existing converted pages for OCR processing
+    if (pages.length === 0) {
+      this.cleanupTempFiles(tempPdf, tempDir);
+      return okResult(sanitize(extractedText));
+    }
+
+    const chunks = this.createProcessingChunks(pages, fileId);
+    const preprocessDir = tmp.dirSync({ unsafeCleanup: true });
+
+    const ocrPromise = Promise.all(
+      chunks.map((chunk) => this.processChunk(chunk, fileId, tempDir.name, preprocessDir.name))
     );
+
+    const { value: ocrResults, error: ocrError } = await wrapPromiseResult<string[][], Error>(
+      Promise.race([ocrPromise, timeoutPromise])
+    );
+
+    this.cleanupTempFiles(tempPdf, tempDir, preprocessDir);
 
     if (ocrError) {
       logger.error('Error in OCR processing', { fileId, error: ocrError });
       return errResult(new Error(`Erro no processamento OCR: ${ocrError}`));
     }
 
-    if (ocrResult!.error) {
-      return ocrResult!.error.message.includes('timed out')
-        ? okResult(sanitize(extractedText))
-        : ocrResult!;
+    if (ocrResults && ocrResults.length > 0) {
+      const ocrText = this.processOcrResults(ocrResults, fileId);
+      const finalText = this.combineTextResults(extractedText, ocrText, fileId);
+      this.logProcessingCompletion(fileId, finalText, extractedText, ocrText);
+      return okResult(finalText);
     }
 
-    const finalText = this.combineTextResults(extractedText, ocrResult!.value!, fileId);
-
-    this.logProcessingCompletion(fileId, finalText, extractedText, ocrResult!.value!);
-
-    return okResult(finalText);
+    // Fallback to extracted text if OCR fails
+    return okResult(sanitize(extractedText));
   }
 
   private createTimeoutPromise(timeout: number): Promise<never> {
@@ -416,59 +402,118 @@ export class ProcessMessagesService {
     return Boolean(text && text.trim().length > 1000 && !text.includes('�'));
   }
 
-  private async performOcrProcessing(
-    buffer: Buffer,
-    fileId: string,
-    timeoutPromise: Promise<never>
-  ): Promise<Result<string, Error>> {
-    logger.info('Iniciando processamento OCR paralelo', { fileId });
-
-    const { tempPdf, tempDir, pages } = this.preparePdfForOcr(buffer);
-
-    if (pages.length === 0) {
-      this.cleanupTempFiles(tempPdf, tempDir);
-      return okResult('');
+  private shouldSkipOcr(extractedText: string, hasVisualContent: boolean, fileId: string): boolean {
+    const textLength = extractedText.trim().length;
+    const isHighQuality = this.isHighQualityText(extractedText);
+    
+    // Never skip OCR if text is very short (likely missed content in images)
+    if (textLength < 500) {
+      logger.info('Applying OCR: Very little text extracted', { fileId, textLength });
+      return false;
     }
-
-    const chunks = this.createProcessingChunks(pages, fileId);
-    const preprocessDir = tmp.dirSync({ unsafeCleanup: true });
-
-    const ocrPromise = Promise.all(
-      chunks.map((chunk) => this.processChunk(chunk, fileId, tempDir.name, preprocessDir.name))
-    );
-
-    const { value: ocrResults, error } = await wrapPromiseResult<string[][], Error>(
-      Promise.race([ocrPromise, timeoutPromise])
-    );
-
-    this.cleanupTempFiles(tempPdf, tempDir, preprocessDir);
-
-    if (error) {
-      return errResult(new Error(`Erro ao processar PDF: ${error.message}`));
+    
+    // If there's significant visual content, always apply OCR to ensure completeness
+    // Only exception: truly massive documents where OCR would be impractical
+    if (hasVisualContent) {
+      if (textLength > VISUAL_CONTENT_THRESHOLDS.MAX_TEXT_FOR_OCR) {
+        logger.info('Skipping OCR: Extremely large document with visual content - OCR would be impractical', { 
+          fileId, 
+          textLength, 
+          hasVisualContent 
+        });
+        return true;
+      } else {
+        logger.info('Applying OCR: Visual content detected - ensuring no text in images is missed', { 
+          fileId, 
+          textLength, 
+          hasVisualContent,
+          reason: 'Visual content always triggers OCR for completeness'
+        });
+        return false;
+      }
     }
-
-    return okResult(this.processOcrResults(ocrResults, fileId));
+    
+    // If no visual content, use original logic (skip if high quality)
+    const shouldSkip = isHighQuality;
+    
+    logger.info(shouldSkip ? 'Skipping OCR: High quality text with no visual content' : 'Applying OCR: Low quality text extraction', {
+      fileId,
+      textLength,
+      isHighQuality,
+      hasVisualContent,
+      shouldSkip
+    });
+    
+    return shouldSkip;
   }
 
-  private preparePdfForOcr(buffer: Buffer) {
+  private async analyzePdfContent(buffer: Buffer, fileId: string) {
     const tempPdf = tmp.fileSync({ postfix: '.pdf' });
     fs.writeFileSync(tempPdf.name, buffer);
     const tempDir = tmp.dirSync({ unsafeCleanup: true });
 
-    execSync(`pdftoppm -png "${tempPdf.name}" "${path.join(tempDir.name, 'page')}"`);
+    try {
+      // Convert PDF to images for both analysis and potential OCR
+      execSync(`pdftoppm -png "${tempPdf.name}" "${path.join(tempDir.name, 'page')}"`);
 
-    const pages = fs
-      .readdirSync(tempDir.name)
-      .filter((f) => f.endsWith('.png'))
-      .sort((a, b) => {
-        const matchA = a.match(/\d+/);
-        const matchB = b.match(/\d+/);
-        const pageNumA = matchA ? parseInt(matchA[0]) : 0;
-        const pageNumB = matchB ? parseInt(matchB[0]) : 0;
-        return pageNumA - pageNumB;
+      const pages = fs
+        .readdirSync(tempDir.name)
+        .filter((f) => f.endsWith('.png'))
+        .sort((a, b) => {
+          const matchA = a.match(/\d+/);
+          const matchB = b.match(/\d+/);
+          const pageNumA = matchA ? parseInt(matchA[0]) : 0;
+          const pageNumB = matchB ? parseInt(matchB[0]) : 0;
+          return pageNumA - pageNumB;
+        });
+
+      // Analyze visual content from the generated images
+      let hasVisualContent = false;
+      
+      if (pages.length > 0) {
+        const maxPagesToAnalyze = Math.min(OCR_SETTINGS.MAX_PAGES_TO_ANALYZE, pages.length);
+        let totalSize = 0;
+        let hasLargeImages = false;
+
+        for (let i = 0; i < maxPagesToAnalyze; i++) {
+          const imagePath = path.join(tempDir.name, pages[i]);
+          const imageStats = fs.statSync(imagePath);
+          totalSize += imageStats.size;
+          
+          if (imageStats.size > VISUAL_CONTENT_THRESHOLDS.LARGE_IMAGE) {
+            hasLargeImages = true;
+          }
+        }
+
+        const averageSize = totalSize / maxPagesToAnalyze;
+        hasVisualContent = hasLargeImages || 
+                          averageSize > VISUAL_CONTENT_THRESHOLDS.AVERAGE_SIZE || 
+                          totalSize > VISUAL_CONTENT_THRESHOLDS.TOTAL_SIZE;
+        
+        logger.info('Visual content analysis completed', {
+          fileId,
+          hasVisualContent,
+          averageImageSize: Math.round(averageSize),
+          totalSize,
+          pagesAnalyzed: maxPagesToAnalyze,
+          totalPages: pages.length,
+          hasLargeImages,
+          visualContentThresholds: {
+            largeImageThreshold: `${VISUAL_CONTENT_THRESHOLDS.LARGE_IMAGE / 1000}KB`,
+            averageThreshold: `${VISUAL_CONTENT_THRESHOLDS.AVERAGE_SIZE / 1000}KB`, 
+            totalThreshold: `${VISUAL_CONTENT_THRESHOLDS.TOTAL_SIZE / 1000}KB`
+          }
+        });
+      }
+
+      return { tempPdf, tempDir, pages, hasVisualContent };
+    } catch (error) {
+      logger.warn('Failed to analyze PDF content, assuming visual content exists', { 
+        fileId, 
+        error: error instanceof Error ? error.message : String(error) 
       });
-
-    return { tempPdf, tempDir, pages };
+      return { tempPdf, tempDir, pages: [], hasVisualContent: true };
+    }
   }
 
   private createProcessingChunks(pages: string[], fileId: string): string[][] {
@@ -480,7 +525,7 @@ export class ProcessMessagesService {
       return [];
     }
 
-    const numChunks = Math.min(5, totalPages, this.MAX_WORKERS);
+    const numChunks = Math.min(OCR_SETTINGS.MAX_CHUNKS, totalPages, this.MAX_WORKERS);
     const pagesPerChunk = Math.ceil(totalPages / numChunks);
     const chunks: string[][] = [];
 
@@ -538,7 +583,7 @@ export class ProcessMessagesService {
     totalChunks: number
   ): string[] {
     const preservePatterns = this.getPreservePatterns();
-    const maxRepetitions = Math.ceil(totalChunks * 0.8);
+    const maxRepetitions = Math.ceil(totalChunks * OCR_SETTINGS.MAX_REPETITIONS_FACTOR);
 
     return allLines.filter((line) => {
       const cleanLine = line.trim();
