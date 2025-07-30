@@ -12,6 +12,8 @@ import { openaiConfig } from 'config/openai';
 import mammoth from 'mammoth';
 import { OpenAI } from 'openai';
 import pdf from 'pdf-parse';
+// biome-ignore lint/correctness/noUnusedImports: <explanation>
+import _ from 'sharp'; // <--- ADICIONE ESTA LINHA
 import tmp from 'tmp';
 import { sanitize } from 'utils/sanitize';
 import { sanitizeText } from 'utils/textSanitizer';
@@ -33,9 +35,9 @@ const PROCESSING_TIMEOUTS = {
 } as const;
 
 const VISUAL_CONTENT_THRESHOLDS = {
-  LARGE_IMAGE: 100000,     // 100KB
-  AVERAGE_SIZE: 50000,     // 50KB
-  TOTAL_SIZE: 120000,      // 120KB
+  LARGE_IMAGE: 100000, // 100KB
+  AVERAGE_SIZE: 50000, // 50KB
+  TOTAL_SIZE: 120000, // 120KB
   MAX_TEXT_FOR_OCR: 50000, // 50KB text threshold
 } as const;
 
@@ -68,7 +70,7 @@ export class ProcessMessagesService {
 
       if (files && files.length > 0) {
         const results = await this.processFiles(files, userId!);
-        
+
         results.forEach((result) => {
           if (result.success && result.text) {
             processedFiles.push(result.fileId);
@@ -80,27 +82,37 @@ export class ProcessMessagesService {
       }
     }
 
-    return this.saveProcessedText(extractedTexts.join('\n\n---\n\n'), messages[0].conversationId, protocol, host, processedFiles, failedFiles);
+    return this.saveProcessedText(
+      extractedTexts.join('\n\n---\n\n'),
+      messages[0].conversationId,
+      protocol,
+      host,
+      processedFiles,
+      failedFiles
+    );
   }
 
   private async processFiles(files: FileInfo[], userId: string) {
     const processingPromises = files
-      .map(file => this.updateURLForFile(file, userId))
+      .map((file) => this.updateURLForFile(file, userId))
       .map(async (file) => {
         const result = await this.processFile(file);
-        
+
         if (result.error) {
-          logger.error('Failed to process file', { fileId: file.fileId, error: result.error.message });
+          logger.error('Failed to process file', {
+            fileId: file.fileId,
+            error: result.error.message,
+          });
           return { fileId: file.fileId, error: result.error.message, success: false };
         }
 
         const fileName = path.basename(new URL(file.url).pathname);
         const header = `## Transcricao do arquivo: ${fileName}:\n\n`;
-        
-        return { 
-          fileId: file.fileId, 
-          text: header + result.value, 
-          success: true 
+
+        return {
+          fileId: file.fileId,
+          text: header + result.value,
+          success: true,
         };
       });
 
@@ -119,7 +131,7 @@ export class ProcessMessagesService {
     };
 
     const processor = fileTypeMap[file.fileType as keyof typeof fileTypeMap];
-    
+
     if (!processor) {
       logger.warn('Unsupported file type, skipping', {
         fileType: file.fileType,
@@ -141,9 +153,7 @@ export class ProcessMessagesService {
     const { value, error } = await wrapPromiseResult<T, Error>(
       Promise.race([
         processor(),
-        new Promise<T>((_, reject) =>
-          setTimeout(() => reject(new Error(timeoutError)), timeout)
-        ),
+        new Promise<T>((_, reject) => setTimeout(() => reject(new Error(timeoutError)), timeout)),
       ])
     );
 
@@ -170,9 +180,9 @@ export class ProcessMessagesService {
   }
 
   private async saveProcessedText(
-    allExtractedText: string, 
-    conversationId: string, 
-    protocol: string, 
+    allExtractedText: string,
+    conversationId: string,
+    protocol: string,
     host: string,
     processedFiles: string[],
     failedFiles: { fileId: string; error: string }[]
@@ -191,7 +201,7 @@ export class ProcessMessagesService {
     const filePath = path.join(TEXTS_DIR, conversationId, filename);
     const sanitizedText = sanitizeText(allExtractedText.trim());
     fs.writeFileSync(filePath, sanitizedText);
-    
+
     const downloadUrl = `${protocol}://${host}/texts/${conversationId}/${filename}`;
 
     return {
@@ -204,10 +214,9 @@ export class ProcessMessagesService {
   }
 
   updateURLForFile(file: FileInfo, userId: string): FileInfo {
-    const currentUrl = file.url
+    const currentUrl = file.url;
     if (currentUrl.includes('/storage/v1/object/public/conversation-files')) {
-      const filePath = currentUrl.split('/storage/v1/object/public/conversation-files/')[1]
-
+      const filePath = currentUrl.split('/storage/v1/object/public/conversation-files/')[1];
 
       const updatedFileInfo = {
         ...file,
@@ -220,7 +229,7 @@ export class ProcessMessagesService {
         updatedUrl: updatedFileInfo.url,
       });
 
-      return updatedFileInfo
+      return updatedFileInfo;
     }
     return file;
   }
@@ -251,7 +260,7 @@ export class ProcessMessagesService {
         const response = await axios.get(url, { responseType: 'arraybuffer' });
         const imageBuffer = Buffer.from(response.data);
         const base64Image = imageBuffer.toString('base64');
-        
+
         const aiResponse = await this.openai.chat.completions.create(
           {
             model: openaiConfig.models.image,
@@ -272,7 +281,7 @@ export class ProcessMessagesService {
           },
           { timeout: PROCESSING_TIMEOUTS.OPENAI }
         );
-        
+
         const description = aiResponse.choices[0].message.content || 'No description generated.';
         return sanitize(description);
       },
@@ -331,7 +340,10 @@ export class ProcessMessagesService {
     }
 
     // Analyze PDF structure and visual content upfront
-    const { tempPdf, tempDir, pages, hasVisualContent } = await this.analyzePdfContent(buffer, fileId);
+    const { tempPdf, tempDir, pages, hasVisualContent } = await this.analyzePdfContent(
+      buffer,
+      fileId
+    );
 
     if (this.shouldSkipOcr(extractedText, hasVisualContent, fileId)) {
       this.cleanupTempFiles(tempPdf, tempDir);
@@ -405,45 +417,56 @@ export class ProcessMessagesService {
   private shouldSkipOcr(extractedText: string, hasVisualContent: boolean, fileId: string): boolean {
     const textLength = extractedText.trim().length;
     const isHighQuality = this.isHighQualityText(extractedText);
-    
+
     // Never skip OCR if text is very short (likely missed content in images)
     if (textLength < 500) {
       logger.info('Applying OCR: Very little text extracted', { fileId, textLength });
       return false;
     }
-    
+
     // If there's significant visual content, always apply OCR to ensure completeness
     // Only exception: truly massive documents where OCR would be impractical
     if (hasVisualContent) {
       if (textLength > VISUAL_CONTENT_THRESHOLDS.MAX_TEXT_FOR_OCR) {
-        logger.info('Skipping OCR: Extremely large document with visual content - OCR would be impractical', { 
-          fileId, 
-          textLength, 
-          hasVisualContent 
-        });
+        logger.info(
+          'Skipping OCR: Extremely large document with visual content - OCR would be impractical',
+          {
+            fileId,
+            textLength,
+            hasVisualContent,
+          }
+        );
         return true;
       } else {
-        logger.info('Applying OCR: Visual content detected - ensuring no text in images is missed', { 
-          fileId, 
-          textLength, 
-          hasVisualContent,
-          reason: 'Visual content always triggers OCR for completeness'
-        });
+        logger.info(
+          'Applying OCR: Visual content detected - ensuring no text in images is missed',
+          {
+            fileId,
+            textLength,
+            hasVisualContent,
+            reason: 'Visual content always triggers OCR for completeness',
+          }
+        );
         return false;
       }
     }
-    
+
     // If no visual content, use original logic (skip if high quality)
     const shouldSkip = isHighQuality;
-    
-    logger.info(shouldSkip ? 'Skipping OCR: High quality text with no visual content' : 'Applying OCR: Low quality text extraction', {
-      fileId,
-      textLength,
-      isHighQuality,
-      hasVisualContent,
+
+    logger.info(
       shouldSkip
-    });
-    
+        ? 'Skipping OCR: High quality text with no visual content'
+        : 'Applying OCR: Low quality text extraction',
+      {
+        fileId,
+        textLength,
+        isHighQuality,
+        hasVisualContent,
+        shouldSkip,
+      }
+    );
+
     return shouldSkip;
   }
 
@@ -469,7 +492,7 @@ export class ProcessMessagesService {
 
       // Analyze visual content from the generated images
       let hasVisualContent = false;
-      
+
       if (pages.length > 0) {
         const maxPagesToAnalyze = Math.min(OCR_SETTINGS.MAX_PAGES_TO_ANALYZE, pages.length);
         let totalSize = 0;
@@ -479,17 +502,18 @@ export class ProcessMessagesService {
           const imagePath = path.join(tempDir.name, pages[i]);
           const imageStats = fs.statSync(imagePath);
           totalSize += imageStats.size;
-          
+
           if (imageStats.size > VISUAL_CONTENT_THRESHOLDS.LARGE_IMAGE) {
             hasLargeImages = true;
           }
         }
 
         const averageSize = totalSize / maxPagesToAnalyze;
-        hasVisualContent = hasLargeImages || 
-                          averageSize > VISUAL_CONTENT_THRESHOLDS.AVERAGE_SIZE || 
-                          totalSize > VISUAL_CONTENT_THRESHOLDS.TOTAL_SIZE;
-        
+        hasVisualContent =
+          hasLargeImages ||
+          averageSize > VISUAL_CONTENT_THRESHOLDS.AVERAGE_SIZE ||
+          totalSize > VISUAL_CONTENT_THRESHOLDS.TOTAL_SIZE;
+
         logger.info('Visual content analysis completed', {
           fileId,
           hasVisualContent,
@@ -500,17 +524,17 @@ export class ProcessMessagesService {
           hasLargeImages,
           visualContentThresholds: {
             largeImageThreshold: `${VISUAL_CONTENT_THRESHOLDS.LARGE_IMAGE / 1000}KB`,
-            averageThreshold: `${VISUAL_CONTENT_THRESHOLDS.AVERAGE_SIZE / 1000}KB`, 
-            totalThreshold: `${VISUAL_CONTENT_THRESHOLDS.TOTAL_SIZE / 1000}KB`
-          }
+            averageThreshold: `${VISUAL_CONTENT_THRESHOLDS.AVERAGE_SIZE / 1000}KB`,
+            totalThreshold: `${VISUAL_CONTENT_THRESHOLDS.TOTAL_SIZE / 1000}KB`,
+          },
         });
       }
 
       return { tempPdf, tempDir, pages, hasVisualContent };
     } catch (error) {
-      logger.warn('Failed to analyze PDF content, assuming visual content exists', { 
-        fileId, 
-        error: error instanceof Error ? error.message : String(error) 
+      logger.warn('Failed to analyze PDF content, assuming visual content exists', {
+        fileId,
+        error: error instanceof Error ? error.message : String(error),
       });
       return { tempPdf, tempDir, pages: [], hasVisualContent: true };
     }
@@ -693,7 +717,7 @@ export class ProcessMessagesService {
           fileId,
         },
       });
-      
+
       worker.on('message', (result) => {
         // Check if the result is an error object
         if (result && typeof result === 'object' && result.error) {
@@ -702,9 +726,9 @@ export class ProcessMessagesService {
           resolve(result);
         }
       });
-      
+
       worker.on('error', reject);
-      
+
       worker.on('exit', (code) => {
         if (code !== 0) {
           reject(new Error(`Worker stopped with exit code ${code}`));
