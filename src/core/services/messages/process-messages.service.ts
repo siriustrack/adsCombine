@@ -2,9 +2,9 @@ import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path, { join } from 'node:path';
-import { Worker } from 'node:worker_threads';
 import logger from '@lib/logger';
 import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types';
+import { pdfWorkerPool } from '@lib/worker-pool';
 import type { FileInfo, ProcessMessage } from 'api/controllers/messages.controllers';
 import axios, { type AxiosResponse } from 'axios';
 import { TEXTS_DIR } from 'config/dirs';
@@ -12,13 +12,11 @@ import { openaiConfig } from 'config/openai';
 import mammoth from 'mammoth';
 import { OpenAI } from 'openai';
 import pdf from 'pdf-parse';
-import sharp from 'sharp'; // Substitua a linha "import _ from 'sharp';" por esta
+import sharp from 'sharp';
 import tmp from 'tmp';
 import { sanitize } from 'utils/sanitize';
 import { sanitizeText } from 'utils/textSanitizer';
 
-// Force sharp to initialize its native bindings in the main thread
-// before any workers are created. This prevents the race condition.
 sharp.cache(false);
 
 interface FileInput {
@@ -28,7 +26,6 @@ interface FileInput {
   fileType?: string;
 }
 
-// Configuration constants
 const PROCESSING_TIMEOUTS = {
   TXT: 10000,
   IMAGE: 30000,
@@ -38,10 +35,10 @@ const PROCESSING_TIMEOUTS = {
 } as const;
 
 const VISUAL_CONTENT_THRESHOLDS = {
-  LARGE_IMAGE: 100000, // 100KB
-  AVERAGE_SIZE: 50000, // 50KB
-  TOTAL_SIZE: 120000, // 120KB
-  MAX_TEXT_FOR_OCR: 50000, // 50KB text threshold
+  LARGE_IMAGE: 100000,
+  AVERAGE_SIZE: 50000,
+  TOTAL_SIZE: 120000,
+  MAX_TEXT_FOR_OCR: 50000,
 } as const;
 
 const OCR_SETTINGS = {
@@ -342,14 +339,13 @@ export class ProcessMessagesService {
       return errResult(new Error(`Erro ao extrair texto do PDF: ${extractionError.message}`));
     }
 
-    // Analyze PDF structure and visual content upfront
     const { tempPdf, totalPages, hasVisualContent } = await this.analyzePdfContent(buffer, fileId);
 
     if (this.shouldSkipOcr(extractedText, hasVisualContent, fileId)) {
       this.cleanupTempFiles(tempPdf);
       return okResult(sanitize(extractedText));
     }
-    // Use existing converted pages for OCR processing
+
     if (totalPages === 0) {
       this.cleanupTempFiles(tempPdf);
       return okResult(sanitize(extractedText));
@@ -358,7 +354,13 @@ export class ProcessMessagesService {
     const chunks = this.createProcessingChunks(totalPages, fileId);
 
     const ocrPromise = Promise.all(
-      chunks.map((chunk) => this.processChunk(chunk, fileId, tempPdf.name))
+      chunks.map((chunk) =>
+        pdfWorkerPool.run({
+          pageRange: chunk,
+          pdfPath: tempPdf.name,
+          fileId,
+        })
+      )
     );
 
     const { value: ocrResults, error: ocrError } = await wrapPromiseResult<string[][], Error>(
@@ -379,7 +381,6 @@ export class ProcessMessagesService {
       return okResult(finalText);
     }
 
-    // Fallback to extracted text if OCR fails
     return okResult(sanitize(extractedText));
   }
 
@@ -416,14 +417,11 @@ export class ProcessMessagesService {
     const textLength = extractedText.trim().length;
     const isHighQuality = this.isHighQualityText(extractedText);
 
-    // Never skip OCR if text is very short (likely missed content in images)
     if (textLength < 500) {
       logger.info('Applying OCR: Very little text extracted', { fileId, textLength });
       return false;
     }
 
-    // If there's significant visual content, always apply OCR to ensure completeness
-    // Only exception: truly massive documents where OCR would be impractical
     if (hasVisualContent) {
       if (textLength > VISUAL_CONTENT_THRESHOLDS.MAX_TEXT_FOR_OCR) {
         logger.info(
@@ -449,7 +447,6 @@ export class ProcessMessagesService {
       }
     }
 
-    // If no visual content, use original logic (skip if high quality)
     const shouldSkip = isHighQuality;
 
     logger.info(
@@ -471,33 +468,29 @@ export class ProcessMessagesService {
   private async analyzePdfContent(buffer: Buffer, fileId: string) {
     const tempPdf = tmp.fileSync({ postfix: '.pdf' });
     fs.writeFileSync(tempPdf.name, buffer);
-    // O diretório temporário principal não é mais necessário aqui, pois cada worker cuidará do seu.
-    // const tempDir = tmp.dirSync({ unsafeCleanup: true });
 
     try {
-      // Apenas obtemos o número de páginas, sem converter
       const pdfInfoOutput = execSync(`pdfinfo "${tempPdf.name}"`, { encoding: 'utf-8' });
       const pagesMatch = pdfInfoOutput.match(/Pages:\s*(\d+)/);
       const totalPages = pagesMatch ? parseInt(pagesMatch[1], 10) : 0;
 
-      // A análise de conteúdo visual não é mais viável aqui sem as imagens.
-      // Vamos assumir que se o OCR for acionado, há conteúdo visual.
-      // A lógica em `shouldSkipOcr` já lida bem com isso.
       logger.info('PDF analysis completed', { fileId, totalPages });
 
-      // Retornamos o caminho do PDF e o total de páginas
-      return { tempPdf, totalPages, hasVisualContent: true }; // Simplificado
+      return { tempPdf, totalPages, hasVisualContent: true };
     } catch (error) {
       logger.warn('Failed to analyze PDF content', {
         fileId,
         error: error instanceof Error ? error.message : String(error),
       });
-      // Se pdfinfo falhar, não podemos continuar.
+
       return { tempPdf, totalPages: 0, hasVisualContent: false };
     }
   }
 
-  private createProcessingChunks(totalPages: number, fileId: string): { first: number; last: number }[] {
+  private createProcessingChunks(
+    totalPages: number,
+    fileId: string
+  ): { first: number; last: number }[] {
     logger.info(`PDF com ${totalPages} páginas`, { fileId });
 
     if (totalPages === 0) {
@@ -654,40 +647,5 @@ export class ProcessMessagesService {
 
   private cleanupTempFiles(...tempObjects: Array<{ removeCallback: () => void } | undefined>) {
     tempObjects.forEach((obj) => obj?.removeCallback?.());
-  }
-
-  private processChunk(
-    chunkRange: { first: number; last: number },
-    fileId: string,
-    pdfPath: string
-  ): Promise<string[]> {
-    return new Promise((resolve, reject) => {
-      const workerPath = path.resolve(__dirname, 'pdfChunkWorker.js');
-
-      const worker = new Worker(workerPath, {
-        workerData: {
-          pageRange: chunkRange,
-          pdfPath,
-          fileId,
-        },
-      });
-
-      worker.on('message', (result) => {
-        // Check if the result is an error object
-        if (result && typeof result === 'object' && result.error) {
-          reject(new Error(result.error));
-        } else {
-          resolve(result);
-        }
-      });
-
-      worker.on('error', reject);
-
-      worker.on('exit', (code) => {
-        if (code !== 0) {
-          reject(new Error(`Worker stopped with exit code ${code}`));
-        }
-      });
-    });
   }
 }
