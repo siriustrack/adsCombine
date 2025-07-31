@@ -30,7 +30,7 @@ const PROCESSING_TIMEOUTS = {
   TXT: 10000,
   IMAGE: 30000,
   DOCX: 20000,
-  PDF_GLOBAL: 150000,
+  PDF_GLOBAL: 300000, // 5 minutes timeout
   OPENAI: 25000,
 } as const;
 
