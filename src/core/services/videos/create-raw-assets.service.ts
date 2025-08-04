@@ -50,7 +50,7 @@ export class CreateRawAssetsService {
       return;
     }
 
-    console.log(`[${fileName}] Created temp directory at ${jobTemp}`);
+    logger.info(`[${fileName}] Created temp directory at ${jobTemp}`);
 
     const { error: downloadError } = await this.downloadRawAssetVideos(
       videos,
@@ -78,7 +78,7 @@ export class CreateRawAssetsService {
     const { videoDimensions, warnings } = value;
 
     if (warnings.length) console.warn(`[${fileName}] Warnings: ${warnings.join('; ')}`);
-    console.log(`[${fileName}] Raw assets processing started with warnings:`, warnings);
+    logger.info(`[${fileName}] Raw assets processing started with warnings:`, warnings);
 
     const { value: downloadUrls, error: assetsError } = await this.processAndConcatenateAssets(
       videoDimensions,
@@ -114,7 +114,7 @@ export class CreateRawAssetsService {
     fileName: string,
     webhookDestination: string
   ): Promise<Result<null, Error>> {
-    console.log(`[${fileName}] Starting download of ${videos.length} videos...`);
+    logger.info(`[${fileName}] Starting download of ${videos.length} videos...`);
     const { error } = await wrapPromiseResult<undefined[], Error>(
       Promise.all(
         videos.map(async (v, i) => {
@@ -131,7 +131,7 @@ export class CreateRawAssetsService {
             }
             Readable.from(Buffer.from(response.data)).pipe(dest);
             dest.on('finish', () => {
-              console.log(`[${fileName}] Downloaded video ${i} -> ${outPath}`);
+              logger.info(`[${fileName}] Downloaded video ${i} -> ${outPath}`);
               resolve(undefined);
             });
             dest.on('error', reject);
@@ -151,7 +151,7 @@ export class CreateRawAssetsService {
       return errResult(new Error(`Failed to download videos: ${error.message}`));
     }
 
-    console.log(`[${fileName}] All videos downloaded successfully`);
+    logger.info(`[${fileName}] All videos downloaded successfully`);
 
     return okResult(null);
   }
@@ -169,7 +169,7 @@ export class CreateRawAssetsService {
       Error
     >
   > {
-    console.log(`[${fileName}] Checking video dimensions...`);
+    logger.info(`[${fileName}] Checking video dimensions...`);
     const warnings: string[] = [];
     const videoDimensions: VideoDimension[] = [];
 
@@ -268,11 +268,11 @@ export class CreateRawAssetsService {
     for (let i = 0; i < videoDimensions.length; i++) {
       const inputVideo = videoDimensions[i];
       if (!inputVideo) {
-        console.log(`[${fileName}] Skipping video ${i} - missing data`);
+        logger.info(`[${fileName}] Skipping video ${i} - missing data`);
         continue;
       }
 
-      console.log(
+      logger.info(
         `[${fileName}] Processing video ${i} (${inputVideo.width}x${inputVideo.height}) into 3 formats...`
       );
 
@@ -351,7 +351,7 @@ export class CreateRawAssetsService {
   ): Promise<Result<string, Error>> {
     if (inputVideo.width === 1280 && inputVideo.height === 720) {
       const scaledPath = path.join(jobTemp, `scaled-${index}.mp4`);
-      console.log(`[${fileName}] Scaling video ${index} from 1280x720 to 1920x1080...`);
+      logger.info(`[${fileName}] Scaling video ${index} from 1280x720 to 1920x1080...`);
 
       const { error } = await wrapPromiseResult<undefined, Error>(
         new Promise<undefined>((resolve, reject) => {
@@ -368,17 +368,17 @@ export class CreateRawAssetsService {
             ])
             .output(scaledPath)
             .on('start', () => {
-              console.log(`[${fileName}] FFmpeg scaling of video ${index} started`);
+              logger.info(`[${fileName}] FFmpeg scaling of video ${index} started`);
             })
             .on('progress', (progress) => {
               if (progress.percent) {
-                console.log(
+                logger.info(
                   `[${fileName}] Scaling video ${index}: ${progress.percent.toFixed(2)}% done`
                 );
               }
             })
             .on('end', () => {
-              console.log(`[${fileName}] Scaled video ${index} successfully to 1920x1080`);
+              logger.info(`[${fileName}] Scaled video ${index} successfully to 1920x1080`);
               resolve(undefined);
             })
             .on('error', (err) => {
@@ -408,7 +408,7 @@ export class CreateRawAssetsService {
     index: number
   ): Promise<Result<string, Error>> {
     const feedPath = path.join(jobTemp, `feed-${index}.mp4`);
-    console.log(`[${fileName}] Creating FEED version ${index} (1080x1350)...`);
+    logger.info(`[${fileName}] Creating FEED version ${index} (1080x1350)...`);
 
     const processWidth = inputVideo.width === 1280 ? 1920 : inputVideo.width;
     const processHeight = inputVideo.height === 720 ? 1080 : inputVideo.height;
@@ -441,7 +441,7 @@ export class CreateRawAssetsService {
           ])
           .output(feedPath)
           .on('end', () => {
-            console.log(`[${fileName}] FEED version ${index} completed`);
+            logger.info(`[${fileName}] FEED version ${index} completed`);
             resolve(undefined);
           })
           .on('error', reject)
@@ -465,7 +465,7 @@ export class CreateRawAssetsService {
     index: number
   ): Promise<Result<string, Error>> {
     const storyTarjasPath = path.join(jobTemp, `story-tarjas-${index}.mp4`);
-    console.log(
+    logger.info(
       `[${fileName}] Creating STORY TARJAS version ${index} (1080x1920 with black bars)...`
     );
 
@@ -490,7 +490,7 @@ export class CreateRawAssetsService {
           ])
           .output(storyTarjasPath)
           .on('end', () => {
-            console.log(`[${fileName}] STORY TARJAS version ${index} completed`);
+            logger.info(`[${fileName}] STORY TARJAS version ${index} completed`);
             resolve(undefined);
           })
           .on('error', reject)
@@ -518,7 +518,7 @@ export class CreateRawAssetsService {
     index: number
   ): Promise<Result<string, Error>> {
     const storyFullscreenPath = path.join(jobTemp, `story-fullscreen-${index}.mp4`);
-    console.log(`[${fileName}] Creating STORY FULLSCREEN version ${index} (1080x1920 cropped)...`);
+    logger.info(`[${fileName}] Creating STORY FULLSCREEN version ${index} (1080x1920 cropped)...`);
 
     const processWidth = inputVideo.width === 1280 ? 1920 : inputVideo.width;
     const processHeight = inputVideo.height === 720 ? 1080 : inputVideo.height;
@@ -542,7 +542,7 @@ export class CreateRawAssetsService {
           ])
           .output(storyFullscreenPath)
           .on('end', () => {
-            console.log(`[${fileName}] STORY FULLSCREEN version ${index} completed`);
+            logger.info(`[${fileName}] STORY FULLSCREEN version ${index} completed`);
             resolve(undefined);
           })
           .on('error', reject)
@@ -572,11 +572,11 @@ export class CreateRawAssetsService {
 
     for (const asset of assets) {
       if (asset.videos.length === 0) {
-        console.log(`[${fileName}] No videos to concatenate for ${asset.description}`);
+        logger.info(`[${fileName}] No videos to concatenate for ${asset.description}`);
         continue;
       }
 
-      console.log(
+      logger.info(
         `[${fileName}] Concatenating ${asset.videos.length} videos for ${asset.description}...`
       );
 
@@ -611,14 +611,14 @@ export class CreateRawAssetsService {
             ])
             .output(outputPath)
             .on('start', (_cmd) => {
-              console.log(`[${fileName}] FFmpeg ${asset.description} concat started`);
+              logger.info(`[${fileName}] FFmpeg ${asset.description} concat started`);
             })
             .on('progress', (progress) => {
               const percent = progress.percent ? progress.percent.toFixed(2) : 'unknown';
-              console.log(`[${fileName}] ${asset.description} Processing: ${percent}% done`);
+              logger.info(`[${fileName}] ${asset.description} Processing: ${percent}% done`);
             })
             .on('end', () => {
-              console.log(`[${fileName}] ${asset.description} processing finished`);
+              logger.info(`[${fileName}] ${asset.description} processing finished`);
 
               const relativePath = path.relative(PUBLIC_DIR, outputPath).replace(/\\/g, '/');
               downloadUrls.push({
@@ -658,7 +658,7 @@ export class CreateRawAssetsService {
     webhookDestination: string,
     downloadUrls: VideoDownloadInfo[]
   ) {
-    console.log(`[${fileName}] All raw assets processing completed successfully`);
+    logger.info(`[${fileName}] All raw assets processing completed successfully`);
 
     const { error: cleanupError } = await wrapPromiseResult<void, Error>(
       fs.rm(jobTemp, { recursive: true, force: true })
@@ -676,7 +676,7 @@ export class CreateRawAssetsService {
       return;
     }
 
-    console.log(`[${fileName}] Cleaned temp directory ${jobTemp}`);
+    logger.info(`[${fileName}] Cleaned temp directory ${jobTemp}`);
 
     await this.webhookService.notifyWebhook(
       webhookDestination,
@@ -716,7 +716,7 @@ export class CreateRawAssetsService {
     if (cleanupError) {
       console.error(`[${fileName}] Error cleaning up temp directory: ${cleanupError.message}`);
     } else {
-      console.log(`[${fileName}] Cleaned temp directory ${jobTemp}`);
+      logger.info(`[${fileName}] Cleaned temp directory ${jobTemp}`);
     }
 
     await this.webhookService.notifyWebhook(

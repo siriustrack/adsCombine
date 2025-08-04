@@ -4,6 +4,7 @@ import {
   deleteVideosService,
   getVideosMetaService,
 } from '@core/services/videos';
+import logger from '@lib/logger';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 
@@ -43,7 +44,7 @@ export class VideosController {
   createVideoHandler = async (req: Request, res: Response) => {
     const data = VideoRequestSchema.parse(req.body);
 
-    console.log(
+    logger.info(
       `[${data.fileName}] Received request: ${JSON.stringify({
         fileName: data.fileName,
         extension: data.extension,
@@ -81,7 +82,7 @@ export class VideosController {
   createRawAssetsHandler = async (req: Request, res: Response) => {
     const data = RawAssetsRequestSchema.parse(req.body);
 
-    console.log(
+    logger.info(
       `[${data.fileName}] Received create-raw-assets request: ${JSON.stringify({
         fileName: data.fileName,
         extension: data.extension,

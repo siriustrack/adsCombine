@@ -43,9 +43,9 @@ export class CreateVideoService {
       return;
     }
 
-    console.log(`[${fileName}] Created temp directory at ${jobTemp}`);
+    logger.info(`[${fileName}] Created temp directory at ${jobTemp}`);
 
-    console.log(`[${fileName}] Starting SEQUENTIAL download of ${videos.length} videos...`);
+    logger.info(`[${fileName}] Starting SEQUENTIAL download of ${videos.length} videos...`);
     const { value: downloadedVideos, error: downloadError } = await this.downloadVideos(
       videos,
       jobTemp,
@@ -58,8 +58,8 @@ export class CreateVideoService {
       return;
     }
 
-    console.log(`[${fileName}]=> All videos downloaded sequentially in correct order`);
-    console.log(`[${fileName}] Checking video dimensions in correct order...`);
+    logger.info(`[${fileName}]=> All videos downloaded sequentially in correct order`);
+    logger.info(`[${fileName}] Checking video dimensions in correct order...`);
     const { warnings, videoDimensions } = await this.probeVideos(
       downloadedVideos,
       fileName,
@@ -73,7 +73,7 @@ export class CreateVideoService {
       return;
     }
 
-    console.log(`[${fileName}] Standardizing videos to ${width}x${height} in correct order...`);
+    logger.info(`[${fileName}] Standardizing videos to ${width}x${height} in correct order...`);
     const { value: standardizedVideos, error: standardizeError } = await this.standardizeVideos(
       videoDimensions,
       jobTemp,
@@ -104,7 +104,7 @@ export class CreateVideoService {
       return;
     }
 
-    console.log(`[${fileName}] Video processing completed successfully`);
+    logger.info(`[${fileName}] Video processing completed successfully`);
 
     const { error: rmError } = await wrapPromiseResult(
       fs.rm(jobTemp, { recursive: true, force: true })
@@ -116,7 +116,7 @@ export class CreateVideoService {
       return;
     }
 
-    console.log(`[${fileName}] Cleaned temp directory ${jobTemp}`);
+    logger.info(`[${fileName}] Cleaned temp directory ${jobTemp}`);
 
     const downloadUrl = `${env.BASE_URL}/files/${fileName}${extension}`;
 
@@ -155,7 +155,7 @@ export class CreateVideoService {
 
     for (let i = 0; i < videos.length; i++) {
       const outPath = path.join(jobTemp, `video_${String(i).padStart(3, '0')}.mp4`);
-      console.log(`[${fileName}] Downloading video ${i} from: ${videos[i].url}`);
+      logger.info(`[${fileName}] Downloading video ${i} from: ${videos[i].url}`);
 
       const { value: response, error: fetchError } = await wrapPromiseResult<
         AxiosResponse<ArrayBuffer>,
@@ -175,7 +175,7 @@ export class CreateVideoService {
           const dest = createWriteStream(outPath);
           Readable.from(Buffer.from(response.data)).pipe(dest);
           dest.on('finish', () => {
-            console.log(`[${fileName}] ✅ Downloaded video ${i} -> ${outPath}`);
+            logger.info(`[${fileName}] ✅ Downloaded video ${i} -> ${outPath}`);
             downloadedVideos.push({ index: i, path: outPath });
             resolve();
           });
@@ -225,7 +225,7 @@ export class CreateVideoService {
     videoDimensions: VideoDimension[]
   ): Promise<void> {
     const filePath = downloadedVideo.path;
-    console.log(`[${fileName}] Probing video ${downloadedVideo.index} at ${filePath}`);
+    logger.info(`[${fileName}] Probing video ${downloadedVideo.index} at ${filePath}`);
 
     const { error, value } = await wrapPromiseResult<ffmpeg.FfprobeData, Error>(
       this.getVideoMetadata(filePath)
@@ -282,7 +282,7 @@ export class CreateVideoService {
         audioBitrate: audioStream ? audioStream.bit_rate || '192k' : '192k',
       });
 
-      console.log(
+      logger.info(
         `[${fileName}] Video ${downloadedVideo.index}: ${s.width}x${s.height}, duration: ${parseFloat(s.duration || '0') || 0}s`
       );
 
@@ -306,12 +306,12 @@ export class CreateVideoService {
     for (let i = 0; i < videoDimensions.length; i++) {
       const inputVideo = videoDimensions[i];
       if (!inputVideo) {
-        console.log(`[${fileName}] Skipping video ${i} - missing data`);
+        logger.info(`[${fileName}] Skipping video ${i} - missing data`);
         continue;
       }
 
       const standardizedPath = path.join(jobTemp, `standardized_${String(i).padStart(3, '0')}.mp4`);
-      console.log(
+      logger.info(
         `[${fileName}] Starting standardization of video ${inputVideo.originalIndex} (position ${i}) (${inputVideo.width}x${inputVideo.height}) to ${width}x${height}...`
       );
 
@@ -330,19 +330,19 @@ export class CreateVideoService {
             ])
             .output(standardizedPath)
             .on('start', () => {
-              console.log(
+              logger.info(
                 `[${fileName}] FFmpeg standardization of video ${inputVideo.originalIndex} (position ${i}) started`
               );
             })
             .on('progress', (progress) => {
               if (progress.percent) {
-                console.log(
+                logger.info(
                   `[${fileName}] Standardizing video ${inputVideo.originalIndex} (pos ${i}): ${progress.percent.toFixed(2)}% done`
                 );
               }
             })
             .on('end', () => {
-              console.log(
+              logger.info(
                 `[${fileName}] ✅ Standardized video ${inputVideo.originalIndex} (position ${i}) successfully`
               );
               standardizedVideos.push(standardizedPath);
@@ -384,7 +384,7 @@ export class CreateVideoService {
     const concatFilePath = path.join(jobTemp, 'concat.txt');
     const concatFileContent = standardizedVideos
       .map((file, index) => {
-        console.log(`[${fileName}] Concat order ${index}: ${path.basename(file)}`);
+        logger.info(`[${fileName}] Concat order ${index}: ${path.basename(file)}`);
         return `file '${file}'`;
       })
       .join('\n');
@@ -398,8 +398,8 @@ export class CreateVideoService {
       return errResult(new Error(`Failed to write concat file: ${error.message}`));
     }
 
-    console.log(`[${fileName}] Concat file created with guaranteed order:`);
-    console.log(concatFileContent);
+    logger.info(`[${fileName}] Concat file created with guaranteed order:`);
+    logger.info(concatFileContent);
 
     const outputPath = path.join(PUBLIC_DIR, `${fileName}${extension}`);
 
@@ -409,7 +409,7 @@ export class CreateVideoService {
     }, 192000);
 
     const audioBitrate = Math.max(parseInt(bitrate) || 320000, highestAudioBitrate).toString();
-    console.log(
+    logger.info(
       `[${fileName}] Starting concatenation of ${standardizedVideos.length} videos with audio bitrate ${audioBitrate}`
     );
 
@@ -430,22 +430,22 @@ export class CreateVideoService {
           .output(outputPath);
 
         const ffmpegCommandString = ffmpegCmd._getArguments().join(' ');
-        console.log(`[${fileName}] FFmpeg concat command: ffmpeg ${ffmpegCommandString}`);
+        logger.info(`[${fileName}] FFmpeg concat command: ffmpeg ${ffmpegCommandString}`);
 
         ffmpegCmd
           .on('start', (cmd) => {
-            console.log(`[${fileName}] FFmpeg concat started with command: ${cmd}`);
+            logger.info(`[${fileName}] FFmpeg concat started with command: ${cmd}`);
           })
           .on('progress', (progress) => {
             const percent = progress.percent ? progress.percent.toFixed(2) : 'unknown';
             const frames = progress.frames || 0;
             const fps = progress.currentFps || 0;
-            console.log(
+            logger.info(
               `[${fileName}] Processing: ${percent}% done | Frames: ${frames} | FPS: ${fps}`
             );
           })
           .on('end', () => {
-            console.log(`[${fileName}] FFmpeg processing finished. Output at ${outputPath}`);
+            logger.info(`[${fileName}] FFmpeg processing finished. Output at ${outputPath}`);
             resolve();
           })
           .on('error', (err, _stdout, stderr) => {

@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { PUBLIC_DIR } from '@config/dirs';
+import logger from '@lib/logger';
 import { wrapPromiseResult } from '@lib/result.types';
 import type { VideoMeta } from '.';
 
@@ -23,7 +24,7 @@ export class DeleteVideosService {
 
     if (exists) {
       await wrapPromiseResult(fs.unlink(filePath));
-      console.log(`Deleted public file ${filePath}`);
+      logger.info(`Deleted public file ${filePath}`);
     }
 
     this.videosMeta.splice(idx, 1);
