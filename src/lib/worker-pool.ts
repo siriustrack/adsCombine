@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { cpus } from 'node:os';
 import path from 'node:path';
 import Piscina from 'piscina';
+import logger from './logger';
 
 function getOptimalWorkerCount(): { maxWorkers: number; minWorkers: number } {
   const totalCpus = cpus().length;
@@ -29,7 +30,7 @@ function getOptimalWorkerCount(): { maxWorkers: number; minWorkers: number } {
           const cpuLimit = quota / period;
           maxWorkers = Math.max(1, Math.floor(cpuLimit / 2));
           minWorkers = maxWorkers; // Update minWorkers too
-          console.log('Container CPU limit detected:', {
+          logger.info('Container CPU limit detected:', {
             cpuLimit,
             adjustedMaxWorkers: maxWorkers,
           });
@@ -46,7 +47,7 @@ function getOptimalWorkerCount(): { maxWorkers: number; minWorkers: number } {
     if (envMaxWorkers > 0) {
       maxWorkers = envMaxWorkers;
       minWorkers = maxWorkers; // Keep them equal
-      console.log('PDF_MAX_WORKERS environment variable override:', maxWorkers);
+      logger.info('PDF_MAX_WORKERS environment variable override:', maxWorkers);
     }
   }
 
@@ -57,7 +58,7 @@ function getWorkerFilePath(): string {
   const workerPath = path.resolve(__dirname, '../core/services/messages/pdfChunkWorker.js');
   
   if (fs.existsSync(workerPath)) {
-    console.log('Using JavaScript worker file');
+    logger.info('Using JavaScript worker file');
     return workerPath;
   }
 
@@ -67,7 +68,7 @@ function getWorkerFilePath(): string {
 const { maxWorkers, minWorkers } = getOptimalWorkerCount();
 const workerFilePath = getWorkerFilePath();
 
-console.log('PDF Worker Pool Configuration:', {
+logger.info('PDF Worker Pool Configuration:', {
   totalCpus: cpus().length,
   maxWorkers,
   minWorkers,
@@ -90,7 +91,7 @@ export const pdfWorkerPool = new Piscina({
   maxQueue: 0, // No queue - force parallel execution
 });
 
-console.log('Piscina Pool Created:', {
+logger.info('Piscina Pool Created:', {
   maxThreads: pdfWorkerPool.options.maxThreads,
   minThreads: pdfWorkerPool.options.minThreads,
   filename: pdfWorkerPool.options.filename,
@@ -99,20 +100,20 @@ console.log('Piscina Pool Created:', {
 
 // Log worker pool events for debugging
 pdfWorkerPool.on('worker', (worker) => {
-  console.log(`PDF Worker spawned: PID ${worker.threadId}`);
+  logger.info(`PDF Worker spawned: PID ${worker.threadId}`);
 });
 
 pdfWorkerPool.on('workerExit', (worker) => {
-  console.log(`PDF Worker exited: PID ${worker.threadId}`);
+  logger.info(`PDF Worker exited: PID ${worker.threadId}`);
 });
 
 // Log pool utilization
 pdfWorkerPool.on('drain', () => {
-  console.log('Worker pool drained - all tasks completed');
+  logger.info('Worker pool drained - all tasks completed');
 });
 
 pdfWorkerPool.on('needsDrain', () => {
-  console.log('Worker pool needs drain - queue is full');
+  logger.info('Worker pool needs drain - queue is full');
 });
 
 export { maxWorkers, minWorkers };

@@ -69,7 +69,7 @@ module.exports = async function worker({ pageRange, pdfPath, fileId, totalPages 
   // Adaptive resolution based on document size
   const resolution = totalPages > 20 ? 200 : totalPages > 10 ? 250 : 300;
   
-  console.log(`[Worker ${process.pid}] Starting chunk processing`, {
+  logger.info(`[Worker ${process.pid}] Starting chunk processing`, {
     fileId,
     pageRange,
     startTime,
@@ -91,7 +91,7 @@ module.exports = async function worker({ pageRange, pdfPath, fileId, totalPages 
 
     const pageFiles = fs.readdirSync(tempDir.name).filter((f) => f.endsWith('.png'));
     
-    console.log(`[Worker ${process.pid}] PDF to images conversion completed`, {
+    logger.info(`[Worker ${process.pid}] PDF to images conversion completed`, {
       fileId,
       pageRange,
       pdfToPpmDuration: pdfToPpmEnd - pdfToPpmStart,
@@ -112,7 +112,7 @@ module.exports = async function worker({ pageRange, pdfPath, fileId, totalPages 
         const actualIndex = i + batchIndex;
         return processPage(pageFile, tempDir.name, preprocessDir.name).then(result => {
           const pageDuration = Date.now() - pageStartTime;
-          console.log(`[Worker ${process.pid}] Page OCR completed`, {
+          logger.info(`[Worker ${process.pid}] Page OCR completed`, {
             fileId,
             pageFile,
             pageIndex: actualIndex,
@@ -141,7 +141,7 @@ module.exports = async function worker({ pageRange, pdfPath, fileId, totalPages 
     ocrResults = pageResults.filter((text) => text !== null && text !== undefined);
 
     const totalDuration = Date.now() - startTime;
-    console.log(`[Worker ${process.pid}] Chunk processing completed`, {
+    logger.info(`[Worker ${process.pid}] Chunk processing completed`, {
       fileId,
       pageRange,
       totalDuration,
@@ -175,7 +175,7 @@ module.exports = async function worker({ pageRange, pdfPath, fileId, totalPages 
     preprocessDir.removeCallback();
     const cleanupEnd = Date.now();
     
-    console.log(`[Worker ${process.pid}] Cleanup completed`, {
+    logger.info(`[Worker ${process.pid}] Cleanup completed`, {
       fileId,
       pageRange,
       cleanupDuration: cleanupEnd - cleanupStart,

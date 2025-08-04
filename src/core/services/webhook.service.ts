@@ -1,3 +1,4 @@
+import logger from '@lib/logger';
 import { wrapPromiseResult } from '@lib/result.types';
 import axios from 'axios';
 
@@ -14,7 +15,7 @@ export class WebhookService {
     if (error) {
       console.error(`[${fileName}] Failed to notify webhook: ${error.message}`);
     } else {
-      console.log(
+      logger.info(
         `[${fileName}] Webhook notified successfully: ${value.status} ${value.statusText}`
       );
     }
