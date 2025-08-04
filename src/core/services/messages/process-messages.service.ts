@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
+import { cpus } from 'node:os';
 import path, { join } from 'node:path';
 import logger from '@lib/logger';
 import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types';
@@ -49,7 +49,7 @@ const OCR_SETTINGS = {
 
 export class ProcessMessagesService {
   private readonly openai = new OpenAI({ apiKey: openaiConfig.apiKey });
-  private readonly MAX_WORKERS = Math.max(1, Math.floor(os.cpus().length * 0.75));
+  private readonly MAX_WORKERS =  cpus().length / 2;
 
   async execute({
     messages,
@@ -498,9 +498,11 @@ export class ProcessMessagesService {
       return [];
     }
 
-    const numChunks = Math.min(OCR_SETTINGS.MAX_CHUNKS, totalPages, this.MAX_WORKERS);
+    const numChunks = Math.min(totalPages, this.MAX_WORKERS);
     const pagesPerChunk = Math.ceil(totalPages / numChunks);
     const chunks: { first: number; last: number }[] = [];
+
+    logger.info('numChunks', { numChunks, pagesPerChunk });
 
     for (let i = 0; i < totalPages; i += pagesPerChunk) {
       const first = i + 1;
