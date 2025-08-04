@@ -11,6 +11,7 @@ import {
   TEMP_DIR,
 } from '@config/dirs';
 import { env } from '@config/env';
+import logger from '@lib/logger';
 import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types';
 import type { Service } from '@lib/service.types';
 import axios, { type AxiosResponse } from 'axios';
@@ -31,7 +32,7 @@ export class ProcessImageService implements Service {
       fileName = fileName.trim().replace(/[\r\n]/g, '');
     }
 
-    console.log(`[${fileName}] Received image processing request`);
+    logger.info(`[${fileName}] Received image processing request`);
 
     if (!fileName) {
       console.error(`Missing fileName`);
@@ -62,7 +63,7 @@ export class ProcessImageService implements Service {
       });
     }
 
-    console.log(`[${fileName}] Created temp directory at ${jobTemp}`);
+    logger.info(`[${fileName}] Created temp directory at ${jobTemp}`);
 
     const inputImagePath = path.join(jobTemp, 'input.png');
 
@@ -81,10 +82,10 @@ export class ProcessImageService implements Service {
       return versionResult;
     }
 
-    console.log(`[${fileName}] Starting Stability AI image completion...`);
+    logger.info(`[${fileName}] Starting Stability AI image completion...`);
 
     const feedFullyOutputPath = path.join(FEED_FULLY_IMGS_DIR, `${fileName}_feed_fully.png`);
-    console.log(`[${fileName}] Creating AI FEED FULLY version (1080x1350)...`);
+    logger.info(`[${fileName}] Creating AI FEED FULLY version (1080x1350)...`);
 
     const { error: feedFullyError } = await wrapPromiseResult(
       this.generateStabilityImage({
@@ -107,7 +108,7 @@ export class ProcessImageService implements Service {
     }
 
     const storyFullyOutputPath = path.join(STORY_FULLY_IMGS_DIR, `${fileName}_story_fully.png`);
-    console.log(`[${fileName}] Creating AI STORY FULLY version (1080x1920)...`);
+    logger.info(`[${fileName}] Creating AI STORY FULLY version (1080x1920)...`);
 
     const { error: storyFullyError } = await wrapPromiseResult(
       this.generateStabilityImage({
@@ -128,7 +129,7 @@ export class ProcessImageService implements Service {
       });
     }
 
-    console.log(`[${fileName}] Image processing completed successfully`);
+    logger.info(`[${fileName}] Image processing completed successfully`);
 
     const originalOutputPath = path.join(IMGS_DIR, `${fileName}_original.png`);
 
@@ -142,7 +143,7 @@ export class ProcessImageService implements Service {
         message: `Failed to copy original file: ${copyError}`,
       });
     }
-    console.log(`[${fileName}] Original image saved to ${originalOutputPath}`);
+    logger.info(`[${fileName}] Original image saved to ${originalOutputPath}`);
 
     const { error: cleanupError } = await wrapPromiseResult(
       fs.rm(jobTemp, { recursive: true, force: true })
@@ -151,7 +152,7 @@ export class ProcessImageService implements Service {
       console.error(`[${fileName}] Error cleaning temp directory:`, cleanupError);
       // Continue despite cleanup error
     } else {
-      console.log(`[${fileName}] Cleaned temp directory ${jobTemp}`);
+      logger.info(`[${fileName}] Cleaned temp directory ${jobTemp}`);
     }
 
     const baseUrl = env.BASE_URL.startsWith('http') ? env.BASE_URL : `https://${env.BASE_URL}`;
@@ -161,7 +162,7 @@ export class ProcessImageService implements Service {
     const feedFullyUrl = `${baseUrl}/files/imgs/feed-fully/${fileName}_feed_fully.png`;
     const storyFullyUrl = `${baseUrl}/files/imgs/story-fully/${fileName}_story_fully.png`;
 
-    console.log(
+    logger.info(
       `[${fileName}] Response sent with URLs: feed = ${feedUrl}, story = ${storyUrl}, original = ${originalUrl}, feedFully = ${feedFullyUrl}, storyFully = ${baseUrl}/files/imgs/story-fully/${fileName}_story_fully.png `
     );
 
@@ -184,7 +185,7 @@ export class ProcessImageService implements Service {
     fileName: string
   ): Promise<Result<void, { status: number; message: string }>> {
     if (imageData) {
-      console.log(`[${fileName}] Processing base64 image data...`);
+      logger.info(`[${fileName}] Processing base64 image data...`);
 
       const base64Data = imageData.replace(/^data:image\/[a-zA-Z]+;base64,/, '');
       const imageBuffer = Buffer.from(base64Data, 'base64');
@@ -199,9 +200,9 @@ export class ProcessImageService implements Service {
           message: `Failed to write base64 image: ${writeError}`,
         });
       }
-      console.log(`[${fileName}] Base64 image saved successfully`);
+      logger.info(`[${fileName}] Base64 image saved successfully`);
     } else if (imageUrl) {
-      console.log(`[${fileName}] Downloading image from URL...`);
+      logger.info(`[${fileName}] Downloading image from URL...`);
 
       const { value: response, error: axiosError } = await wrapPromiseResult<
         AxiosResponse<ArrayBuffer>,
@@ -228,7 +229,7 @@ export class ProcessImageService implements Service {
           message: `Failed to write downloaded image: ${writeError}`,
         });
       }
-      console.log(`[${fileName}] Image downloaded successfully`);
+      logger.info(`[${fileName}] Image downloaded successfully`);
     }
 
     return okResult(undefined);
@@ -239,7 +240,7 @@ export class ProcessImageService implements Service {
     fileName: string
   ): Promise<Result<void, { status: number; message: string }>> {
     const feedOutputPath = path.join(FEED_IMGS_DIR, `${fileName}_feed.png`);
-    console.log(`[${fileName}] Creating FEED version (1080x1350)...`);
+    logger.info(`[${fileName}] Creating FEED version (1080x1350)...`);
 
     const createFeedPromise = new Promise<void>((resolve, reject) => {
       ffmpeg(inputImagePath)
@@ -249,10 +250,10 @@ export class ProcessImageService implements Service {
         ])
         .output(feedOutputPath)
         .on('start', () => {
-          console.log(`[${fileName}] FFmpeg FEED processing started`);
+          logger.info(`[${fileName}] FFmpeg FEED processing started`);
         })
         .on('end', () => {
-          console.log(`[${fileName}] FEED version completed`);
+          logger.info(`[${fileName}] FEED version completed`);
           resolve();
         })
         .on('error', (err) => {
@@ -272,7 +273,7 @@ export class ProcessImageService implements Service {
     }
 
     const storyOutputPath = path.join(STORY_IMGS_DIR, `${fileName}_story.png`);
-    console.log(`[${fileName}] Creating STORY version (1080x1920)...`);
+    logger.info(`[${fileName}] Creating STORY version (1080x1920)...`);
 
     const createStoryPromise = new Promise<void>((resolve, reject) => {
       ffmpeg(inputImagePath)
@@ -282,10 +283,10 @@ export class ProcessImageService implements Service {
         ])
         .output(storyOutputPath)
         .on('start', () => {
-          console.log(`[${fileName}] FFmpeg STORY processing started`);
+          logger.info(`[${fileName}] FFmpeg STORY processing started`);
         })
         .on('end', () => {
-          console.log(`[${fileName}] STORY version completed`);
+          logger.info(`[${fileName}] STORY version completed`);
           resolve();
         })
         .on('error', (err) => {
@@ -335,7 +336,7 @@ export class ProcessImageService implements Service {
       aiWidth = Math.floor(aiWidth / 64) * 64;
       aiHeight = Math.floor(aiHeight / 64) * 64;
 
-      console.log(
+      logger.info(
         `[${fileName}] Resizing from ${targetWidth}x${targetHeight} to ${aiWidth}x${aiHeight} for Stability AI (${aiWidth * aiHeight} pixels)`
       );
     } else {
@@ -397,7 +398,7 @@ export class ProcessImageService implements Service {
     }
 
     if (aiWidth !== targetWidth || aiHeight !== targetHeight) {
-      console.log(`[${fileName}] Resizing AI result back to ${targetWidth}x${targetHeight}...`);
+      logger.info(`[${fileName}] Resizing AI result back to ${targetWidth}x${targetHeight}...`);
 
       const tempAiPath = path.join(jobTemp, `ai_temp_${aiWidth}x${aiHeight}.png`);
 
@@ -426,7 +427,7 @@ export class ProcessImageService implements Service {
       }
     }
 
-    console.log(`[${fileName}] AI ${targetWidth}x${targetHeight} version saved successfully`);
+    logger.info(`[${fileName}] AI ${targetWidth}x${targetHeight} version saved successfully`);
   }
 
   private async callStabilityAPI(
@@ -435,7 +436,7 @@ export class ProcessImageService implements Service {
     aiHeight: number,
     fileName: string
   ): Promise<Result<Buffer, Error>> {
-    console.log(
+    logger.info(
       `[${fileName}] Sending outpainting request to Stability AI API for ${aiWidth}x${aiHeight} (${aiWidth * aiHeight} pixels)...`
     );
 
@@ -454,11 +455,11 @@ export class ProcessImageService implements Service {
       return errResult(new Error(`Stability AI fetch failed: ${axiosError}`));
     }
 
-    console.log(`[${fileName}] Stability AI response status: ${response!.status}`);
+    logger.info(`[${fileName}] Stability AI response status: ${response!.status}`);
 
     const imageBuffer = Buffer.from(response?.data!);
 
-    console.log(
+    logger.info(
       `[${fileName}] Stability AI success, received image buffer of ${imageBuffer.length} bytes`
     );
 
@@ -477,10 +478,10 @@ export class ProcessImageService implements Service {
         .outputOptions([`-vf scale=${aiWidth}:${aiHeight}`, '-vframes 1'])
         .output(maskPath)
         .on('start', () => {
-          console.log(`[${fileName}] Resizing mask to ${aiWidth}x${aiHeight}...`);
+          logger.info(`[${fileName}] Resizing mask to ${aiWidth}x${aiHeight}...`);
         })
         .on('end', () => {
-          console.log(`[${fileName}] Mask resized successfully`);
+          logger.info(`[${fileName}] Mask resized successfully`);
           resolve();
         })
         .on('error', (err) => {
@@ -514,12 +515,12 @@ export class ProcessImageService implements Service {
         ])
         .output(canvasPath)
         .on('start', () => {
-          console.log(
+          logger.info(
             `[${fileName}] Creating canvas ${aiWidth}x${aiHeight} with centered ${imageSize}x${imageSize} image...`
           );
         })
         .on('end', () => {
-          console.log(`[${fileName}] Canvas created successfully`);
+          logger.info(`[${fileName}] Canvas created successfully`);
           resolve();
         })
         .on('error', (err) => {
@@ -549,10 +550,10 @@ export class ProcessImageService implements Service {
         .outputOptions([`-vf scale=${targetWidth}:${targetHeight}`, '-vframes 1'])
         .output(outputPath)
         .on('start', () => {
-          console.log(`[${fileName}] Upscaling AI result...`);
+          logger.info(`[${fileName}] Upscaling AI result...`);
         })
         .on('end', () => {
-          console.log(`[${fileName}] AI result upscaled successfully`);
+          logger.info(`[${fileName}] AI result upscaled successfully`);
           resolve();
         })
         .on('error', (err) => {
@@ -584,14 +585,14 @@ export class ProcessImageService implements Service {
       console.error(`[${fileName}] Error getting canvas stats:`, canvasStatError);
       return errResult(new Error(`Failed to get canvas stats: ${canvasStatError}`));
     }
-    console.log(`[${fileName}] Canvas image size: ${canvasStat!.size} bytes`);
+    logger.info(`[${fileName}] Canvas image size: ${canvasStat!.size} bytes`);
 
     const { value: maskStat, error: maskStatError } = await wrapPromiseResult(fs.stat(maskPath));
     if (maskStatError) {
       console.error(`[${fileName}] Error getting mask stats:`, maskStatError);
       return errResult(new Error(`Failed to get mask stats: ${maskStatError}`));
     }
-    console.log(`[${fileName}] Resized mask size: ${maskStat!.size} bytes`);
+    logger.info(`[${fileName}] Resized mask size: ${maskStat!.size} bytes`);
 
     form.append('image', createReadStream(canvasPath), {
       filename: 'image.png',

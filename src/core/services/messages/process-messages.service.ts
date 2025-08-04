@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
+import { cpus } from 'node:os';
 import path, { join } from 'node:path';
 import logger from '@lib/logger';
 import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types';
@@ -15,6 +15,7 @@ import pdf from 'pdf-parse';
 import sharp from 'sharp';
 import tmp from 'tmp';
 import { sanitize } from 'utils/sanitize';
+import { logSystemDiagnostics } from 'utils/systemDiagnostics';
 import { sanitizeText } from 'utils/textSanitizer';
 
 sharp.cache(false);
@@ -49,7 +50,25 @@ const OCR_SETTINGS = {
 
 export class ProcessMessagesService {
   private readonly openai = new OpenAI({ apiKey: openaiConfig.apiKey });
-  private readonly MAX_WORKERS = Math.max(1, Math.floor(os.cpus().length * 0.75));
+  private readonly MAX_WORKERS = cpus().length / 2;
+
+  constructor() {
+    // Log system information for debugging
+    logger.info('ProcessMessagesService initialized', {
+      totalCpus: cpus().length,
+      maxWorkers: this.MAX_WORKERS,
+      cpuInfo: cpus().map((cpu) => ({
+        model: cpu.model,
+        speed: cpu.speed,
+      }))[0], // Log only the first CPU info to avoid spam
+      nodeVersion: process.version,
+      platform: process.platform,
+      arch: process.arch,
+    });
+
+    // Log detailed system diagnostics
+    logSystemDiagnostics(logger, 'PDF Processing Service - System Diagnostics');
+  }
 
   async execute({
     messages,
@@ -311,7 +330,8 @@ export class ProcessMessagesService {
 
   private async processPdf(file: FileInput): Promise<Result<string, Error>> {
     const { fileId, url } = file;
-    logger.info('Processing PDF file', { fileId, url });
+    const startTime = Date.now();
+    logger.info('Processing PDF file', { fileId, url, startTime });
 
     const timeoutPromise = this.createTimeoutPromise(PROCESSING_TIMEOUTS.PDF_GLOBAL);
     const { value: response, error } = await wrapPromiseResult<AxiosResponse, Error>(
@@ -327,7 +347,13 @@ export class ProcessMessagesService {
       return errResult(new Error(`Failed to fetch PDF file: ${error.message}`));
     }
 
+    const fetchTime = Date.now();
     const buffer = Buffer.from(response.data);
+    logger.info('PDF file fetched successfully', {
+      fileId,
+      bufferSize: buffer.length,
+      fetchDuration: fetchTime - startTime,
+    });
 
     const { value: extractedText, error: extractionError } = await this.extractDirectTextFromPdf(
       buffer,
@@ -339,33 +365,114 @@ export class ProcessMessagesService {
       return errResult(new Error(`Erro ao extrair texto do PDF: ${extractionError.message}`));
     }
 
+    const extractionTime = Date.now();
+    logger.info('Direct text extraction completed', {
+      fileId,
+      textLength: extractedText.length,
+      extractionDuration: extractionTime - fetchTime,
+    });
+
     const { tempPdf, totalPages, hasVisualContent } = await this.analyzePdfContent(buffer, fileId);
+
+    const analysisTime = Date.now();
+    logger.info('PDF content analysis completed', {
+      fileId,
+      totalPages,
+      hasVisualContent,
+      analysisDuration: analysisTime - extractionTime,
+    });
 
     if (this.shouldSkipOcr(extractedText, hasVisualContent, fileId)) {
       this.cleanupTempFiles(tempPdf);
+      const totalDuration = Date.now() - startTime;
+      logger.info('PDF processing completed (OCR skipped)', {
+        fileId,
+        totalDuration,
+        finalTextLength: extractedText.length,
+      });
       return okResult(sanitize(extractedText));
     }
 
     if (totalPages === 0) {
       this.cleanupTempFiles(tempPdf);
+      const totalDuration = Date.now() - startTime;
+      logger.info('PDF processing completed (no pages found)', {
+        fileId,
+        totalDuration,
+        finalTextLength: extractedText.length,
+      });
       return okResult(sanitize(extractedText));
     }
 
     const chunks = this.createProcessingChunks(totalPages, fileId);
+    const chunkingTime = Date.now();
+
+    // Log worker pool state before processing
+    logger.info('Worker pool state before OCR processing', {
+      fileId,
+      poolStats: {
+        totalThreads: pdfWorkerPool.threads.length,
+        queueSize: pdfWorkerPool.queueSize,
+        utilization: pdfWorkerPool.utilization,
+        maxThreads: pdfWorkerPool.options.maxThreads,
+        minThreads: pdfWorkerPool.options.minThreads
+      },
+      chunksToProcess: chunks.length
+    });
 
     const ocrPromise = Promise.all(
-      chunks.map((chunk) =>
-        pdfWorkerPool.run({
-          pageRange: chunk,
-          pdfPath: tempPdf.name,
+      chunks.map((chunk, index) => {
+        const chunkStartTime = Date.now();
+        logger.info('Submitting chunk to worker pool', {
           fileId,
-        })
-      )
+          chunkIndex: index,
+          chunk,
+          poolQueueSize: pdfWorkerPool.queueSize,
+          poolThreads: pdfWorkerPool.threads.length
+        });
+        
+        return pdfWorkerPool
+          .run({
+            pageRange: chunk,
+            pdfPath: tempPdf.name,
+            fileId,
+            totalPages,
+          })
+          .then((result) => {
+            const chunkDuration = Date.now() - chunkStartTime;
+            logger.info('Chunk OCR completed', {
+              fileId,
+              chunkIndex: index,
+              pageRange: chunk,
+              chunkDuration,
+              resultLength: Array.isArray(result) ? result.join('').length : 0,
+            });
+            return result;
+          })
+          .catch((error) => {
+            const chunkDuration = Date.now() - chunkStartTime;
+            logger.error('Chunk OCR failed', {
+              fileId,
+              chunkIndex: index,
+              pageRange: chunk,
+              chunkDuration,
+              error: error.message,
+            });
+            throw error;
+          });
+      })
     );
 
     const { value: ocrResults, error: ocrError } = await wrapPromiseResult<string[][], Error>(
       Promise.race([ocrPromise, timeoutPromise])
     );
+
+    const ocrTime = Date.now();
+    logger.info('OCR processing completed', {
+      fileId,
+      ocrDuration: ocrTime - chunkingTime,
+      chunksProcessed: chunks.length,
+    });
 
     this.cleanupTempFiles(tempPdf);
 
@@ -377,10 +484,34 @@ export class ProcessMessagesService {
     if (ocrResults && ocrResults.length > 0) {
       const ocrText = this.processOcrResults(ocrResults, fileId);
       const finalText = this.combineTextResults(extractedText, ocrText, fileId);
+      const totalDuration = Date.now() - startTime;
       this.logProcessingCompletion(fileId, finalText, extractedText, ocrText);
+
+      logger.info('PDF processing completed successfully', {
+        fileId,
+        totalDuration,
+        breakdown: {
+          fetch: fetchTime - startTime,
+          extraction: extractionTime - fetchTime,
+          analysis: analysisTime - extractionTime,
+          chunking: chunkingTime - analysisTime,
+          ocr: ocrTime - chunkingTime,
+          postProcessing: Date.now() - ocrTime,
+        },
+        finalTextLength: finalText.length,
+        chunks: chunks.length,
+        maxWorkers: this.MAX_WORKERS,
+      });
+
       return okResult(finalText);
     }
 
+    const totalDuration = Date.now() - startTime;
+    logger.info('PDF processing completed (fallback to extracted text)', {
+      fileId,
+      totalDuration,
+      finalTextLength: extractedText.length,
+    });
     return okResult(sanitize(extractedText));
   }
 
@@ -498,9 +629,21 @@ export class ProcessMessagesService {
       return [];
     }
 
-    const numChunks = Math.min(OCR_SETTINGS.MAX_CHUNKS, totalPages, this.MAX_WORKERS);
-    const pagesPerChunk = Math.ceil(totalPages / numChunks);
+    // More aggressive chunking for better parallelism
+    const idealPagesPerChunk = totalPages > 20 ? 2 : totalPages > 10 ? 3 : 4;
+    const numChunks = Math.ceil(totalPages / idealPagesPerChunk);
+    const actualChunks = Math.min(numChunks, this.MAX_WORKERS * 2); // Allow more chunks than workers
+    const pagesPerChunk = Math.ceil(totalPages / actualChunks);
+    
     const chunks: { first: number; last: number }[] = [];
+
+    logger.info('Optimized chunking strategy', { 
+      totalPages,
+      idealPagesPerChunk,
+      actualChunks,
+      pagesPerChunk,
+      maxWorkers: this.MAX_WORKERS
+    });
 
     for (let i = 0; i < totalPages; i += pagesPerChunk) {
       const first = i + 1;
