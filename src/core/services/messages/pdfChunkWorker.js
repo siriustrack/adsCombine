@@ -1,185 +1,180 @@
+// pdfChunkWorker.js
+/* eslint-disable no-console */
 const { execSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const sharp = require('sharp');
 const tmp = require('tmp');
+const { threadId } = require('node:worker_threads');
 
-sharp.cache(false);
+tmp.setGracefulCleanup();
 
-async function preprocessImage(imgPath, preprocessDirName) {
-  const outputPath = path.join(preprocessDirName, `${path.basename(imgPath, '.png')}.tif`);
-  try {
-    await sharp(imgPath)
-      .grayscale()
-      .normalize()
-      .linear(1.2, -(128 * 1.2) + 128)
-      .tiff({
-        compression: 'lzw',
-        quality: 100,
-      })
-      .toFile(outputPath);
-    return outputPath;
-  } catch (error) {
-    console.error(`Sharp preprocessing error for ${imgPath}:`, error);
-    throw new Error(`Sharp preprocessing failed: ${error.message}`);
-  }
+// Limita paralelismo interno do Tesseract/OpenMP (cada worker = 1 thread CPU do OCR)
+process.env.OMP_NUM_THREADS = '1';
+process.env.OMP_THREAD_LIMIT = '1';
+process.env.TESSERACT_NUM_THREADS = '1';
+
+function sh(cmd, opts = {}) {
+  return execSync(cmd, { stdio: 'pipe', encoding: 'utf-8', ...opts });
 }
 
-async function performOCR(preprocessPath) {
-  try {
-    // Use faster PSM mode and optimizations for speed
-    const text = execSync(`tesseract "${preprocessPath}" stdout -l por --oem 3 --psm 6 -c tessedit_do_invert=0`, {
-      encoding: 'utf-8',
-      timeout: 15000, // Reduced timeout
-    });
-    if (text && text.trim().length > 10) return text.trim();
-  } catch (e) {
-    console.error(`Error processing with PSM 6, trying PSM 3. Error: ${e.message}`);
+function listFiles(dir, ext) {
+  return fs
+    .readdirSync(dir)
+    .filter((f) => f.toLowerCase().endsWith(ext))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+}
 
+function hasMagick() {
+  try {
+    sh('magick -version', { timeout: 2000 });
+    return true;
+  } catch {
     try {
-      const text = execSync(`tesseract "${preprocessPath}" stdout -l por --oem 3 --psm 3`, {
-        encoding: 'utf-8',
-        timeout: 15000, // Reduced timeout
-      });
-      return text.trim();
-    } catch (e2) {
-      console.error(`Error processing with PSM 3 as well. Error: ${e2.message}`);
+      sh('convert -version', { timeout: 2000 });
+      return true;
+    } catch {
+      return false;
     }
   }
-  return '';
 }
 
-async function processPage(pageFile, tempDirName, preprocessDirName) {
-  const imgPath = path.join(tempDirName, pageFile);
+function magickCmd(inputGlob, outputPattern, op) {
+  // Tenta com `magick`, cai para `convert` se necessário
   try {
-    const processedImgPath = await preprocessImage(imgPath, preprocessDirName);
-    return await performOCR(processedImgPath);
-  } catch (pageError) {
-    console.error(`Error processing page ${pageFile}:`, pageError);
-    return null;
+    sh(`magick ${inputGlob} ${op} ${outputPattern}`);
+  } catch {
+    sh(`convert ${inputGlob} ${op} ${outputPattern}`);
   }
 }
 
-module.exports = async function worker({ pageRange, pdfPath, fileId, totalPages }) {
-  const startTime = Date.now();
-  let ocrResults = [];
-  const tempDir = tmp.dirSync({ unsafeCleanup: true });
-  const preprocessDir = tmp.dirSync({ unsafeCleanup: true });
+function rasterizeTiffGray({ pdfPath, outPrefix, resolution, from, to }) {
+  // Gera TIFF grayscale com DPI correto; se `from/to` definidos, usa o range
+  const base = `pdftoppm -tiff -gray -r ${resolution}`;
+  if (from && to) {
+    sh(`${base} -f ${from} -l ${to} "${pdfPath}" "${outPrefix}"`);
+  } else {
+    sh(`${base} "${pdfPath}" "${outPrefix}"`);
+  }
+}
 
-  // Adaptive resolution based on document size
-  const resolution = totalPages > 20 ? 200 : totalPages > 10 ? 250 : 300;
-  
-  console.log(`[Worker ${process.pid}] Starting chunk processing`, {
+module.exports = async function worker(payload) {
+  const t0 = Date.now();
+  const {
+    pageRange,     // { first, last } no PDF original
+    pdfPath,       // caminho do PDF (chunk físico ou original)
     fileId,
-    pageRange,
-    startTime,
-    resolution,
     totalPages,
-    tempDir: tempDir.name,
-    preprocessDir: preprocessDir.name
-  });
+  } = payload;
+
+  // Pastas temporárias (auto-clean)
+  const tempDir = tmp.dirSync({ unsafeCleanup: true });
+  const workDir = tempDir.name;
+
+  // Heurística de DPI por tamanho de documento (ajuste se quiser)
+  const resolution = totalPages > 20 ? 180 : totalPages > 10 ? 220 : 280;
+
+  // Descobre se já é um chunk físico (arquivo com _chunk_)
+  const isChunkPdf = path.basename(pdfPath).includes('_chunk_');
+
+  let rasterFrom = null;
+  let rasterTo = null;
+
+  if (!isChunkPdf && pageRange && Number.isInteger(pageRange.first) && Number.isInteger(pageRange.last)) {
+    rasterFrom = pageRange.first;
+    rasterTo = pageRange.last;
+  }
 
   try {
-    const pdfToPpmStart = Date.now();
-    execSync(
-      `pdftoppm -png -r ${resolution} -f ${pageRange.first} -l ${pageRange.last} "${pdfPath}" "${path.join(
-        tempDir.name,
-        'page'
-      )}"`
-    );
-    const pdfToPpmEnd = Date.now();
+    const prefix = path.join(workDir, 'page');
 
-    const pageFiles = fs.readdirSync(tempDir.name).filter((f) => f.endsWith('.png'));
-    
-    console.log(`[Worker ${process.pid}] PDF to images conversion completed`, {
-      fileId,
-      pageRange,
-      pdfToPpmDuration: pdfToPpmEnd - pdfToPpmStart,
-      pagesGenerated: pageFiles.length,
-      pageFiles
-    });
-
-    const ocrStart = Date.now();
-    
-    // Process pages in parallel instead of sequentially
-    const concurrency = Math.min(pageFiles.length, 3); // Max 3 pages in parallel per worker
-    const pageResults = [];
-    
-    for (let i = 0; i < pageFiles.length; i += concurrency) {
-      const batch = pageFiles.slice(i, i + concurrency);
-      const batchPromises = batch.map((pageFile, batchIndex) => {
-        const pageStartTime = Date.now();
-        const actualIndex = i + batchIndex;
-        return processPage(pageFile, tempDir.name, preprocessDir.name).then(result => {
-          const pageDuration = Date.now() - pageStartTime;
-          console.log(`[Worker ${process.pid}] Page OCR completed`, {
-            fileId,
-            pageFile,
-            pageIndex: actualIndex,
-            pageDuration,
-            resultLength: result ? result.length : 0
-          });
-          return result;
-        }).catch(error => {
-          const pageDuration = Date.now() - pageStartTime;
-          console.error(`[Worker ${process.pid}] Page OCR failed`, {
-            fileId,
-            pageFile,
-            pageIndex: actualIndex,
-            pageDuration,
-            error: error.message
-          });
-          return null;
-        });
-      });
-      
-      const batchResults = await Promise.all(batchPromises);
-      pageResults.push(...batchResults);
+    // 1) Rasteriza direto para TIFF grayscale com DPI correto (mata warnings de DPI)
+    if (rasterFrom && rasterTo) {
+      rasterizeTiffGray({ pdfPath, outPrefix: prefix, resolution, from: rasterFrom, to: rasterTo });
+    } else {
+      rasterizeTiffGray({ pdfPath, outPrefix: prefix, resolution });
     }
-    const ocrEnd = Date.now();
-    
-    ocrResults = pageResults.filter((text) => text !== null && text !== undefined);
 
-    const totalDuration = Date.now() - startTime;
-    console.log(`[Worker ${process.pid}] Chunk processing completed`, {
+    // 2) (Opcional) Normalização de contraste em lote — leve e ajuda em scans ruins.
+    if (hasMagick()) {
+      // -contrast-stretch 1%x1% é conservador; ajuste se quiser (2%/2% etc.)
+      const glob = `"${path.join(workDir, 'page')}-*.tif"`;
+      const outPattern = `"${path.join(workDir, 'norm-%02d.tif')}"`;
+      try {
+        magickCmd(glob, outPattern, '-contrast-stretch 1%x1%');
+      } catch (e) {
+        console.warn(`[Worker ${process.pid}] ImageMagick step skipped: ${e.message}`);
+      }
+    }
+
+    // 3) Seleciona os TIFFs a usar (originais ou normalizados)
+    let tiffs = listFiles(workDir, '.tif')
+      .filter((f) => f.startsWith('norm-') || f.startsWith('page-'))
+      .map((f) => path.join(workDir, f));
+
+    // Se houver normalizados, prioriza-os
+    const hasNorm = tiffs.some((p) => path.basename(p).startsWith('norm-'));
+    if (hasNorm) {
+      tiffs = listFiles(workDir, '.tif')
+        .filter((f) => f.startsWith('norm-'))
+        .map((f) => path.join(workDir, f));
+    }
+
+
+    if (!tiffs || tiffs.length === 0) {
+      console.warn(`[Worker ${process.pid}] [Thread ${threadId}] No TIFF pages produced to OCR`, {
+        fileId,
+        pageRange,
+      });
+      return [];
+    }
+
+    // 4) Uma única chamada do Tesseract para o chunk inteiro (batch) — menos overhead.
+    const env = {
+      ...process.env,
+      OMP_NUM_THREADS: '1',
+      OMP_THREAD_LIMIT: '1',
+      TESSERACT_NUM_THREADS: '1',
+    };
+    const args = [
+      // lista de arquivos
+      ...tiffs.map((p) => `"${p}"`),
+      'stdout',
+      '-l', 'por',
+      '--oem', '1',            // LSTM only: costuma ser mais rápido
+      '--psm', '6',            // parágrafos — teste 4 se houver muitas colunas
+      '-c', 'tessedit_do_invert=0',
+      '-c', 'classify_enable_learning=0',
+    ].join(' ');
+
+    const t1 = Date.now();
+    const text = sh(`tesseract ${args}`, { timeout: 30000, env });
+    const t2 = Date.now();
+
+    console.log(`[Worker ${process.pid}] [Thread ${threadId}] Chunk OCR completed`, {
       fileId,
       pageRange,
-      totalDuration,
-      breakdown: {
-        pdfToPpm: pdfToPpmEnd - pdfToPpmStart,
-        ocr: ocrEnd - ocrStart,
-        cleanup: Date.now() - ocrEnd
-      },
-      pagesProcessed: pageFiles.length,
-      successfulOcr: ocrResults.length,
-      totalTextLength: ocrResults.join('').length,
-      workerPid: process.pid
+      pages: tiffs.length,
+      resolution,
+      ocrMs: t2 - t1,
+      totalMs: t2 - t0,
     });
 
-    return ocrResults;
+    const cleaned = text?.trim();
+    return cleaned ? [cleaned] : [];
   } catch (error) {
-    const totalDuration = Date.now() - startTime;
-    console.error(`[Worker ${process.pid}] Chunk processing error:`, {
+    const dt = Date.now() - t0;
+    console.error(`[Worker ${process.pid}] [Thread ${threadId}] Chunk processing error:`, {
       fileId,
       pageRange,
-      totalDuration,
-      error: error.message,
-      stack: error.stack,
-      workerPid: process.pid
+      totalDuration: dt,
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+      workerPid: process.pid,
     });
-
     throw error;
   } finally {
-    const cleanupStart = Date.now();
-    tempDir.removeCallback();
-    preprocessDir.removeCallback();
-    const cleanupEnd = Date.now();
-    
-    console.log(`[Worker ${process.pid}] Cleanup completed`, {
-      fileId,
-      pageRange,
-      cleanupDuration: cleanupEnd - cleanupStart,
-      workerPid: process.pid
-    });
+    try {
+      tempDir.removeCallback();
+    } catch { }
   }
 };
