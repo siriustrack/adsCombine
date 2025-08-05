@@ -51,7 +51,6 @@ export class ProcessMessagesService {
   private readonly openai = new OpenAI({ apiKey: openaiConfig.apiKey });
   private readonly MAX_WORKERS = cpus().length / 2;
 
-
   async execute({
     messages,
     host,
@@ -172,7 +171,6 @@ export class ProcessMessagesService {
       return errResult(error);
     }
 
-
     return okResult(value);
   }
 
@@ -219,7 +217,6 @@ export class ProcessMessagesService {
         ...file,
         url: `${process.env.SUPABASE_GET_FILE_CONTENT_URL}?file_path=${filePath}&user_id=${userId}&token=${process.env.SUPABASE_TOKEN}`,
       };
-
 
       return updatedFileInfo;
     }
@@ -283,7 +280,6 @@ export class ProcessMessagesService {
   }
 
   private async processDocx({ fileId, url }: FileInput): Promise<Result<string, Error>> {
-
     return this.processWithTimeout(
       async () => {
         const response = await axios.get(url, { responseType: 'arraybuffer' });
@@ -327,9 +323,7 @@ export class ProcessMessagesService {
       return errResult(new Error(`Erro ao extrair texto do PDF: ${extractionError.message}`));
     }
 
-
     const { tempPdf, totalPages, hasVisualContent } = await this.analyzePdfContent(buffer, fileId);
-
 
     if (this.shouldSkipOcr(extractedText, hasVisualContent)) {
       this.cleanupTempFiles(tempPdf);
@@ -343,14 +337,10 @@ export class ProcessMessagesService {
 
     const chunks = this.createProcessingChunks(totalPages, fileId);
 
-    const physicalChunkPaths = await this.createPhysicalPdfChunks(tempPdf, chunks, fileId);
-
-
     const ocrPromise = Promise.all(
       chunks.map((chunk, index) => {
         const chunkStartTime = Date.now();
-        const chunkPdfPath = physicalChunkPaths[index] || tempPdf.name;
-
+        const chunkPdfPath = tempPdf.name;
 
         return pdfWorkerPool
           .run({
@@ -380,16 +370,11 @@ export class ProcessMessagesService {
       Promise.race([ocrPromise, timeoutPromise])
     );
 
-
-    physicalChunkPaths.forEach((chunkPath) => {
-      if (chunkPath !== tempPdf.name) {
-        try {
-          fs.unlinkSync(chunkPath);
-        } catch (error) {
-          logger.warn('Failed to cleanup PDF chunk', { fileId, chunkPath, error });
-        }
-      }
-    });
+    try {
+      fs.unlinkSync(tempPdf.name);
+    } catch (error) {
+      logger.warn('Failed to cleanup PDF chunk', { fileId, chunkPath: tempPdf.name, error });
+    }
 
     this.cleanupTempFiles(tempPdf);
 
@@ -401,7 +386,6 @@ export class ProcessMessagesService {
     if (ocrResults && ocrResults.length > 0) {
       const ocrText = this.processOcrResults(ocrResults);
       const finalText = this.combineTextResults(extractedText, ocrText, fileId);
-
 
       return okResult(finalText);
     }
@@ -455,7 +439,6 @@ export class ProcessMessagesService {
 
     const shouldSkip = isHighQuality;
 
-
     return shouldSkip;
   }
 
@@ -468,7 +451,6 @@ export class ProcessMessagesService {
       const pagesMatch = pdfInfoOutput.match(/Pages:\s*(\d+)/);
       const totalPages = pagesMatch ? parseInt(pagesMatch[1], 10) : 0;
 
-
       return { tempPdf, totalPages, hasVisualContent: true };
     } catch (error) {
       logger.warn('Failed to analyze PDF content', {
@@ -480,57 +462,10 @@ export class ProcessMessagesService {
     }
   }
 
-  private async createPhysicalPdfChunks(
-    tempPdf: { name: string },
-    chunks: { first: number; last: number }[],
-    fileId: string
-  ): Promise<string[]> {
-    const chunkPaths: string[] = [];
-
-
-
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
-      const chunkPath = tmp.tmpNameSync({ postfix: `_chunk_${i}.pdf` });
-
-      try {
-        if (fs.existsSync('/usr/bin/pdftk')) {
-          execSync(
-            `pdftk "${tempPdf.name}" cat ${chunk.first}-${chunk.last} output "${chunkPath}"`,
-            { timeout: 10000 }
-          );
-        } else if (fs.existsSync('/usr/bin/qpdf')) {
-          execSync(
-            `qpdf "${tempPdf.name}" --pages . ${chunk.first}-${chunk.last} -- "${chunkPath}"`,
-            { timeout: 10000 }
-          );
-        } else {
-          logger.warn('No PDF splitting tool found, using direct page extraction', { fileId });
-          chunkPaths.push(tempPdf.name);
-          continue;
-        }
-
-        chunkPaths.push(chunkPath);
-
-      } catch (error) {
-        logger.error('Failed to create PDF chunk, falling back to original', {
-          fileId,
-          chunkIndex: i,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        chunkPaths.push(tempPdf.name);
-      }
-    }
-
-
-    return chunkPaths;
-  }
-
   private createProcessingChunks(
     totalPages: number,
     fileId: string
   ): { first: number; last: number }[] {
-
     if (totalPages === 0) {
       logger.warn('Nenhuma página extraída do PDF', { fileId });
       return [];
@@ -559,8 +494,6 @@ export class ProcessMessagesService {
       }
     }
 
-
-
     return chunks;
   }
 
@@ -573,7 +506,6 @@ export class ProcessMessagesService {
     const allLines = flattenedResults.join('\n').split('\n');
     const lineCount = this.countLines(allLines);
     const filteredLines = this.filterOcrLines(allLines, lineCount, flattenedResults.length);
-
 
     return filteredLines.join('\n');
   }
@@ -668,7 +600,6 @@ export class ProcessMessagesService {
 
     return finalText;
   }
-
 
   private cleanupTempFiles(...tempObjects: Array<{ removeCallback: () => void } | undefined>) {
     tempObjects.forEach((obj) => obj?.removeCallback?.());
