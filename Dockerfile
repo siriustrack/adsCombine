@@ -6,7 +6,7 @@ WORKDIR /app
 
 # Ferramentas necessárias para compilar dependências nativas (ex.: sharp)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 make g++ ca-certificates curl git \
+    python3 make g++ ca-certificates curl git unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Bun para instalar deps rapidamente
