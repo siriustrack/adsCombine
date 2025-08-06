@@ -41,9 +41,9 @@ function hasMagick() {
 function magickCmd(inputGlob, outputPattern, op) {
   // Tenta com `magick`, cai para `convert` se necessário
   try {
-    sh(`magick ${inputGlob} ${op} ${outputPattern}`);
+    sh(`magick ${inputGlob} ${op} ${outputPattern}`, { timeout: 1800000 });
   } catch {
-    sh(`convert ${inputGlob} ${op} ${outputPattern}`);
+    sh(`convert ${inputGlob} ${op} ${outputPattern}`, { timeout: 1800000 });
   }
 }
 
@@ -51,9 +51,9 @@ function rasterizeTiffGray({ pdfPath, outPrefix, resolution, from, to }) {
   // Gera TIFF grayscale com DPI correto; se `from/to` definidos, usa o range
   const base = `pdftoppm -tiff -gray -r ${resolution}`;
   if (from && to) {
-    sh(`${base} -f ${from} -l ${to} "${pdfPath}" "${outPrefix}"`);
+    sh(`${base} -f ${from} -l ${to} "${pdfPath}" "${outPrefix}"`, { timeout: 1800000 });
   } else {
-    sh(`${base} "${pdfPath}" "${outPrefix}"`);
+    sh(`${base} "${pdfPath}" "${outPrefix}"`, { timeout: 1800000 });
   }
 }
 
@@ -147,7 +147,7 @@ module.exports = async function worker(payload) {
     ].join(' ');
 
     const t1 = Date.now();
-    const text = sh(`tesseract ${args}`, { timeout: 30000, env });
+    const text = sh(`tesseract ${args}`, { timeout: 1800000, env });
     const t2 = Date.now();
 
     console.log(`[Worker ${process.pid}] [Thread ${threadId}] Chunk OCR completed`, {
