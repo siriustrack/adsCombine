@@ -12,7 +12,16 @@ tmp.setGracefulCleanup();
 process.env.OMP_NUM_THREADS = '1';
 process.env.OMP_THREAD_LIMIT = '1';
 process.env.TESSERACT_NUM_THREADS = '1';
-process.env.TESSDATA_PREFIX = '/usr/share/tessdata';
+
+// Detecta caminho correto do tessdata (dev vs produção)
+if (!process.env.TESSDATA_PREFIX) {
+  if (fs.existsSync('/usr/share/tesseract-ocr/4.00/tessdata')) {
+    process.env.TESSDATA_PREFIX = '/usr/share/tesseract-ocr/4.00/tessdata';
+  } else if (fs.existsSync('/usr/share/tessdata')) {
+    process.env.TESSDATA_PREFIX = '/usr/share/tessdata';
+  }
+}
+
 process.env.LC_ALL = 'C';
 
 function sh(cmd, opts = {}) {
@@ -96,7 +105,6 @@ module.exports = async function worker(payload) {
       OMP_NUM_THREADS: '1',
       OMP_THREAD_LIMIT: '1',
       TESSERACT_NUM_THREADS: '1',
-      TESSDATA_PREFIX: '/usr/share/tessdata',
       LC_ALL: 'C',
     };
 
