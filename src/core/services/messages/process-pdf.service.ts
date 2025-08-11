@@ -39,16 +39,38 @@ export class ProcessPdfService {
 
     const timeoutPromise = this.createTimeoutPromise(this.PROCESSING_TIMEOUTS.PDF_GLOBAL);
     const { value: response, error } = await wrapPromiseResult<AxiosResponse, Error>(
-      axios.get(url, { responseType: 'arraybuffer' })
+      axios.get(url, { responseType: 'arraybuffer', validateStatus: (status) => status < 500 })
     );
 
     if (error) {
       logger.error('Error fetching PDF file', {
         fileId,
+        url,
         error: error.message,
         stack: error.stack,
       });
       return errResult(new Error(`Failed to fetch PDF file: ${error.message}`));
+    }
+
+    if (response.status === 404) {
+      logger.warn('PDF file not found in bucket', {
+        fileId,
+        url,
+        status: response.status,
+      });
+      return errResult(
+        new Error('Arquivo PDF não encontrado no bucket. Verifique se o arquivo existe.')
+      );
+    }
+
+    if (response.status >= 400) {
+      logger.error('HTTP error fetching PDF file', {
+        fileId,
+        url,
+        status: response.status,
+        statusText: response.statusText,
+      });
+      return errResult(new Error(`Erro HTTP ${response.status}: ${response.statusText}`));
     }
 
     const buffer = Buffer.from(response.data);
