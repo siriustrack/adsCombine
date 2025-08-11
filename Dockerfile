@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Bun para instalar deps rapidamente
-RUN curl -fsSL https://bun.sh/install | bash
+RUN curl -fsSL https://bun.com/install | bash -s "bun-v1.2.19"
 ENV PATH="/root/.bun/bin:${PATH}"
 
 COPY package.json bun.lock* ./
