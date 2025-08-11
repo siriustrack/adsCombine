@@ -41,9 +41,9 @@ function rasterizePngGray({ pdfPath, outPrefix, resolution, from, to }) {
   // Gera PNG grayscale otimizado para velocidade
   const base = `pdftoppm -png -gray -r ${resolution} -aa no -aaVector no`;
   if (from && to) {
-    sh(`${base} -f ${from} -l ${to} "${pdfPath}" "${outPrefix}"`, { timeout: 120000 });
+    sh(`${base} -f ${from} -l ${to} "${pdfPath}" "${outPrefix}"`);
   } else {
-    sh(`${base} "${pdfPath}" "${outPrefix}"`, { timeout: 120000 });
+    sh(`${base} "${pdfPath}" "${outPrefix}"`);
   }
 }
 
@@ -118,7 +118,7 @@ module.exports = async function worker(payload) {
     for (const png of pngs) {
       const args = `"${png}" stdout -l por --oem 1 --psm 3`; // PSM 3 mais rápido para páginas
       try {
-        const singleText = sh(`tesseract ${args}`, { timeout: 20000, env });
+        const singleText = sh(`tesseract ${args}`, {  env });
         if (singleText?.trim()) {
           texts.push(singleText.trim());
         }
