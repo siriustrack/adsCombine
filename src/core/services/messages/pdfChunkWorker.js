@@ -35,61 +35,81 @@ function listFiles(dir, ext) {
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 }
 
+function generatePngPages(pdfPath, workDir, resolution, rasterFrom, rasterTo) {
+  const prefix = path.join(workDir, 'page');
+
+  if (rasterFrom && rasterTo) {
+    rasterizePngGray({ pdfPath, outPrefix: prefix, resolution, from: rasterFrom, to: rasterTo });
+  } else {
+    rasterizePngGray({ pdfPath, outPrefix: prefix, resolution });
+  }
+
+  return listFiles(workDir, '.png')
+    .filter((f) => f.startsWith('page-'))
+    .map((f) => path.join(workDir, f));
+}
+
+
+function performOcrOnPages(pngs, env) {
+  const texts = [];
+  for (const png of pngs) {
+    const args = `"${png}" stdout -l por --oem 1 --psm 3`;
+    try {
+      const singleText = sh(`tesseract ${args}`, { env });
+      if (singleText?.trim()) {
+        texts.push(singleText.trim());
+      }
+    } catch (error) {
+      console.warn(`[Worker ${process.pid}] Failed to OCR ${png}: ${error.message}`);
+    }
+  }
+
+  return texts.join('\n\n');
+}
+
+function logProgress(fileId, pageRange, pngs, resolution, ocrMs, totalMs) {
+  console.log(`[Worker ${process.pid}] [Thread ${threadId}] Chunk OCR completed`, {
+    fileId,
+    pageRange,
+    pages: pngs.length,
+    resolution,
+    ocrMs,
+    totalMs,
+  });
+}
+
+function logError(fileId, pageRange, totalDuration, error) {
+  console.error(`[Worker ${process.pid}] [Thread ${threadId}] Chunk processing error:`, {
+    fileId,
+    pageRange,
+    totalDuration,
+    error: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : undefined,
+    workerPid: process.pid,
+  });
+}
 
 
 function rasterizePngGray({ pdfPath, outPrefix, resolution, from, to }) {
-  // Gera PNG grayscale otimizado para velocidade
   const base = `pdftoppm -png -gray -r ${resolution} -aa no -aaVector no`;
   if (from && to) {
-    sh(`${base} -f ${from} -l ${to} "${pdfPath}" "${outPrefix}"`, { timeout: 120000 });
+    sh(`${base} -f ${from} -l ${to} "${pdfPath}" "${outPrefix}"`);
   } else {
-    sh(`${base} "${pdfPath}" "${outPrefix}"`, { timeout: 120000 });
+    sh(`${base} "${pdfPath}" "${outPrefix}"`);
   }
 }
 
 module.exports = async function worker(payload) {
   const t0 = Date.now();
-  const {
-    pageRange,     // { first, last } no PDF original
-    pdfPath,       // caminho do PDF (chunk físico ou original)
-    fileId,
-  } = payload;
+  const { pageRange, pdfPath, fileId } = payload;
 
-  // Pastas temporárias (auto-clean)
   const tempDir = tmp.dirSync({ unsafeCleanup: true });
   const workDir = tempDir.name;
-
-  // Heurística de DPI otimizada para velocidade (150 DPI é suficiente para OCR)
   const resolution = 150;
 
-  // Descobre se já é um chunk físico (arquivo com _chunk_)
-  const isChunkPdf = path.basename(pdfPath).includes('_chunk_');
-
-  let rasterFrom = null;
-  let rasterTo = null;
-
-  if (!isChunkPdf && pageRange && Number.isInteger(pageRange.first) && Number.isInteger(pageRange.last)) {
-    rasterFrom = pageRange.first;
-    rasterTo = pageRange.last;
-  }
-
   try {
-    const prefix = path.join(workDir, 'page');
-
-    // 1) Rasteriza direto para PNG grayscale otimizado
-    if (rasterFrom && rasterTo) {
-      rasterizePngGray({ pdfPath, outPrefix: prefix, resolution, from: rasterFrom, to: rasterTo });
-    } else {
-      rasterizePngGray({ pdfPath, outPrefix: prefix, resolution });
-    }
-
-    // 2) Skip ImageMagick - maior gargalo de performance (economiza ~3-4s por chunk)
-
-    // 3) Seleciona os PNGs gerados
-    const pngs = listFiles(workDir, '.png')
-      .filter((f) => f.startsWith('page-'))
-      .map((f) => path.join(workDir, f));
-
+    const { from: rasterFrom, to: rasterTo } = { from: pageRange.first, to: pageRange.last };
+    const pngs = generatePngPages(pdfPath, workDir, resolution, rasterFrom, rasterTo);
 
     if (!pngs || pngs.length === 0) {
       console.warn(`[Worker ${process.pid}] [Thread ${threadId}] No PNG pages produced to OCR`, {
@@ -99,7 +119,6 @@ module.exports = async function worker(payload) {
       return [];
     }
 
-    // 4) Uma única chamada do Tesseract para o chunk inteiro (batch) — menos overhead.
     const env = {
       ...process.env,
       OMP_NUM_THREADS: '1',
@@ -108,53 +127,23 @@ module.exports = async function worker(payload) {
       LC_ALL: 'C',
     };
 
-    // Estratégia otimizada: tenta batch primeiro, fallback sequencial se falhar
     const t1 = Date.now();
-    let text = '';
-
-
-    // Múltiplos arquivos - usa sequencial rápido com PSM otimizado
-    const texts = [];
-    for (const png of pngs) {
-      const args = `"${png}" stdout -l por --oem 1 --psm 3`; // PSM 3 mais rápido para páginas
-      try {
-        const singleText = sh(`tesseract ${args}`, { timeout: 20000, env });
-        if (singleText?.trim()) {
-          texts.push(singleText.trim());
-        }
-      } catch (error) {
-        console.warn(`[Worker ${process.pid}] Failed to OCR ${png}: ${error.message}`);
-      }
-    }
-    text = texts.join('\n\n'); // Dupla quebra para preservar contexto
-
+    const text = performOcrOnPages(pngs, env);
     const t2 = Date.now();
 
-    console.log(`[Worker ${process.pid}] [Thread ${threadId}] Chunk OCR completed`, {
-      fileId,
-      pageRange,
-      pages: pngs.length,
-      resolution,
-      ocrMs: t2 - t1,
-      totalMs: t2 - t0,
-    });
+    logProgress(fileId, pageRange, pngs, resolution, t2 - t1, t2 - t0);
 
     const cleaned = text?.trim();
     return cleaned ? [cleaned] : [];
   } catch (error) {
     const dt = Date.now() - t0;
-    console.error(`[Worker ${process.pid}] [Thread ${threadId}] Chunk processing error:`, {
-      fileId,
-      pageRange,
-      totalDuration: dt,
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
-      workerPid: process.pid,
-    });
+    logError(fileId, pageRange, dt, error);
     throw error;
   } finally {
     try {
       tempDir.removeCallback();
-    } catch { }
+    } catch {
+      // Ignore cleanup errors
+    }
   }
 };
