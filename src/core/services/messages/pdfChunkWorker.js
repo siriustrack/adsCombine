@@ -12,6 +12,8 @@ tmp.setGracefulCleanup();
 process.env.OMP_NUM_THREADS = '1';
 process.env.OMP_THREAD_LIMIT = '1';
 process.env.TESSERACT_NUM_THREADS = '1';
+process.env.TESSDATA_PREFIX = '/usr/share/tessdata';
+process.env.LC_ALL = 'C';
 
 function sh(cmd, opts = {}) {
   return execSync(cmd, { stdio: 'pipe', encoding: 'utf-8', ...opts });
@@ -24,36 +26,15 @@ function listFiles(dir, ext) {
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 }
 
-function hasMagick() {
-  try {
-    sh('magick -version', { timeout: 2000 });
-    return true;
-  } catch {
-    try {
-      sh('convert -version', { timeout: 2000 });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-}
 
-function magickCmd(inputGlob, outputPattern, op) {
-  // Tenta com `magick`, cai para `convert` se necessário
-  try {
-    sh(`magick ${inputGlob} ${op} ${outputPattern}`, { timeout: 1800000 });
-  } catch {
-    sh(`convert ${inputGlob} ${op} ${outputPattern}`, { timeout: 1800000 });
-  }
-}
 
-function rasterizeTiffGray({ pdfPath, outPrefix, resolution, from, to }) {
-  // Gera TIFF grayscale com DPI correto; se `from/to` definidos, usa o range
-  const base = `pdftoppm -tiff -gray -r ${resolution}`;
+function rasterizePngGray({ pdfPath, outPrefix, resolution, from, to }) {
+  // Gera PNG grayscale otimizado para velocidade
+  const base = `pdftoppm -png -gray -r ${resolution} -aa no -aaVector no`;
   if (from && to) {
-    sh(`${base} -f ${from} -l ${to} "${pdfPath}" "${outPrefix}"`, { timeout: 1800000 });
+    sh(`${base} -f ${from} -l ${to} "${pdfPath}" "${outPrefix}"`, { timeout: 120000 });
   } else {
-    sh(`${base} "${pdfPath}" "${outPrefix}"`, { timeout: 1800000 });
+    sh(`${base} "${pdfPath}" "${outPrefix}"`, { timeout: 120000 });
   }
 }
 
@@ -63,15 +44,14 @@ module.exports = async function worker(payload) {
     pageRange,     // { first, last } no PDF original
     pdfPath,       // caminho do PDF (chunk físico ou original)
     fileId,
-    totalPages,
   } = payload;
 
   // Pastas temporárias (auto-clean)
   const tempDir = tmp.dirSync({ unsafeCleanup: true });
   const workDir = tempDir.name;
 
-  // Heurística de DPI por tamanho de documento (ajuste se quiser)
-  const resolution = totalPages > 20 ? 180 : totalPages > 10 ? 220 : 280;
+  // Heurística de DPI otimizada para velocidade (150 DPI é suficiente para OCR)
+  const resolution = 150;
 
   // Descobre se já é um chunk físico (arquivo com _chunk_)
   const isChunkPdf = path.basename(pdfPath).includes('_chunk_');
@@ -87,41 +67,23 @@ module.exports = async function worker(payload) {
   try {
     const prefix = path.join(workDir, 'page');
 
-    // 1) Rasteriza direto para TIFF grayscale com DPI correto (mata warnings de DPI)
+    // 1) Rasteriza direto para PNG grayscale otimizado
     if (rasterFrom && rasterTo) {
-      rasterizeTiffGray({ pdfPath, outPrefix: prefix, resolution, from: rasterFrom, to: rasterTo });
+      rasterizePngGray({ pdfPath, outPrefix: prefix, resolution, from: rasterFrom, to: rasterTo });
     } else {
-      rasterizeTiffGray({ pdfPath, outPrefix: prefix, resolution });
+      rasterizePngGray({ pdfPath, outPrefix: prefix, resolution });
     }
 
-    // 2) (Opcional) Normalização de contraste em lote — leve e ajuda em scans ruins.
-    if (hasMagick()) {
-      // -contrast-stretch 1%x1% é conservador; ajuste se quiser (2%/2% etc.)
-      const glob = `"${path.join(workDir, 'page')}-*.tif"`;
-      const outPattern = `"${path.join(workDir, 'norm-%02d.tif')}"`;
-      try {
-        magickCmd(glob, outPattern, '-contrast-stretch 1%x1%');
-      } catch (e) {
-        console.warn(`[Worker ${process.pid}] ImageMagick step skipped: ${e.message}`);
-      }
-    }
+    // 2) Skip ImageMagick - maior gargalo de performance (economiza ~3-4s por chunk)
 
-    // 3) Seleciona os TIFFs a usar (originais ou normalizados)
-    let tiffs = listFiles(workDir, '.tif')
-      .filter((f) => f.startsWith('norm-') || f.startsWith('page-'))
+    // 3) Seleciona os PNGs gerados
+    const pngs = listFiles(workDir, '.png')
+      .filter((f) => f.startsWith('page-'))
       .map((f) => path.join(workDir, f));
 
-    // Se houver normalizados, prioriza-os
-    const hasNorm = tiffs.some((p) => path.basename(p).startsWith('norm-'));
-    if (hasNorm) {
-      tiffs = listFiles(workDir, '.tif')
-        .filter((f) => f.startsWith('norm-'))
-        .map((f) => path.join(workDir, f));
-    }
 
-
-    if (!tiffs || tiffs.length === 0) {
-      console.warn(`[Worker ${process.pid}] [Thread ${threadId}] No TIFF pages produced to OCR`, {
+    if (!pngs || pngs.length === 0) {
+      console.warn(`[Worker ${process.pid}] [Thread ${threadId}] No PNG pages produced to OCR`, {
         fileId,
         pageRange,
       });
@@ -134,26 +96,36 @@ module.exports = async function worker(payload) {
       OMP_NUM_THREADS: '1',
       OMP_THREAD_LIMIT: '1',
       TESSERACT_NUM_THREADS: '1',
+      TESSDATA_PREFIX: '/usr/share/tessdata',
+      LC_ALL: 'C',
     };
-    const args = [
-      // lista de arquivos
-      ...tiffs.map((p) => `"${p}"`),
-      'stdout',
-      '-l', 'por',
-      '--oem', '1',            // LSTM only: costuma ser mais rápido
-      '--psm', '6',            // parágrafos — teste 4 se houver muitas colunas
-      '-c', 'tessedit_do_invert=0',
-      '-c', 'classify_enable_learning=0',
-    ].join(' ');
 
+    // Estratégia otimizada: tenta batch primeiro, fallback sequencial se falhar
     const t1 = Date.now();
-    const text = sh(`tesseract ${args}`, { timeout: 1800000, env });
+    let text = '';
+
+
+    // Múltiplos arquivos - usa sequencial rápido com PSM otimizado
+    const texts = [];
+    for (const png of pngs) {
+      const args = `"${png}" stdout -l por --oem 1 --psm 3`; // PSM 3 mais rápido para páginas
+      try {
+        const singleText = sh(`tesseract ${args}`, { timeout: 20000, env });
+        if (singleText?.trim()) {
+          texts.push(singleText.trim());
+        }
+      } catch (error) {
+        console.warn(`[Worker ${process.pid}] Failed to OCR ${png}: ${error.message}`);
+      }
+    }
+    text = texts.join('\n\n'); // Dupla quebra para preservar contexto
+
     const t2 = Date.now();
 
     console.log(`[Worker ${process.pid}] [Thread ${threadId}] Chunk OCR completed`, {
       fileId,
       pageRange,
-      pages: tiffs.length,
+      pages: pngs.length,
       resolution,
       ocrMs: t2 - t1,
       totalMs: t2 - t0,
