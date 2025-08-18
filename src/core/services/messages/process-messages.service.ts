@@ -89,9 +89,12 @@ export class ProcessMessagesService {
           return { fileId: file.fileId, error: result.error.message, success: false };
         }
 
+        const fileName = path.basename(new URL(file.url).pathname);
+        const header = `## Transcricao do arquivo: ${fileName}:\n\n`;
+
         return {
           fileId: file.fileId,
-          text: result.value,
+          text: header + result.value,
           success: true,
         };
       });
