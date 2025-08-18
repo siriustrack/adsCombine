@@ -39,9 +39,9 @@ function generatePngPages(pdfPath, workDir, resolution, rasterFrom, rasterTo) {
   const prefix = path.join(workDir, 'page');
 
   if (rasterFrom && rasterTo) {
-    rasterizePngGray({ pdfPath, outPrefix: prefix, resolution, from: rasterFrom, to: rasterTo });
+    rasterizePng({ pdfPath, outPrefix: prefix, resolution, from: rasterFrom, to: rasterTo });
   } else {
-    rasterizePngGray({ pdfPath, outPrefix: prefix, resolution });
+    rasterizePng({ pdfPath, outPrefix: prefix, resolution });
   }
 
   return listFiles(workDir, '.png')
@@ -49,11 +49,27 @@ function generatePngPages(pdfPath, workDir, resolution, rasterFrom, rasterTo) {
     .map((f) => path.join(workDir, f));
 }
 
+function preprocessImage(imagePath) {
+  const tempPath = `${imagePath}.processed.png`;
+  try {
+    // Converte para escala de cinza, aprimora contraste e binariza a imagem
+    sh(
+      `convert "${imagePath}" -colorspace gray -normalize -negate -threshold 60% -negate "${tempPath}"`
+    );
+    return tempPath;
+  } catch (error) {
+    console.warn(
+      `[Worker ${process.pid}] Image preprocessing failed for ${imagePath}: ${error.message}. Skipping.`
+    );
+    return imagePath; // Retorna o caminho original se o processamento falhar
+  }
+}
 
 function performOcrOnPages(pngs, env) {
   const texts = [];
   for (const png of pngs) {
-    const args = `"${png}" stdout -l por --oem 1 --psm 3`;
+    const processedPng = preprocessImage(png);
+    const args = `"${processedPng}" stdout -l por --oem 1 --psm 4`;
     try {
       const singleText = sh(`tesseract ${args}`, { env });
       if (singleText?.trim()) {
@@ -61,6 +77,10 @@ function performOcrOnPages(pngs, env) {
       }
     } catch (error) {
       console.warn(`[Worker ${process.pid}] Failed to OCR ${png}: ${error.message}`);
+    } finally {
+      if (processedPng !== png && fs.existsSync(processedPng)) {
+        fs.unlinkSync(processedPng); // Limpa a imagem processada
+      }
     }
   }
 
@@ -89,9 +109,8 @@ function logError(fileId, pageRange, totalDuration, error) {
   });
 }
 
-
-function rasterizePngGray({ pdfPath, outPrefix, resolution, from, to }) {
-  const base = `pdftoppm -png -gray -r ${resolution} -aa no -aaVector no`;
+function rasterizePng({ pdfPath, outPrefix, resolution, from, to }) {
+  const base = `pdftoppm -png -r ${resolution} -aa no -aaVector no`;
   if (from && to) {
     sh(`${base} -f ${from} -l ${to} "${pdfPath}" "${outPrefix}"`);
   } else {
@@ -105,7 +124,7 @@ module.exports = async function worker(payload) {
 
   const tempDir = tmp.dirSync({ unsafeCleanup: true });
   const workDir = tempDir.name;
-  const resolution = 150;
+  const resolution = 300;
 
   try {
     const { from: rasterFrom, to: rasterTo } = { from: pageRange.first, to: pageRange.last };
