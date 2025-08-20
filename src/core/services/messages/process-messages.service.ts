@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path, { join } from 'node:path';
+import { PROCESSING_TIMEOUTS } from '@config/constants';
 import logger from '@lib/logger';
 import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types';
 import type { FileInfo, ProcessMessage } from 'api/controllers/messages.controllers';
@@ -8,27 +9,15 @@ import { TEXTS_DIR } from 'config/dirs';
 import { openaiConfig } from 'config/openai';
 import mammoth from 'mammoth';
 import { OpenAI } from 'openai';
-import sharp from 'sharp';
 import { sanitize } from 'utils/sanitize';
 import { sanitizeText } from 'utils/textSanitizer';
 import { ProcessPdfService } from './process-pdf.service';
-
-sharp.cache(false);
 
 export interface FileInput {
   fileId: string;
   url: string;
   mimeType: string;
-  fileType?: string;
 }
-
-const PROCESSING_TIMEOUTS = {
-  TXT: 10000,
-  IMAGE: 30000,
-  DOCX: 20000,
-  PDF_GLOBAL: 300000,
-  OPENAI: 25000,
-} as const;
 
 export class ProcessMessagesService {
   private readonly openai = new OpenAI({ apiKey: openaiConfig.apiKey });
@@ -52,13 +41,15 @@ export class ProcessMessagesService {
       const { files, userId } = body;
 
       if (files && files.length > 0) {
-        const results = await this.processFiles(files, userId!);
+        const promises = files.map((file) =>
+          this.processAndHandleFile(this.updateURLForFile(file, userId!), extractedTexts)
+        );
+        const results = await Promise.all(promises);
 
         results.forEach((result) => {
-          if (result.success && result.text) {
+          if (result.success) {
             processedFiles.push(result.fileId);
-            extractedTexts.push(result.text);
-          } else if (result.error) {
+          } else {
             failedFiles.push({ fileId: result.fileId, error: result.error });
           }
         });
@@ -75,52 +66,47 @@ export class ProcessMessagesService {
     );
   }
 
-  private async processFiles(files: FileInfo[], userId: string) {
-    const processingPromises = files
-      .map((file) => this.updateURLForFile(file, userId))
-      .map(async (file) => {
-        const result = await this.processFile(file);
+  private async processAndHandleFile(
+    file: FileInfo,
+    extractedTexts: string[]
+  ): Promise<{ success: boolean; fileId: string; error?: any }> {
+    const result = await this.processFile(file);
 
-        if (result.error) {
-          logger.error('Failed to process file', {
-            fileId: file.fileId,
-            error: result.error.message,
-          });
-          return { fileId: file.fileId, error: result.error.message, success: false };
-        }
-
-        const fileName = path.basename(new URL(file.url).pathname);
-        const header = `## Transcricao do arquivo: ${fileName}:\n\n`;
-
-        return {
-          fileId: file.fileId,
-          text: header + result.value,
-          success: true,
-        };
+    if (result.error) {
+      logger.error('Failed to process file', {
+        fileId: file.fileId,
+        error: result.error.message,
       });
+      return { success: false, fileId: file.fileId, error: result.error.message };
+    }
 
-    return Promise.all(processingPromises);
+    const fileName = path.basename(new URL(file.url).pathname);
+    const header = `## Transcricao do arquivo: ${fileName}:\n\n`;
+    extractedTexts.push(header + result.value);
+
+    return { success: true, fileId: file.fileId };
   }
 
   private async processFile(file: FileInput): Promise<Result<string, Error>> {
-    const fileTypeMap = {
-      txt: () => this.processTxt(file),
+    const fileType = file.mimeType.split('/')[1];
+
+    const fileTypeMap: Record<string, () => Promise<Result<string, Error>>> = {
+      plain: () => this.processTxt(file),
       pdf: () => this.processPdfService.execute(file),
       jpeg: () => this.processImage(file),
       jpg: () => this.processImage(file),
       png: () => this.processImage(file),
-      image: () => this.processImage(file),
-      docx: () => this.processDocx(file),
+      'vnd.openxmlformats-officedocument.wordprocessingml.document': () => this.processDocx(file),
     };
 
-    const processor = fileTypeMap[file.fileType as keyof typeof fileTypeMap];
+    const processor = fileTypeMap[fileType];
 
     if (!processor) {
       logger.warn('Unsupported file type, skipping', {
-        fileType: file.fileType,
+        fileType,
         fileId: file.fileId,
       });
-      return errResult(new Error('Unsupported file type'));
+      return errResult(new Error(`Unsupported file type: ${fileType}`));
     }
 
     return processor();
@@ -129,10 +115,16 @@ export class ProcessMessagesService {
   private async processWithTimeout<T>(
     processor: () => Promise<T>,
     timeout: number,
-    timeoutError: string,
-    userErrorMessage: string,
-    fileId: string
+    fileId: string,
+    fileType: string
   ): Promise<Result<T, Error>> {
+    const timeoutError = `${fileType.toUpperCase()} processing timed out after ${
+      timeout / 1000
+    } seconds`;
+    const userErrorMessage = `O processamento deste arquivo ${fileType.toUpperCase()} excedeu o tempo limite de ${
+      timeout / 1000
+    } segundos.`;
+
     const { value, error } = await wrapPromiseResult<T, Error>(
       Promise.race([
         processor(),
@@ -141,7 +133,7 @@ export class ProcessMessagesService {
     );
 
     if (error) {
-      logger.error('Error processing file', {
+      logger.error(`Error processing ${fileType} file`, {
         fileId,
         error: error.message,
         stack: error.stack,
@@ -191,7 +183,7 @@ export class ProcessMessagesService {
     };
   }
 
-  updateURLForFile(file: FileInfo, userId: string): FileInfo {
+  private updateURLForFile(file: FileInfo, userId: string): FileInfo {
     const currentUrl = file.url;
     if (currentUrl.includes('/storage/v1/object/public/conversation-files')) {
       const filePath = currentUrl.split('/storage/v1/object/public/conversation-files/')[1];
@@ -216,9 +208,8 @@ export class ProcessMessagesService {
         return sanitize(textContent);
       },
       PROCESSING_TIMEOUTS.TXT,
-      'TXT processing timed out',
-      'O processamento deste arquivo de texto excedeu o tempo limite.',
-      fileId
+      fileId,
+      'txt'
     );
   }
 
@@ -256,9 +247,8 @@ export class ProcessMessagesService {
         return sanitize(description);
       },
       PROCESSING_TIMEOUTS.IMAGE,
-      'Image processing timed out',
-      'O processamento desta imagem excedeu o tempo limite.',
-      fileId
+      fileId,
+      'image'
     );
   }
 
@@ -271,9 +261,8 @@ export class ProcessMessagesService {
         return result.value ? sanitize(result.value) : '';
       },
       PROCESSING_TIMEOUTS.DOCX,
-      'DOCX processing timed out',
-      'O processamento deste arquivo DOCX excedeu o tempo limite.',
-      fileId
+      fileId,
+      'docx'
     );
   }
 }

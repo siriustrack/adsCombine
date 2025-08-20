@@ -1,6 +1,6 @@
-import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import { cpus } from 'node:os';
+import { PROCESSING_TIMEOUTS } from '@config/constants';
 import logger from '@lib/logger';
 import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types';
 import { pdfWorkerPool } from '@lib/worker-pool';
@@ -26,18 +26,10 @@ export class ProcessPdfService {
     MAX_REPETITIONS_FACTOR: 0.8,
   } as const;
 
-  private readonly PROCESSING_TIMEOUTS = {
-    TXT: 10000,
-    IMAGE: 30000,
-    DOCX: 20000,
-    PDF_GLOBAL: 300000,
-    OPENAI: 25000,
-  } as const;
-
   async execute(file: FileInput): Promise<Result<string, Error>> {
     const { fileId, url } = file;
 
-    const timeoutPromise = this.createTimeoutPromise(this.PROCESSING_TIMEOUTS.PDF_GLOBAL);
+    const timeoutPromise = this.createTimeoutPromise(PROCESSING_TIMEOUTS.PDF_GLOBAL);
     const { value: response, error } = await wrapPromiseResult<AxiosResponse, Error>(
       axios.get(url, { responseType: 'arraybuffer', validateStatus: (status) => status < 500 })
     );
@@ -75,34 +67,38 @@ export class ProcessPdfService {
 
     const buffer = Buffer.from(response.data);
 
-    const { value: extractedText, error: extractionError } = await this.extractDirectTextFromPdf(
+    const { value: directTextResult, error: extractionError } = await this.extractDirectTextFromPdf(
       buffer,
       fileId
     );
 
     if (extractionError) {
-      logger.error('Error extracting text from PDF', { fileId, error: extractionError.message });
+      logger.error('Error extracting text from PDF', {
+        fileId,
+        error: extractionError.message,
+      });
       return errResult(new Error(`Erro ao extrair texto do PDF: ${extractionError.message}`));
     }
 
-    const { tempPdf, totalPages, hasVisualContent } = await this.analyzePdfContent(buffer, fileId);
+    const { text: extractedText, totalPages } = directTextResult;
 
-    if (this.shouldSkipOcr(extractedText, hasVisualContent)) {
-      this.cleanupTempFiles(tempPdf);
+    if (this.shouldSkipOcr(extractedText)) {
       return okResult(sanitize(extractedText));
     }
 
     if (totalPages === 0) {
-      this.cleanupTempFiles(tempPdf);
       return okResult(sanitize(extractedText));
     }
+
+    const tempPdf = tmp.fileSync({ postfix: '.pdf' });
+    fs.writeFileSync(tempPdf.name, buffer);
 
     const chunks = this.createProcessingChunks(totalPages, fileId);
 
     const ocrPromise = Promise.all(
       chunks.map((chunk, index) => {
         const chunkStartTime = Date.now();
-        const chunkPdfPath = tempPdf.name;
+        const chunkPdfPath = tempPdf!.name;
 
         return pdfWorkerPool
           .run({
@@ -129,14 +125,6 @@ export class ProcessPdfService {
       Promise.race([ocrPromise, timeoutPromise])
     );
 
-    try {
-      fs.unlinkSync(tempPdf.name);
-    } catch (error) {
-      logger.warn('Failed to cleanup PDF chunk', { fileId, chunkPath: tempPdf.name, error });
-    }
-
-    this.cleanupTempFiles(tempPdf);
-
     if (ocrError) {
       logger.error('Error in OCR processing', { fileId, error: ocrError });
       return errResult(new Error(`Erro no processamento OCR: ${ocrError}`));
@@ -149,19 +137,24 @@ export class ProcessPdfService {
       return okResult(finalText);
     }
 
+    tempPdf?.removeCallback();
     return okResult(sanitize(extractedText));
   }
 
   private createTimeoutPromise(timeout: number): Promise<never> {
     return new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('PDF processing timed out after 60 seconds')), timeout);
+      const timeoutInMinutes = timeout / 60000;
+      setTimeout(
+        () => reject(new Error(`PDF processing timed out after ${timeoutInMinutes} minutes`)),
+        timeout
+      );
     });
   }
 
   private async extractDirectTextFromPdf(
     buffer: Buffer,
     fileId: string
-  ): Promise<Result<string, Error>> {
+  ): Promise<Result<{ text: string; totalPages: number }, Error>> {
     const { value: data, error } = await wrapPromiseResult<pdf.Result, Error>(pdf(buffer));
 
     if (error) {
@@ -169,52 +162,24 @@ export class ProcessPdfService {
       return errResult(new Error(`Erro ao extrair texto do PDF: ${error.message}`));
     }
 
-    if (data.text && data.text.trim().length > 100) {
-      return okResult(data.text);
-    }
+    const text = data.text?.trim() ?? '';
+    const totalPages = data.numpages ?? 0;
 
-    return okResult('');
+    return okResult({ text, totalPages });
   }
 
-  private shouldSkipOcr(extractedText: string, hasVisualContent: boolean): boolean {
-    const textLength = extractedText.trim().length;
-    const isHighQuality = this.isHighQualityText(extractedText);
+  private shouldSkipOcr(extractedText: string): boolean {
+    const textLength = extractedText.length;
 
     if (textLength < 500) {
       return false;
     }
 
-    if (hasVisualContent) {
-      if (textLength > this.VISUAL_CONTENT_THRESHOLDS.MAX_TEXT_FOR_OCR) {
-        return true;
-      } else {
-        return false;
-      }
+    if (textLength > this.VISUAL_CONTENT_THRESHOLDS.MAX_TEXT_FOR_OCR) {
+      return true;
     }
 
-    const shouldSkip = isHighQuality;
-
-    return shouldSkip;
-  }
-
-  private async analyzePdfContent(buffer: Buffer, fileId: string) {
-    const tempPdf = tmp.fileSync({ postfix: '.pdf' });
-    fs.writeFileSync(tempPdf.name, buffer);
-
-    try {
-      const pdfInfoOutput = execSync(`pdfinfo "${tempPdf.name}"`, { encoding: 'utf-8' });
-      const pagesMatch = pdfInfoOutput.match(/Pages:\s*(\d+)/);
-      const totalPages = pagesMatch ? parseInt(pagesMatch[1], 10) : 0;
-
-      return { tempPdf, totalPages, hasVisualContent: true };
-    } catch (error) {
-      logger.warn('Failed to analyze PDF content', {
-        fileId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-
-      return { tempPdf, totalPages: 0, hasVisualContent: false };
-    }
+    return this.isHighQualityText(extractedText);
   }
 
   private createProcessingChunks(
@@ -358,9 +323,5 @@ export class ProcessPdfService {
     }
 
     return finalText;
-  }
-
-  private cleanupTempFiles(...tempObjects: Array<{ removeCallback: () => void } | undefined>) {
-    tempObjects.forEach((obj) => obj?.removeCallback?.());
   }
 }
