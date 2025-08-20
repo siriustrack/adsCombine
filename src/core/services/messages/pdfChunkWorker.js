@@ -124,7 +124,7 @@ module.exports = async function worker(payload) {
 
   const tempDir = tmp.dirSync({ unsafeCleanup: true });
   const workDir = tempDir.name;
-  const resolution = 300;
+  const resolution = 150;
 
   try {
     const { from: rasterFrom, to: rasterTo } = { from: pageRange.first, to: pageRange.last };
