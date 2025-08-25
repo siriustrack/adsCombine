@@ -50,7 +50,7 @@ export class ProcessMessagesService {
           if (result.success) {
             processedFiles.push(result.fileId);
           } else {
-            failedFiles.push({ fileId: result.fileId, error: result.error });
+            failedFiles.push({ fileId: result.fileId, error: result.error || 'Unknown error' });
           }
         });
       }
@@ -69,7 +69,7 @@ export class ProcessMessagesService {
   private async processAndHandleFile(
     file: FileInfo,
     extractedTexts: string[]
-  ): Promise<{ success: boolean; fileId: string; error?: any }> {
+  ): Promise<{ success: boolean; fileId: string; error?: string }> {
     const result = await this.processFile(file);
 
     if (result.error) {

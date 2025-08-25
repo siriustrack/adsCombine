@@ -1,4 +1,4 @@
-import { deleteTextsService, processMessagesService } from '@core/services/messages';
+import { deleteTextsService, processMessagesService } from '@core/services/messages/pdf-utils';
 import { wrapPromiseResult } from '@lib/result.types';
 import type { Request, Response } from 'express';
 import { type ZodError, z } from 'zod';
