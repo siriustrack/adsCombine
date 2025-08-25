@@ -124,7 +124,7 @@ module.exports = async function worker(payload) {
 
   const tempDir = tmp.dirSync({ unsafeCleanup: true });
   const workDir = tempDir.name;
-  const resolution = 150;
+  const resolution = 200;
 
   try {
     const { from: rasterFrom, to: rasterTo } = { from: pageRange.first, to: pageRange.last };
@@ -153,7 +153,7 @@ module.exports = async function worker(payload) {
     logProgress(fileId, pageRange, pngs, resolution, t2 - t1, t2 - t0);
 
     const cleaned = text?.trim();
-    return cleaned ? [cleaned] : [];
+    return cleaned
   } catch (error) {
     const dt = Date.now() - t0;
     logError(fileId, pageRange, dt, error);
