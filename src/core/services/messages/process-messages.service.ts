@@ -42,7 +42,7 @@ export class ProcessMessagesService {
 
       if (files && files.length > 0) {
         const promises = files.map((file) =>
-          this.processAndHandleFile(this.updateURLForFile(file, userId!), extractedTexts)
+          this.processAndHandleFile(file, extractedTexts)
         );
         const results = await Promise.all(promises);
 
@@ -181,21 +181,6 @@ export class ProcessMessagesService {
       filename,
       downloadUrl,
     };
-  }
-
-  private updateURLForFile(file: FileInfo, userId: string): FileInfo {
-    const currentUrl = file.url;
-    if (currentUrl.includes('/storage/v1/object/public/conversation-files')) {
-      const filePath = currentUrl.split('/storage/v1/object/public/conversation-files/')[1];
-
-      const updatedFileInfo = {
-        ...file,
-        url: `${process.env.SUPABASE_GET_FILE_CONTENT_URL}?file_path=${filePath}&user_id=${userId}&token=${process.env.SUPABASE_TOKEN}`,
-      };
-
-      return updatedFileInfo;
-    }
-    return file;
   }
 
   private async processTxt(file: FileInput): Promise<Result<string, Error>> {
