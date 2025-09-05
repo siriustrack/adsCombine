@@ -9,7 +9,6 @@ const FileInfoSchema = z
     fileId: z.string(),
     url: z.url(),
     mimeType: z.string(),
-    fileType: z.enum(['txt', 'pdf', 'jpeg', 'png', 'jpg', 'docx', 'image']),
   })
   .loose();
 
