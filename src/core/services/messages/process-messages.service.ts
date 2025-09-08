@@ -97,6 +97,7 @@ export class ProcessMessagesService {
       jpg: () => this.processImage(file),
       png: () => this.processImage(file),
       'vnd.openxmlformats-officedocument.wordprocessingml.document': () => this.processDocx(file),
+      'msword': () => this.processDocx(file), // Added support for .doc files
     };
 
     const processor = fileTypeMap[fileType];
