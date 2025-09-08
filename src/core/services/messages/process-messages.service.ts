@@ -11,7 +11,8 @@ import mammoth from 'mammoth';
 import { OpenAI } from 'openai';
 import { sanitize } from 'utils/sanitize';
 import { sanitizeText } from 'utils/textSanitizer';
-import { ProcessPdfService } from './process-pdf.service';
+import { ProcessPdfService } from './pdf-utils/process-pdf.service';
+import { processXLSXFile, xlsxToText } from './xlsx/xlsx-processor';
 
 export interface FileInput {
   fileId: string;
@@ -38,7 +39,7 @@ export class ProcessMessagesService {
 
     for (const message of messages) {
       const { body } = message;
-      const { files, userId } = body;
+      const { files } = body;
 
       if (files && files.length > 0) {
         const promises = files.map((file) =>
@@ -97,7 +98,9 @@ export class ProcessMessagesService {
       jpg: () => this.processImage(file),
       png: () => this.processImage(file),
       'vnd.openxmlformats-officedocument.wordprocessingml.document': () => this.processDocx(file),
-      'msword': () => this.processDocx(file), // Added support for .doc files
+      'msword': () => this.processDocx(file), // Added support for .doc files,
+      'vnd.openxmlformats-officedocument.spreadsheetml.sheet': () => this.processXlsx(file),
+      'vnd.ms-excel': () => this.processXlsx(file), // Added support for .xls files
     };
 
     const processor = fileTypeMap[fileType];
@@ -249,6 +252,22 @@ export class ProcessMessagesService {
       PROCESSING_TIMEOUTS.DOCX,
       fileId,
       'docx'
+    );
+  }
+
+  private async processXlsx(file: FileInput): Promise<Result<string, Error>> {
+    const { fileId, url } = file;
+
+    return this.processWithTimeout(
+      async () => {
+        const response = await axios.get(url, { responseType: 'arraybuffer' });
+        const buffer = Buffer.from(response.data);
+        const xlsxResult = processXLSXFile(buffer.buffer);
+        return xlsxToText(xlsxResult);
+      },
+      PROCESSING_TIMEOUTS.XLSX,
+      fileId,
+      'xlsx'
     );
   }
 }
