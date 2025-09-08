@@ -1,11 +1,11 @@
 import logger from '@lib/logger';
 import { errResult, okResult, type Result } from '@lib/result.types';
 import { sanitize } from 'utils/sanitize';
-import { FileDownloadService } from './pdf-utils/file-download.service';
-import { OcrOrchestrator } from './pdf-utils/ocr-orchestrator.service';
-import { PdfTextExtractorService } from './pdf-utils/pdf-text-extractor.service';
-import { TextQualityAnalyzer } from './pdf-utils/text-quality-analyzer.service';
-import type { FileInput } from './process-messages.service';
+import { FileDownloadService } from './file-download.service';
+import { OcrOrchestrator } from './ocr-orchestrator.service';
+import { PdfTextExtractorService } from './pdf-text-extractor.service';
+import { TextQualityAnalyzer } from './text-quality-analyzer.service';
+import type { FileInput } from '../process-messages.service';
 
 export class ProcessPdfService {
   private readonly fileDownloadService = new FileDownloadService();
