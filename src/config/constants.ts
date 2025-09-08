@@ -4,5 +4,6 @@ export const PROCESSING_TIMEOUTS = {
   DOCX: 20000, // 20 segundos
   DOC: 20000, // 20 segundos
   PDF_GLOBAL: 600000, // 10 minutos
-  OPENAI: 30000, // 30 segundos
+  OPENAI: 30000, // 30 segundos,
+  XLSX: 20000, // 20 segundos
 } as const;
