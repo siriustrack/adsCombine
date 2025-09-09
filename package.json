@@ -32,6 +32,7 @@
     "tmp": "^0.2.3",
     "tsconfig-paths": "^4.2.0",
     "winston": "^3.17.0",
+    "word-extractor": "^1.0.4",
     "xlsx": "^0.18.5",
     "zod": "^4.0.10"
   },
@@ -47,7 +48,9 @@
     "@types/node": "^20.19.9",
     "@types/pdf-parse": "^1.1.5",
     "@types/serve-index": "^1.9.4",
+    "@types/textract": "^2.4.5",
     "@types/tmp": "^0.2.6",
+    "@types/word-extractor": "^1.0.6",
     "ts-node-dev": "^2.0.0",
     "tsc-alias": "^1.8.16",
     "typescript": "^5.8.3"

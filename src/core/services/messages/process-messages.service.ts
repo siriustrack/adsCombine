@@ -13,6 +13,7 @@ import { sanitize } from 'utils/sanitize';
 import { sanitizeText } from 'utils/textSanitizer';
 import { ProcessPdfService } from './pdf-utils/process-pdf.service';
 import { processXLSXFile, xlsxToText } from './xlsx/xlsx-processor';
+import WordExtractor from 'word-extractor';
 
 export interface FileInput {
   fileId: string;
@@ -23,6 +24,7 @@ export interface FileInput {
 export class ProcessMessagesService {
   private readonly openai = new OpenAI({ apiKey: openaiConfig.apiKey });
   private readonly processPdfService = new ProcessPdfService();
+  private readonly wordExtractor = new WordExtractor();
 
   async execute({
     messages,
@@ -98,7 +100,7 @@ export class ProcessMessagesService {
       jpg: () => this.processImage(file),
       png: () => this.processImage(file),
       'vnd.openxmlformats-officedocument.wordprocessingml.document': () => this.processDocx(file),
-      'msword': () => this.processDocx(file), // Added support for .doc files,
+      'msword': () => this.processDoc(file), // .doc files are not supported
       'vnd.openxmlformats-officedocument.spreadsheetml.sheet': () => this.processXlsx(file),
       'vnd.ms-excel': () => this.processXlsx(file), // Added support for .xls files
     };
@@ -122,12 +124,10 @@ export class ProcessMessagesService {
     fileId: string,
     fileType: string
   ): Promise<Result<T, Error>> {
-    const timeoutError = `${fileType.toUpperCase()} processing timed out after ${
-      timeout / 1000
-    } seconds`;
-    const userErrorMessage = `O processamento deste arquivo ${fileType.toUpperCase()} excedeu o tempo limite de ${
-      timeout / 1000
-    } segundos.`;
+    const timeoutError = `${fileType.toUpperCase()} processing timed out after ${timeout / 1000
+      } seconds`;
+    const userErrorMessage = `O processamento deste arquivo ${fileType.toUpperCase()} excedeu o tempo limite de ${timeout / 1000
+      } segundos.`;
 
     const { value, error } = await wrapPromiseResult<T, Error>(
       Promise.race([
@@ -247,11 +247,27 @@ export class ProcessMessagesService {
         const response = await axios.get(url, { responseType: 'arraybuffer' });
         const buffer = Buffer.from(response.data);
         const result = await mammoth.extractRawText({ buffer });
-        return result.value ? sanitize(result.value) : '';
+        return sanitize(result.value)
       },
       PROCESSING_TIMEOUTS.DOCX,
       fileId,
       'docx'
+    );
+  }
+
+  private async processDoc(file: FileInput): Promise<Result<string, Error>> {
+    const { fileId, url } = file;
+
+    return this.processWithTimeout(
+      async () => {
+        const response = await axios.get(url, { responseType: 'arraybuffer' });
+        const buffer = Buffer.from(response.data);
+        const doc = await this.wordExtractor.extract(buffer);
+        return sanitize(doc.getBody())
+      },
+      PROCESSING_TIMEOUTS.DOCX, // Reusing DOCX timeout for now
+      fileId,
+      'doc'
     );
   }
 
