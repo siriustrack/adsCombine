@@ -51,7 +51,7 @@ export class EditalProcessService {
     fs.writeFileSync(filePath, '', 'utf8');
 
     // Return response immediately
-    const publicPath = `/${user_id}/${schedule_plan_id}/${fileName}`;
+    const publicPath = `/files/${user_id}/${schedule_plan_id}/${fileName}`;
 
     // Process in background
     this.processInBackground(url, filePath);
