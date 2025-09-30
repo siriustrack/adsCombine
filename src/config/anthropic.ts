@@ -3,6 +3,5 @@ export const anthropicConfig = {
   model: 'claude-sonnet-4-5-20250929',
   maxTokens: 16000,
   temperature: 0.0,
-  topP: 1.0,
   topK: 0,
 };

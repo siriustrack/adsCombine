@@ -310,7 +310,6 @@ Proceda com a extração completa e detalhada.`;
       model: anthropicConfig.model,
       max_tokens: anthropicConfig.maxTokens,
       temperature: anthropicConfig.temperature,
-      top_p: anthropicConfig.topP,
       top_k: anthropicConfig.topK,
       system: systemPrompt,
       messages: [
