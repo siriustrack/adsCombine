@@ -2,6 +2,7 @@ import z from 'zod';
 
 const envSchema = z.object({
   BASE_URL: z.string(),
+  CLAUDE_AI_API_KEY: z.string().min(1),
   OPENAI_API_KEY: z.string().min(1),
   OPENAI_MODEL_IMAGE: z.string().min(1),
   OPENAI_MODEL_TEXT: z.string().min(1),
