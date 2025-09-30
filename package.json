@@ -17,6 +17,7 @@
     "check:fix": "biome check --write src/"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.65.0",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@ffprobe-installer/ffprobe": "^2.1.2",
     "axios": "^1.11.0",
