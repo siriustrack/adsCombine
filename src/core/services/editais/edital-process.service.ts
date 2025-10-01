@@ -63,10 +63,17 @@ export class EditalProcessService {
   }
 
   private async processInBackground(url: string, outputPath: string) {
+    const startTime = Date.now();
+    const timer = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      logger.info('Edital processing time elapsed', { elapsed, url, outputPath });
+    }, 10000);
+
     try {
       logger.info('Starting edital processing in background', { url, outputPath });
 
       // Fetch content from URL
+      logger.info('Step 1: Fetching content from URL', { url });
       const response = await axios.get(url, {
         timeout: 30000, // 30 seconds timeout
         headers: {
@@ -75,26 +82,32 @@ export class EditalProcessService {
       });
 
       const content = response.data;
-      logger.info('Content fetched successfully', { contentLength: content.length });
+      logger.info('Step 2: Content fetched successfully', { contentLength: content.length, url });
 
       // Process with Claude
+      logger.info('Step 3: Starting AI processing with Claude', { contentLength: content.length });
       const processedContent = await this.processWithClaude(content);
+      logger.info('Step 4: AI processing completed', { responseLength: processedContent.length });
 
       // Write result to file
+      logger.info('Step 5: Writing processed content to file', { outputPath });
       fs.writeFileSync(outputPath, processedContent, 'utf8');
 
-      logger.info('Edital processing completed successfully', { outputPath });
+      logger.info('Edital processing completed successfully', { outputPath, totalTime: Math.floor((Date.now() - startTime) / 1000) });
 
     } catch (error) {
       logger.error('Error processing edital in background', {
         error: error instanceof Error ? error.message : 'Unknown error',
         url,
         outputPath,
+        totalTime: Math.floor((Date.now() - startTime) / 1000),
       });
 
       // Write error to file
       const errorMessage = `Error processing edital: ${error instanceof Error ? error.message : 'Unknown error'}`;
       fs.writeFileSync(outputPath, errorMessage, 'utf8');
+    } finally {
+      clearInterval(timer);
     }
   }
 
