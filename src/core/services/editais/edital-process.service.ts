@@ -6,33 +6,55 @@ import path from 'node:path';
 import { PUBLIC_DIR } from 'config/dirs';
 import { anthropicConfig } from 'config/anthropic';
 import logger from 'lib/logger';
+import { 
+  EditalProcessado, 
+  EditalProcessadoSchema, 
+  validateEditalIntegrity,
+  type Concurso 
+} from './edital-schema';
+import { EditalChunker, type ContentChunk } from './edital-chunker';
 
 export interface EditalProcessRequest {
   user_id: string;
   schedule_plan_id: string;
   url: string;
+  options?: {
+    maxRetries?: number;
+    chunkingEnabled?: boolean;
+    validateSchema?: boolean;
+  };
 }
 
 export interface EditalProcessResponse {
   filePath: string;
   status: 'processing';
+  jobId: string;
 }
 
 export class EditalProcessService {
   private anthropic: Anthropic;
+  private chunker: EditalChunker;
+  private readonly MAX_RETRIES = 3;
+  private readonly RETRY_DELAY = 2000; // ms
 
   constructor() {
     this.anthropic = new Anthropic({
       apiKey: anthropicConfig.apiKey,
     });
+    this.chunker = new EditalChunker({
+      maxChunkSize: 80000, // ~20k tokens
+      overlapSize: 2000,
+      splitOn: 'section',
+    });
   }
 
   async execute(request: EditalProcessRequest): Promise<EditalProcessResponse> {
-    const { user_id, schedule_plan_id, url } = request;
+    const { user_id, schedule_plan_id, url, options } = request;
+    const jobId = randomUUID();
 
     // Generate random filename
     const randomName = randomUUID();
-    const fileName = `${randomName}.txt`;
+    const fileName = `${randomName}.json`; // Mudado para .json
 
     // Create directory path: /userid/schedule_plan_id/
     const userDir = path.join(PUBLIC_DIR, user_id);
@@ -47,293 +69,693 @@ export class EditalProcessService {
       fs.mkdirSync(scheduleDir, { recursive: true });
     }
 
-    // Create empty file
-    fs.writeFileSync(filePath, '', 'utf8');
+    // Create empty file with processing status
+    const processingStatus = {
+      status: 'processing',
+      jobId,
+      startedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(filePath, JSON.stringify(processingStatus, null, 2), 'utf8');
 
     // Return response immediately
     const publicPath = `/files/${user_id}/${schedule_plan_id}/${fileName}`;
 
     // Process in background
-    this.processInBackground(url, filePath);
+    this.processInBackground(url, filePath, jobId, options);
 
     return {
       filePath: publicPath,
       status: 'processing',
+      jobId,
     };
   }
 
-  private async processInBackground(url: string, outputPath: string) {
+  private async processInBackground(
+    url: string, 
+    outputPath: string,
+    jobId: string,
+    options?: EditalProcessRequest['options']
+  ) {
     const startTime = Date.now();
     const timer = setInterval(() => {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      logger.info('Edital processing time elapsed', { elapsed, url, outputPath });
+      logger.info('Edital processing time elapsed', { elapsed, url, outputPath, jobId });
     }, 10000);
 
     try {
-      logger.info('Starting edital processing in background', { url, outputPath });
+      logger.info('Starting edital processing in background', { url, outputPath, jobId });
 
-      // Fetch content from URL
+      // Step 1: Fetch content from URL with retry
       logger.info('Step 1: Fetching content from URL', { url });
-      const response = await axios.get(url, {
-        timeout: 30000, // 30 seconds timeout
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; EditalProcessor/1.0)',
-        },
+      const content = await this.fetchContentWithRetry(url, options?.maxRetries || this.MAX_RETRIES);
+      logger.info('Step 2: Content fetched successfully', { 
+        contentLength: content.length,
+        estimatedTokens: Math.floor(content.length / 4),
+        url 
       });
 
-      const content = response.data;
-      logger.info('Step 2: Content fetched successfully', { contentLength: content.length, url });
+      // Step 3: Determine if chunking is needed
+      const requiresChunking = content.length > 80000;
+      logger.info('Step 3: Analyzing content size', { 
+        contentLength: content.length,
+        requiresChunking,
+        chunkingEnabled: options?.chunkingEnabled ?? true
+      });
 
-      // Process with Claude
-      logger.info('Step 3: Starting AI processing with Claude', { contentLength: content.length });
-      const processedContent = await this.processWithClaude(content);
-      logger.info('Step 4: AI processing completed', { responseLength: processedContent.length });
+      // Step 4: Process with Claude (with or without chunking)
+      logger.info('Step 4: Starting AI processing with Claude', { 
+        model: anthropicConfig.model,
+        requiresChunking 
+      });
 
-      // Write result to file
-      logger.info('Step 5: Writing processed content to file', { outputPath });
-      fs.writeFileSync(outputPath, processedContent, 'utf8');
+      let processedData: EditalProcessado;
 
-      logger.info('Edital processing completed successfully', { outputPath, totalTime: Math.floor((Date.now() - startTime) / 1000) });
+      if (requiresChunking && (options?.chunkingEnabled ?? true)) {
+        processedData = await this.processWithChunking(content);
+      } else {
+        processedData = await this.processWithClaude(content);
+      }
+
+      logger.info('Step 5: AI processing completed', { 
+        concursos: processedData.concursos.length,
+        totalDisciplinas: processedData.validacao.totalDisciplinas 
+      });
+
+      // Step 6: Validate schema
+      if (options?.validateSchema ?? true) {
+        logger.info('Step 6: Validating schema and integrity');
+        const validation = validateEditalIntegrity(processedData);
+        
+        if (!validation.isValid) {
+          logger.error('Schema validation failed', { 
+            errors: validation.errors,
+            warnings: validation.warnings 
+          });
+          // Adiciona erros na validação do próprio dado
+          processedData.validacao.erros.push(...validation.errors);
+          processedData.validacao.avisos.push(...validation.warnings);
+          processedData.validacao.integridadeOK = false;
+        } else if (validation.warnings.length > 0) {
+          logger.warn('Schema validation warnings', { warnings: validation.warnings });
+          processedData.validacao.avisos.push(...validation.warnings);
+        }
+      }
+
+      // Step 7: Write result to file
+      logger.info('Step 7: Writing processed content to file', { outputPath });
+      const finalOutput = {
+        ...processedData,
+        metadataProcessamento: {
+          ...processedData.metadataProcessamento,
+          tempoProcessamento: Math.floor((Date.now() - startTime) / 1000),
+          jobId,
+          url,
+          processadoEm: new Date().toISOString(),
+        }
+      };
+
+      fs.writeFileSync(outputPath, JSON.stringify(finalOutput, null, 2), 'utf8');
+
+      logger.info('Edital processing completed successfully', { 
+        outputPath, 
+        totalTime: Math.floor((Date.now() - startTime) / 1000),
+        jobId,
+        concursos: processedData.concursos.length
+      });
 
     } catch (error) {
       logger.error('Error processing edital in background', {
         error: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined,
         url,
         outputPath,
+        jobId,
         totalTime: Math.floor((Date.now() - startTime) / 1000),
       });
 
-      // Write error to file
-      const errorMessage = `Error processing edital: ${error instanceof Error ? error.message : 'Unknown error'}`;
-      fs.writeFileSync(outputPath, errorMessage, 'utf8');
+      // Write error to file in JSON format
+      const errorOutput = {
+        status: 'error',
+        jobId,
+        error: {
+          message: error instanceof Error ? error.message : 'Unknown error',
+          timestamp: new Date().toISOString(),
+          url,
+        },
+        concursos: [],
+        validacao: {
+          totalDisciplinas: 0,
+          totalQuestoes: 0,
+          totalMaterias: 0,
+          integridadeOK: false,
+          avisos: [],
+          erros: [error instanceof Error ? error.message : 'Unknown error'],
+        },
+        metadataProcessamento: {
+          dataProcessamento: new Date().toISOString(),
+          versaoSchema: '1.0',
+          tempoProcessamento: Math.floor((Date.now() - startTime) / 1000),
+          modeloIA: anthropicConfig.model,
+          jobId,
+        }
+      };
+
+      fs.writeFileSync(outputPath, JSON.stringify(errorOutput, null, 2), 'utf8');
     } finally {
       clearInterval(timer);
     }
   }
 
-  private async processWithClaude(content: string): Promise<string> {
-    const systemPrompt = `# AGENTE EXTRATOR DE EDITAIS DE CONCURSOS PÚBLICOS
+  /**
+   * Fetch content with retry logic
+   */
+  private async fetchContentWithRetry(url: string, maxRetries: number): Promise<string> {
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        logger.info('Fetching content from URL', { url, attempt, maxRetries });
+        
+        const response = await axios.get(url, {
+          timeout: 30000, // 30 seconds timeout
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; EditalProcessor/1.0)',
+          },
+          maxContentLength: 50 * 1024 * 1024, // 50MB max
+        });
+
+        return response.data;
+      } catch (error) {
+        lastError = error as Error;
+        logger.warn('Failed to fetch content', { 
+          url, 
+          attempt, 
+          maxRetries, 
+          error: error instanceof Error ? error.message : 'Unknown' 
+        });
+
+        if (attempt < maxRetries) {
+          const delay = this.RETRY_DELAY * attempt; // Exponential backoff
+          logger.info('Retrying after delay', { delay, attempt });
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+
+    throw new Error(`Failed to fetch content after ${maxRetries} attempts: ${lastError?.message}`);
+  }
+
+  /**
+   * Process content with chunking for large editals
+   */
+  private async processWithChunking(content: string): Promise<EditalProcessado> {
+    logger.info('Processing large content with chunking strategy');
+    
+    const chunks = this.chunker.chunkContent(content);
+    const sharedContext = this.chunker.extractSharedContext(chunks);
+
+    logger.info('Content chunked', { 
+      totalChunks: chunks.length,
+      sharedContextLength: sharedContext.length 
+    });
+
+    const allConcursos: Concurso[] = [];
+    const errors: string[] = [];
+    const warnings: string[] = [];
+
+    // Process each chunk
+    for (const chunk of chunks) {
+      try {
+        logger.info('Processing chunk', { 
+          chunkId: chunk.id, 
+          chunkSize: chunk.content.length,
+          totalChunks: chunks.length 
+        });
+
+        // Prepend shared context to each chunk
+        const contentWithContext = sharedContext 
+          ? `${sharedContext}\n\n--- CONTINUAÇÃO DO EDITAL (CHUNK ${chunk.id + 1}/${chunks.length}) ---\n\n${chunk.content}`
+          : chunk.content;
+
+        const chunkResult = await this.processWithClaude(contentWithContext, {
+          isChunk: true,
+          chunkId: chunk.id,
+          totalChunks: chunks.length,
+        });
+
+        // Merge results
+        allConcursos.push(...chunkResult.concursos);
+        warnings.push(...chunkResult.validacao.avisos);
+        errors.push(...chunkResult.validacao.erros);
+
+      } catch (error) {
+        const errorMsg = `Error processing chunk ${chunk.id}: ${error instanceof Error ? error.message : 'Unknown'}`;
+        logger.error('Chunk processing failed', { chunkId: chunk.id, error: errorMsg });
+        errors.push(errorMsg);
+      }
+    }
+
+    // Merge and deduplicate concursos (may have duplicates across chunks)
+    const uniqueConcursos = this.deduplicateConcursos(allConcursos);
+
+    logger.info('Chunking processing completed', { 
+      totalConcursos: uniqueConcursos.length,
+      totalErrors: errors.length,
+      totalWarnings: warnings.length 
+    });
+
+    return {
+      concursos: uniqueConcursos,
+      validacao: {
+        totalDisciplinas: uniqueConcursos.reduce((acc, c) => acc + c.disciplinas.length, 0),
+        totalQuestoes: uniqueConcursos.reduce((acc, c) => acc + c.metadata.totalQuestions, 0),
+        totalMaterias: uniqueConcursos.reduce((acc, c) => 
+          acc + c.disciplinas.reduce((acc2, d) => acc2 + d.materias.length, 0), 0
+        ),
+        integridadeOK: errors.length === 0,
+        avisos: warnings,
+        erros: errors,
+      },
+      metadataProcessamento: {
+        dataProcessamento: new Date().toISOString(),
+        versaoSchema: '1.0',
+        modeloIA: anthropicConfig.model,
+      },
+    };
+  }
+
+  /**
+   * Deduplicate concursos that may appear in multiple chunks
+   */
+  private deduplicateConcursos(concursos: Concurso[]): Concurso[] {
+    const seen = new Map<string, Concurso>();
+
+    for (const concurso of concursos) {
+      const key = `${concurso.metadata.examName}|${concurso.metadata.examOrg}|${concurso.metadata.startDate}`;
+      
+      if (!seen.has(key)) {
+        seen.set(key, concurso);
+      } else {
+        // Merge disciplinas if same concurso appears in multiple chunks
+        const existing = seen.get(key)!;
+        const existingDisciplineNames = new Set(existing.disciplinas.map(d => d.nome));
+        
+        for (const disciplina of concurso.disciplinas) {
+          if (!existingDisciplineNames.has(disciplina.nome)) {
+            existing.disciplinas.push(disciplina);
+          }
+        }
+      }
+    }
+
+    return Array.from(seen.values());
+  }
+
+  private async processWithClaude(
+    content: string,
+    context?: { isChunk?: boolean; chunkId?: number; totalChunks?: number }
+  ): Promise<EditalProcessado> {
+    const chunkInfo = context?.isChunk 
+      ? `\n\n**IMPORTANTE**: Este é o CHUNK ${(context.chunkId || 0) + 1} de ${context.totalChunks}. Extraia APENAS os dados presentes neste segmento.`
+      : '';
+
+    const systemPrompt = `# AGENTE EXTRATOR DE EDITAIS - MODO JSON ESTRUTURADO
 
 Você é um especialista em análise e extração de dados de editais de concursos públicos brasileiros.
 
----
+## OBJETIVO CRÍTICO
 
-## SEU OBJETIVO PRINCIPAL
-
-Extrair com precisão absoluta TODAS as informações sobre disciplinas, matérias e distribuição de questões das provas objetivas, apresentando-as em formato markdown estruturado e completo.
-
----
-
-## PROCESSO DE EXECUÇÃO (siga esta ordem)
-
-### ETAPA 1: LEITURA COMPLETA
-- Leia o documento INTEGRALMENTE antes de extrair qualquer dado
-- Identifique quantos concursos/cargos existem no edital
-- Localize TODAS as seções relevantes: "conteúdo programático", "programa", "matérias", "disciplinas", "anexos"
-
-### ETAPA 2: IDENTIFICAÇÃO DE PROVAS
-- Mapeie TODOS os tipos de prova mencionados (objetiva, discursiva, prática, oral, títulos)
-- Identifique datas, turnos e totais de questões para cada tipo
-- Foque a extração detalhada EXCLUSIVAMENTE nas provas OBJETIVAS
-
-### ETAPA 3: EXTRAÇÃO DE DADOS DO CONCURSO
-Para cada concurso identificado, extraia:
-
-**Informações Gerais:**
-- Nome completo do concurso
-- Órgão responsável
-- Data da prova objetiva (formato: DD/MM/AAAA)
-- Turno da prova (manhã, tarde ou noite)
-- Total de questões da prova objetiva
-- Observações importantes para candidatos (critérios eliminatórios, pontuação mínima, etc.)
-
-**Fases do Concurso:**
-- Liste cada tipo de prova existente
-- Informe data e turno de cada fase
-- Indique total de questões quando aplicável
-
-### ETAPA 4: EXTRAÇÃO DO CONTEÚDO PROGRAMÁTICO
-
-Para CADA disciplina da prova objetiva:
-
-1. **Extraia o nome EXATO da disciplina** (preserve a nomenclatura do edital)
-2. **Identifique o número total de questões** daquela disciplina
-3. **Liste TODAS as matérias/tópicos** sob aquela disciplina, incluindo:
-   - Nome completo e literal de cada matéria (copie exatamente como está)
-   - Subtópicos numerados (1., 1.1, 1.1.1, etc.)
-   - Legislações específicas mencionadas (leis, decretos, resoluções com números e anos)
-   - Súmulas citadas
-   - Bibliografia específica quando mencionada
-
-### ETAPA 5: VALIDAÇÃO OBRIGATÓRIA
-
-Antes de finalizar, verifique:
-- ✓ A soma das questões por disciplina corresponde ao total da prova objetiva
-- ✓ Todas as disciplinas mencionadas no edital foram incluídas
-- ✓ Nenhuma matéria foi omitida ou parafraseada
-- ✓ Referências normativas estão completas (número + ano)
-- ✓ Se múltiplos cargos existem, todos foram processados
-
----
+Extrair com **100% de precisão** TODAS as informações sobre disciplinas, matérias e distribuição de questões das provas objetivas.
 
 ## FORMATO DE SAÍDA OBRIGATÓRIO
 
-Para editais com MÚLTIPLOS concursos/cargos, use divisores de sessão:
+Sua resposta DEVE ser EXCLUSIVAMENTE um JSON válido seguindo EXATAMENTE este schema:
 
-\`\`\`markdown
-# CONCURSO 1: [Nome do Cargo/Concurso]
-
-## INFORMAÇÕES GERAIS
-- **Nome do Concurso:** [texto completo]
-- **Órgão:** [nome do órgão]
-- **Data da Prova Objetiva:** [DD/MM/AAAA]
-- **Turno:** [manhã/tarde/noite]
-- **Total de Questões:** [número]
-- **Observações:** [informações relevantes]
-
-## FASES DO CONCURSO
-| Tipo de Prova | Data | Turno | Total de Questões |
-|---------------|------|-------|-------------------|
-| Objetiva | [data] | [turno] | [número] |
-| [outros tipos] | [data] | [turno] | [número ou N/A] |
-
-## CONTEÚDO PROGRAMÁTICO - PROVA OBJETIVA
-
-### DISCIPLINA 1: [Nome Exato da Disciplina]
-**Total de Questões:** [número]
-
-**Matérias:**
-1. [Nome completo da matéria 1]
-2. [Nome completo da matéria 2]
-   - [Subtópico 2.1 se houver]
-   - [Subtópico 2.2 se houver]
-3. [Legislação específica: Lei nº X/AAAA - Nome da Lei]
-4. [Matéria N...]
-
-### DISCIPLINA 2: [Nome Exato da Disciplina]
-**Total de Questões:** [número]
-
-**Matérias:**
-1. [...]
-
-[Continue para todas as disciplinas...]
-
----
-
-# CONCURSO 2: [Nome do próximo Cargo/Concurso]
-[Repita toda a estrutura acima]
-\`\`\`
-
----
-
-## DIRETRIZES CRÍTICAS DE QUALIDADE
-
-**SEMPRE:**
-✓ Preserve a terminologia EXATA do edital (copie literalmente)
-✓ Inclua números de leis, decretos e resoluções completos
-✓ Mantenha a numeração hierárquica dos tópicos
-✓ Liste matérias de forma sequencial e organizada
-✓ Indique o total de questões por disciplina
-✓ Capture ALL referencias bibliográficas mencionadas
-
-**JAMAIS:**
-✗ Interprete, resuma ou parafraseia nomes de matérias
-✗ Omita matérias por parecerem redundantes ou similares
-✗ Assuma informações que não estejam explícitas no texto
-✗ Misture dados de diferentes tipos de prova
-✗ Invente ou aproxime números de questões
-
----
-
-## TRATAMENTO DE CASOS ESPECIAIS
-
-**Se o edital mencionar "conforme legislação vigente":**
-- Inclua exatamente como está escrito
-- Adicione nota: "[conforme legislação vigente à data do edital]"
-
-**Se houver bibliografia obrigatória:**
-- Crie seção específica: "### BIBLIOGRAFIA OBRIGATÓRIA"
-- Liste autor, título, edição e ano quando fornecidos
-
-**Se disciplinas compartilharem matérias:**
-- Liste a matéria em AMBAS as disciplinas
-- Preserve a repetição (não consolide)
-
-**Se o número de questões não estiver explícito:**
-- Indique: "**Total de Questões:** [não especificado no edital]"
-
----
-
-## EXEMPLO DE SAÍDA ESPERADA
-
-\`\`\`markdown
-# CONCURSO: ANALISTA JUDICIÁRIO - ÁREA JUDICIÁRIA
-
-## INFORMAÇÕES GERAIS
-- **Nome do Concurso:** Analista Judiciário - Área Judiciária
-- **Órgão:** Tribunal Regional Federal da 3ª Região
-- **Data da Prova Objetiva:** 15/03/2025
-- **Turno:** Manhã
-- **Total de Questões:** 120
-- **Observações:** Será eliminado o candidato que obtiver nota inferior a 40 pontos na prova objetiva.
-
-## FASES DO CONCURSO
-| Tipo de Prova | Data | Turno | Total de Questões |
-|---------------|------|-------|-------------------|
-| Objetiva | 15/03/2025 | Manhã | 120 |
-| Discursiva | 15/03/2025 | Tarde | 2 questões |
-
-## CONTEÚDO PROGRAMÁTICO - PROVA OBJETIVA
-
-### DISCIPLINA 1: LÍNGUA PORTUGUESA
-**Total de Questões:** 15
-
-**Matérias:**
-1. Compreensão e interpretação de textos
-2. Tipologia textual
-3. Ortografia oficial
-4. Acentuação gráfica
-5. Emprego das classes de palavras
-[... continue ...]
-
-### DISCIPLINA 2: DIREITO CONSTITUCIONAL
-**Total de Questões:** 20
-
-**Matérias:**
-1. Constituição Federal de 1988: princípios fundamentais
-2. Direitos e garantias fundamentais
-3. Organização do Estado
-4. Lei nº 8.112/1990 - Regime Jurídico dos Servidores Públicos Civis da União
-5. Súmula Vinculante nº 13 do STF
-[... continue ...]
-\`\`\`
-
----
-
-## ENTREGA FINAL
-
-Ao concluir a extração, forneça:
-1. Dados estruturados em markdown conforme formato especificado
-2. Confirmação da validação: "✓ Validação concluída: [X] disciplinas, [Y] questões totais"
-3. Alertas se houver inconsistências detectadas
-
-Proceda com a extração completa e detalhada.`;
-
-    const message = await this.anthropic.messages.create({
-      model: anthropicConfig.model,
-      max_tokens: anthropicConfig.maxTokens,
-      temperature: anthropicConfig.temperature,
-      top_k: anthropicConfig.topK,
-      system: systemPrompt,
-      messages: [
+\`\`\`json
+{
+  "concursos": [
+    {
+      "metadata": {
+        "examName": "string (nome COMPLETO e EXATO do concurso)",
+        "examOrg": "string (órgão responsável)",
+        "cargo": "string (opcional - nome do cargo)",
+        "area": "string (opcional - área)",
+        "startDate": "YYYY-MM-DD (data da prova objetiva)",
+        "examTurn": "manha|tarde|noite|integral",
+        "totalQuestions": number (total de questões da prova objetiva),
+        "notaMinimaAprovacao": number (opcional),
+        "notaMinimaEliminatoria": number (opcional),
+        "criteriosEliminatorios": ["string", "string"],
+        "notes": "string (observações importantes)"
+      },
+      "fases": [
         {
-          role: 'user',
-          content: content,
-        },
+          "tipo": "objetiva|discursiva|pratica|oral|titulos|aptidao_fisica",
+          "data": "YYYY-MM-DD ou 'a_divulgar'",
+          "turno": "manha|tarde|noite|integral|nao_especificado",
+          "totalQuestoes": number (opcional),
+          "caraterEliminatorio": boolean,
+          "notaMinima": number (opcional),
+          "peso": number (default 1.0)
+        }
       ],
-    });
+      "disciplinas": [
+        {
+          "nome": "string (nome EXATO da disciplina conforme edital)",
+          "numeroQuestoes": number,
+          "peso": number (default 1.0),
+          "materias": [
+            {
+              "nome": "string (nome COMPLETO e LITERAL da matéria)",
+              "ordem": number (sequencial 1, 2, 3...),
+              "subtopicos": ["string", "string"],
+              "legislacoes": [
+                {
+                  "tipo": "lei|decreto|decreto_lei|resolucao|portaria|instrucao_normativa|sumula",
+                  "numero": "string (ex: '8112')",
+                  "ano": "string (ex: '1990')",
+                  "nome": "string (nome da legislação)",
+                  "complemento": "string (opcional)"
+                }
+              ],
+              "bibliografia": "string (opcional)",
+              "observacoes": "string (opcional)"
+            }
+          ],
+          "observacoes": "string (opcional)"
+        }
+      ]
+    }
+  ],
+  "validacao": {
+    "totalDisciplinas": number,
+    "totalQuestoes": number,
+    "totalMaterias": number,
+    "integridadeOK": boolean,
+    "avisos": ["string"],
+    "erros": ["string"]
+  },
+  "metadataProcessamento": {
+    "dataProcessamento": "ISO 8601 timestamp",
+    "versaoSchema": "1.0",
+    "modeloIA": "claude-3-5-sonnet-20241022"
+  }
+}
+\`\`\`
 
-    return message.content[0].type === 'text' ? message.content[0].text : 'Error: Unexpected response format';
+## REGRAS CRÍTICAS DE EXTRAÇÃO
+
+### 1. PRECISÃO ABSOLUTA
+- ✅ Copie nomes LITERALMENTE como aparecem no edital
+- ✅ Não parafrasie, interprete ou resuma
+- ✅ Preserve pontuação, acentos e maiúsculas exatas
+- ❌ NUNCA invente dados que não estejam explícitos
+
+### 2. DATAS
+- Converta DD/MM/AAAA para YYYY-MM-DD
+- Ex: "30/04/2023" → "2023-04-30"
+- Se data não estiver especificada: use "a_divulgar"
+
+### 3. DISCIPLINAS E MATÉRIAS
+- Extraia TODAS as disciplinas da prova objetiva
+- Para cada disciplina, capture o número EXATO de questões
+- Liste TODAS as matérias na ordem que aparecem
+- Use campo "ordem" sequencial (1, 2, 3, ...)
+
+### 4. LEGISLAÇÕES
+- Capture número completo: "Lei nº 8.112/1990" → {"tipo": "lei", "numero": "8112", "ano": "1990"}
+- Inclua nome: "nome": "Regime Jurídico dos Servidores Públicos"
+- Tipos válidos: lei, decreto, decreto_lei, resolucao, portaria, instrucao_normativa, sumula
+
+### 5. SUBTÓPICOS
+- Se matéria tem itens numerados (1.1, 1.2, etc), adicione em "subtopicos"
+- Mantenha hierarquia e ordem
+- Ex: "1. Direito Constitucional" com "1.1 Princípios" → subtopicos: ["1.1 Princípios"]
+
+### 6. VALIDAÇÃO
+- Some questões de todas as disciplinas
+- Verifique se soma == totalQuestions do metadata
+- Se divergir, adicione em "avisos" do objeto validacao
+- Marque "integridadeOK": true apenas se tudo estiver correto
+
+### 7. MÚLTIPLOS CONCURSOS
+- Se edital tem vários cargos/concursos, crie entrada separada no array "concursos"
+- Cada concurso é um objeto completo com metadata, fases e disciplinas próprias
+
+${chunkInfo}
+
+## EXEMPLO DE SAÍDA
+
+\`\`\`json
+{
+  "concursos": [
+    {
+      "metadata": {
+        "examName": "Analista Judiciário - Área Judiciária",
+        "examOrg": "TRF3",
+        "cargo": "Analista Judiciário",
+        "area": "Judiciária",
+        "startDate": "2025-03-15",
+        "examTurn": "manha",
+        "totalQuestions": 120,
+        "notaMinimaEliminatoria": 40,
+        "criteriosEliminatorios": ["Nota inferior a 40 pontos na prova objetiva"],
+        "notes": "Caráter eliminatório e classificatório"
+      },
+      "fases": [
+        {
+          "tipo": "objetiva",
+          "data": "2025-03-15",
+          "turno": "manha",
+          "totalQuestoes": 120,
+          "caraterEliminatorio": true,
+          "notaMinima": 40,
+          "peso": 1.0
+        },
+        {
+          "tipo": "discursiva",
+          "data": "2025-03-15",
+          "turno": "tarde",
+          "totalQuestoes": 2,
+          "caraterEliminatorio": true,
+          "peso": 2.0
+        }
+      ],
+      "disciplinas": [
+        {
+          "nome": "Língua Portuguesa",
+          "numeroQuestoes": 15,
+          "peso": 1.0,
+          "materias": [
+            {
+              "nome": "Compreensão e interpretação de textos",
+              "ordem": 1,
+              "subtopicos": [],
+              "legislacoes": []
+            },
+            {
+              "nome": "Ortografia oficial",
+              "ordem": 2,
+              "subtopicos": ["Acordo Ortográfico vigente", "Acentuação gráfica"],
+              "legislacoes": []
+            }
+          ]
+        },
+        {
+          "nome": "Direito Constitucional",
+          "numeroQuestoes": 20,
+          "peso": 1.0,
+          "materias": [
+            {
+              "nome": "Constituição Federal de 1988",
+              "ordem": 1,
+              "subtopicos": ["Princípios fundamentais", "Direitos e garantias fundamentais"],
+              "legislacoes": []
+            },
+            {
+              "nome": "Regime Jurídico dos Servidores Públicos",
+              "ordem": 2,
+              "subtopicos": [],
+              "legislacoes": [
+                {
+                  "tipo": "lei",
+                  "numero": "8112",
+                  "ano": "1990",
+                  "nome": "Regime Jurídico dos Servidores Públicos Civis da União"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "validacao": {
+    "totalDisciplinas": 2,
+    "totalQuestoes": 35,
+    "totalMaterias": 4,
+    "integridadeOK": false,
+    "avisos": ["Soma das questões (35) difere do total declarado (120). Possível extração parcial."],
+    "erros": []
+  },
+  "metadataProcessamento": {
+    "dataProcessamento": "${new Date().toISOString()}",
+    "versaoSchema": "1.0",
+    "modeloIA": "claude-3-5-sonnet-20241022"
+  }
+}
+\`\`\`
+
+## INSTRUÇÕES FINAIS
+
+1. Retorne APENAS o JSON, sem texto adicional, sem markdown, sem explicações
+2. Garanta que o JSON seja válido e parseável
+3. Siga o schema EXATAMENTE
+4. Em caso de dúvida, prefira omitir campo opcional a inventar dados
+5. Valide soma de questões e reporte divergências em "avisos"
+
+**Proceda com a extração agora.**`;
+
+    let responseText = '';
+
+    try {
+      logger.info('Calling Claude API', { 
+        model: anthropicConfig.model,
+        contentLength: content.length,
+        isChunk: context?.isChunk 
+      });
+
+      const message = await this.anthropic.messages.create({
+        model: anthropicConfig.model,
+        max_tokens: anthropicConfig.maxTokens,
+        temperature: 0, // Zero para máxima precisão estrutural
+        system: systemPrompt,
+        messages: [
+          {
+            role: 'user',
+            content: `Extraia os dados deste edital seguindo o schema JSON especificado:\n\n${content}`,
+          },
+        ],
+      });
+
+      responseText = message.content[0].type === 'text' ? message.content[0].text : '';
+      
+      if (!responseText) {
+        throw new Error('Empty response from Claude');
+      }
+
+      logger.info('Claude response received', { responseLength: responseText.length });
+
+      // Save raw response for debugging (optional, can be removed in production)
+      if (process.env.DEBUG_SAVE_RAW_RESPONSE) {
+        const debugPath = `/tmp/claude-raw-response-${Date.now()}.txt`;
+        require('node:fs').writeFileSync(debugPath, responseText, 'utf-8');
+        logger.debug('Saved raw Claude response', { debugPath });
+      }
+
+      // Parse and validate JSON
+      const parsed = JSON.parse(responseText);
+      
+      // Validate with Zod schema
+      const validated = EditalProcessadoSchema.parse(parsed);
+
+      logger.info('JSON parsed and validated successfully', {
+        concursos: validated.concursos.length,
+        totalDisciplinas: validated.validacao.totalDisciplinas,
+      });
+
+      return validated;
+
+    } catch (error) {
+      if (error instanceof Error) {
+        logger.error('Error processing with Claude', {
+          error: error.message,
+          stack: error.stack,
+          isChunk: context?.isChunk,
+        });
+
+        // If JSON parsing failed, try to extract JSON from response
+        if (error.name === 'SyntaxError' && responseText) {
+          logger.warn('Attempting to extract JSON from malformed response');
+          
+          // Remove markdown code blocks (```json ... ``` or ``` ... ```)
+          let cleanedResponse = responseText.trim();
+          
+          // Try multiple extraction strategies
+          // 1. Try to find JSON between backticks
+          let codeBlockMatch = cleanedResponse.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+          if (codeBlockMatch) {
+            cleanedResponse = codeBlockMatch[1].trim();
+            logger.info('Extracted JSON from markdown code block (strategy 1)');
+          } else {
+            // 2. Try to find just the opening { and closing }
+            const firstBrace = cleanedResponse.indexOf('{');
+            const lastBrace = cleanedResponse.lastIndexOf('}');
+            if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+              cleanedResponse = cleanedResponse.substring(firstBrace, lastBrace + 1);
+              logger.info('Extracted JSON by finding braces (strategy 2)');
+            }
+          }
+          
+          // Try to parse the cleaned response
+          try {
+            const parsed = JSON.parse(cleanedResponse);
+            const validated = EditalProcessadoSchema.parse(parsed);
+            
+            logger.info('Successfully recovered JSON from malformed response', {
+              concursos: validated.concursos.length,
+              totalDisciplinas: validated.validacao.totalDisciplinas,
+            });
+            
+            return validated;
+          } catch (retryError) {
+            // Save cleaned response for debugging
+            const debugPath = `/tmp/claude-cleaned-json-${Date.now()}.json`;
+            require('node:fs').writeFileSync(debugPath, cleanedResponse, 'utf-8');
+            logger.error('Failed to extract JSON even after cleanup - saved to file', {
+              error: retryError instanceof Error ? retryError.message : 'Unknown error',
+              debugPath,
+            });
+            
+            // Log the parsed JSON for debugging (before validation)
+            try {
+              const parsed = JSON.parse(cleanedResponse);
+              logger.warn('Parsed JSON but validation failed - returning raw structure', {
+                concursos: parsed.concursos?.length || 0,
+              });
+              // Return the raw parsed structure even if validation fails
+              return parsed;
+            } catch (finalError) {
+              const finalDebugPath = `/tmp/claude-failed-json-${Date.now()}.txt`;
+              require('node:fs').writeFileSync(finalDebugPath, cleanedResponse, 'utf-8');
+              logger.error('Complete JSON parsing failure - saved to file', {
+                error: finalError instanceof Error ? finalError.message : 'Unknown error',
+                finalDebugPath,
+              });
+              // If even parsing fails after cleanup, fall through to error return
+            }
+          }
+        }
+      }
+
+      // Return error structure
+      return {
+        concursos: [],
+        validacao: {
+          totalDisciplinas: 0,
+          totalQuestoes: 0,
+          totalMaterias: 0,
+          integridadeOK: false,
+          avisos: [],
+          erros: [error instanceof Error ? error.message : 'Unknown processing error'],
+        },
+        metadataProcessamento: {
+          dataProcessamento: new Date().toISOString(),
+          versaoSchema: '1.0',
+          modeloIA: anthropicConfig.model,
+        },
+      };
+    }
   }
 }
 
