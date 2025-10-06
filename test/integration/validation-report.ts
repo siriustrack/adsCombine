@@ -150,6 +150,11 @@ function validateEdital(jsonPath: string, editalName: string): ValidationResult 
 
 		const status = score >= 90 ? 'completo' : score >= 60 ? 'parcial' : 'pendente';
 
+		// Calcular total de disciplinas de todos os concursos
+		const totalDisciplinas = data.concursos?.reduce((sum: number, c: any) => {
+			return sum + (c.disciplinas?.length || 0);
+		}, 0) || 0;
+
 		return {
 			edital: editalName,
 			status,
@@ -157,7 +162,7 @@ function validateEdital(jsonPath: string, editalName: string): ValidationResult 
 			checks,
 			stats: {
 				concursos: data.concursos?.length || 0,
-				disciplinas: data.concursos?.[0]?.disciplinas?.length || 0,
+				disciplinas: totalDisciplinas,
 				materias: totalMaterias,
 				questoes: questoesDeclaradas,
 				legislacoes: totalLegislacoes,
@@ -238,6 +243,9 @@ async function main() {
 		{ path: 'temp/editais-json/edital MPRS.json', name: 'MPRS 51º (Promotor)' },
 		{ path: 'temp/editais-json/edital juiz sc.json', name: 'Juiz SC (TJ-SC)' },
 		{ path: 'temp/editais-json/edital oab.json', name: 'OAB (Exame de Ordem)' },
+		{ path: 'temp/editais-json/edital prefeitura.json', name: 'Prefeitura (Municipal)' },
+		{ path: 'temp/editais-json/edital advogado da união.json', name: 'Advogado da União (AGU)' },
+		{ path: 'temp/editais-json/edital concurso cartórios rs.json', name: 'Cartórios RS (Notarial e Registros)' },
 		{ path: 'temp/editais-json/edital prefeitura.json', name: 'Prefeitura (Municipal)' },
 	];
 

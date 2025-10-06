@@ -139,4 +139,4 @@
 
 ## OPEN AI KEY
 
-OPENAI_API_KEY=sua-chave-aqui
+[REDACTED - Use environment variable OPENAI_API_KEY]

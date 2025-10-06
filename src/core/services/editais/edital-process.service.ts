@@ -619,13 +619,14 @@ ${chunkInfo}
     let responseText = '';
 
     try {
-      logger.info('Calling Claude API', { 
+      logger.info('Calling Claude API with streaming', { 
         model: anthropicConfig.model,
         contentLength: content.length,
         isChunk: context?.isChunk 
       });
 
-      const message = await this.anthropic.messages.create({
+      // Use streaming para evitar timeout de 10 minutos
+      const stream = this.anthropic.messages.stream({
         model: anthropicConfig.model,
         max_tokens: anthropicConfig.maxTokens,
         temperature: 0, // Zero para máxima precisão estrutural
@@ -638,13 +639,19 @@ ${chunkInfo}
         ],
       });
 
-      responseText = message.content[0].type === 'text' ? message.content[0].text : '';
+      // Acumular resposta do streaming
+      responseText = '';
+      for await (const chunk of stream) {
+        if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text_delta') {
+          responseText += chunk.delta.text;
+        }
+      }
       
       if (!responseText) {
-        throw new Error('Empty response from Claude');
+        throw new Error('Empty response from Claude streaming');
       }
 
-      logger.info('Claude response received', { responseLength: responseText.length });
+      logger.info('Claude streaming response received', { responseLength: responseText.length });
 
       // Save raw response for debugging (optional, can be removed in production)
       if (process.env.DEBUG_SAVE_RAW_RESPONSE) {
