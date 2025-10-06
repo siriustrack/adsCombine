@@ -228,14 +228,34 @@ async function main() {
 	// Processar cada edital
 	const results: ProcessResult[] = [];
 	const totalStartTime = Date.now();
-	const RATE_LIMIT_DELAY = 65000; // 65 segundos entre chamadas para evitar rate limit (8k tokens/min)
+	const RATE_LIMIT_DELAY = 30000; // 30 segundos entre chamadas (ajustável)
+	const MAX_RETRIES = 2;
 
 	for (let i = 0; i < txtFiles.length; i++) {
 		const txtFile = txtFiles[i];
 		const txtPath = join(INPUT_DIR, txtFile);
 		
-		const result = await processEdital(txtPath, txtFile, i + 1, txtFiles.length);
-		results.push(result);
+		let result: ProcessResult | null = null;
+		let retryCount = 0;
+
+		// Tentar processar com retry em caso de rate limit
+		while (retryCount <= MAX_RETRIES) {
+			result = await processEdital(txtPath, txtFile, i + 1, txtFiles.length);
+			
+			// Se foi rate limit, aguardar mais e tentar novamente
+			if (result.error?.includes('rate_limit') && retryCount < MAX_RETRIES) {
+				retryCount++;
+				const retryDelay = 60000; // 60s em caso de rate limit
+				log(`\n   🔄 Retry ${retryCount}/${MAX_RETRIES} - Aguardando ${retryDelay / 1000}s...`, 'yellow');
+				await new Promise(resolve => setTimeout(resolve, retryDelay));
+			} else {
+				break; // Sucesso ou erro diferente de rate limit
+			}
+		}
+
+		if (result) {
+			results.push(result);
+		}
 
 		// Mostrar progresso
 		const elapsed = Date.now() - totalStartTime;
@@ -244,9 +264,9 @@ async function main() {
 		
 		log(`\n   ⏱️  Progresso: ${i + 1}/${txtFiles.length} | Tempo decorrido: ${formatDuration(elapsed)} | Estimado restante: ${formatDuration(remaining)}`, 'gray');
 		
-		// Aguardar entre processamentos para evitar rate limit (exceto no último)
-		if (i < txtFiles.length - 1 && result.status !== 'skipped') {
-			log(`\n   ⏸️  Aguardando ${RATE_LIMIT_DELAY / 1000}s para evitar rate limit...`, 'yellow');
+		// Aguardar entre processamentos (exceto no último e se foi pulado)
+		if (i < txtFiles.length - 1 && result && result.status !== 'skipped') {
+			log(`\n   ⏸️  Aguardando ${RATE_LIMIT_DELAY / 1000}s...`, 'gray');
 			await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_DELAY));
 		}
 	}

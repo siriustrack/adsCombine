@@ -236,6 +236,9 @@ async function main() {
 	const editais = [
 		{ path: 'temp/editais-json/edital ENAC.json', name: 'ENAC 2025.2 (Cartórios)' },
 		{ path: 'temp/editais-json/edital MPRS.json', name: 'MPRS 51º (Promotor)' },
+		{ path: 'temp/editais-json/edital juiz sc.json', name: 'Juiz SC (TJ-SC)' },
+		{ path: 'temp/editais-json/edital oab.json', name: 'OAB (Exame de Ordem)' },
+		{ path: 'temp/editais-json/edital prefeitura.json', name: 'Prefeitura (Municipal)' },
 	];
 
 	const results: ValidationResult[] = [];
