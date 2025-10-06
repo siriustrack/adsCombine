@@ -3,12 +3,13 @@
 ## Visão Geral
 
 O banco agora utiliza um modelo normalizado para melhor consistência, edição e consultas:
-- `study_plans`: Configurações-base do plano (nome do exame, org, datas base, owner)
+- `edital_file`: Registra uploads de arquivos de editais e seu status de processamento
+- `study_plans`: Configurações-base do plano (nome do exame, org, datas base, owner) - referencia edital_file
 - `exams`: Detalhes do exame (tipo, data, turno, total_questions) — 1:1 com study_plans
 - `cycles_per_dow`: Quantidade de ciclos por dia da semana (substitui JSONB cycles_per_dow)
 - `exception_periods`: Períodos de exceção do plano (substitui JSONB exception_periods)
 - `disciplines`: Disciplinas do plano (nome, cor, número de questões)
-- `topics`: Tópicos de cada disciplina com peso {1.0, 1.5, 2.0}
+- `topics`: Tópicos de cada disciplina com peso {1.0, 1.5, 2.0} apenas
 - `study_schedule`: Agenda diária (1 linha = 1 ciclo de estudo)
 
 Nota de migração: a migração que cria essas tabelas e move os dados está em `supabase/migrations/20250930090000_normalize_study_plans.sql`. Os payloads de API para popular as novas tabelas estão em `docs/09-api-request-payloads.md`.
@@ -43,7 +44,6 @@ CREATE TABLE public.study_plans (
   -- Dados do Concurso
   exam_name TEXT NOT NULL,
   exam_org TEXT,                 -- ex: TJSC, OAB, ENAC, MPRS
-  -- Detalhes do exame movidos para public.exams
   
   -- Planejamento
   start_date DATE NOT NULL,
@@ -51,15 +51,20 @@ CREATE TABLE public.study_plans (
   -- Configurações de Estudo
   fixed_off_days weekdayshort[] NULL,
 
+  -- Referência ao arquivo do edital
+  edital_id UUID REFERENCES public.edital_file(id) ON DELETE CASCADE,
+
+  -- Progresso do Wizard
+  current_step SMALLINT DEFAULT 1 CHECK (current_step BETWEEN 1 AND 3),
+
   -- Observações
   notes TEXT,
-  status plan_status DEFAULT 'processing',
-  edital_file_url TEXT
+  status plan_status DEFAULT 'processing'
 );
 
 -- Indexes
 CREATE INDEX idx_study_plans_user_id ON public.study_plans(user_id);
--- (index por exam_date removido)
+CREATE INDEX idx_study_plans_edital_id ON public.study_plans(edital_id);
 ```
 
 ### Tabela: study_schedule
@@ -94,6 +99,31 @@ CREATE INDEX idx_schedule_plan_date ON public.study_schedule (plan_id, day);
 CREATE INDEX idx_schedule_plan_date_turn ON public.study_schedule (plan_id, day, turn);
 CREATE INDEX idx_schedule_kind ON public.study_schedule (kind);
 CREATE INDEX idx_schedule_discipline ON public.study_schedule (discipline) WHERE discipline IS NOT NULL;
+```
+
+### Tabela: edital_file
+
+```sql
+CREATE TABLE public.edital_file (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now(),
+
+  -- File information
+  edital_file_url TEXT NOT NULL,
+  edital_bucket_path TEXT NOT NULL,
+  edital_status TEXT DEFAULT 'processing' CHECK (edital_status IN ('processing', 'ready', 'error')),
+
+  -- Metadata
+  file_name TEXT,
+  file_size BIGINT,
+  mime_type TEXT
+);
+
+-- Indexes
+CREATE INDEX idx_edital_file_user_id ON public.edital_file(user_id);
+CREATE INDEX idx_edital_file_status ON public.edital_file(edital_status);
 ```
 
 ### Novas Tabelas (normalizado)
@@ -307,22 +337,193 @@ CREATE TRIGGER update_study_plans_updated_at
   EXECUTE FUNCTION update_updated_at_column();
 ```
 
-## Checklist de Validação
+## Fluxo de Upload e Processamento de Editais
 
-### Testes de Integridade
-- [ ] Inserir plano de teste com todos os campos
-- [ ] Verificar regra de data no exams (exam_date >= study_plans.start_date)
-- [ ] Testar RLS com diferentes usuários
-- [ ] Validar inserções nas tabelas normalizadas com dados reais
-- [ ] Testar queries de performance com dados em volume
+### Visão Geral do Fluxo
 
-### Testes de Performance
-- [ ] Query "hoje" com < 500ms
-- [ ] Query "semana" com < 1s  
-- [ ] Inserção de cronograma completo < 3s
-- [ ] Verificar uso dos indexes
+O processo de upload e processamento de editais segue um fluxo estruturado que envolve múltiplas tabelas e etapas:
 
-### Backup e Migração
-- [ ] Script de backup automático
-- [ ] Plano de rollback para mudanças de schema
-- [ ] Documentar migrações futuras
+### 1. Upload do Arquivo (Tabela: edital_file)
+
+**Início do processo:**
+1. Usuário faz upload do PDF do edital na interface
+2. Arquivo é enviado para o Supabase Storage
+3. Registro criado na tabela `edital_file`:
+   ```sql
+   INSERT INTO public.edital_file (
+     user_id,
+     edital_file_url,
+     edital_bucket_path,
+     edital_status,
+     file_name,
+     file_size,
+     mime_type
+   ) VALUES (
+     auth.uid(),
+     'https://storage.supabase.co/...',
+     'editals/user_id/filename.pdf',
+     'processing',  -- Status inicial
+     'edital_oab.pdf',
+     1234567,
+     'application/pdf'
+   );
+   ```
+
+### 2. Processamento do Edital (Edge Function)
+
+**Extração de dados:**
+1. Edge Function `upload-and-process` é acionada
+2. Conteúdo do PDF é extraído e processado
+3. IA (Claude API) analisa o conteúdo e identifica:
+   - Concursos/exames mencionados no edital
+   - Disciplinas e tópicos de cada concurso
+   - Metadados (organizadora, tipo de prova, número de questões)
+
+### 3. Criação dos Study Plans (Tabela: study_plans)
+
+**Para cada concurso identificado no edital:**
+1. Criar registro em `study_plans`:
+   ```sql
+   INSERT INTO public.study_plans (
+     user_id,
+     exam_name,
+     exam_org,
+     start_date,
+     edital_id,  -- Referência ao edital_file
+     status
+   ) VALUES (
+     auth.uid(),
+     'OAB XXXVI Exame',
+     'FGV',
+     CURRENT_DATE,
+     'uuid-do-edital',
+     'processing'  -- Ainda processando
+   );
+   ```
+
+2. Criar registro em `exams` (1:1 com study_plan):
+   ```sql
+   INSERT INTO public.exams (
+     plan_id,
+     exam_type,
+     exam_date,
+     exam_turn,
+     total_questions
+   ) VALUES (
+     'uuid-do-study-plan',
+     'objetiva',
+     'a divulgar',
+     'manha',
+     80
+   );
+   ```
+
+3. Criar disciplinas em `disciplines`:
+   ```sql
+   INSERT INTO public.disciplines (
+     plan_id,
+     name,
+     color,
+     number_of_questions
+   ) VALUES 
+     ('uuid-do-study-plan', 'Direito Constitucional', '#3B82F6', 15),
+     ('uuid-do-study-plan', 'Direito Civil', '#10B981', 20),
+     ...;
+   ```
+
+4. Criar tópicos em `topics`:
+   ```sql
+   INSERT INTO public.topics (
+     plan_id,
+     discipline_id,
+     name,
+     weight
+   ) VALUES 
+     ('uuid-do-study-plan', discipline_id_1, 'Direitos Fundamentais', 1.0),
+     ('uuid-do-study-plan', discipline_id_1, 'Organização do Estado', 1.5),
+     ...;
+   ```
+
+### 4. Finalização do Processamento
+
+**Atualização do status do edital:**
+
+⚠️ **IMPORTANTE**: Após a criação de **TODOS** os `study_plans` referentes aos concursos identificados no edital, o status deve ser atualizado na tabela `edital_file` (e não mais em `study_plans` como era feito anteriormente):
+
+```sql
+-- CORRETO: Atualizar status do edital após processar todos os concursos
+UPDATE public.edital_file 
+SET 
+  edital_status = 'ready',
+  updated_at = now()
+WHERE id = 'uuid-do-edital';
+```
+
+**Nota sobre status dos study_plans:**
+- Os `study_plans` individuais mantêm `status = 'processing'` até que o usuário complete a configuração no wizard (Steps 1-3)
+- Apenas após salvar todas as configurações no Step 3, o `study_plan` passa para `status = 'ready'`
+- O `edital_file.edital_status = 'ready'` indica que a extração e criação inicial dos planos foi concluída, mas não que os planos estão prontos para uso
+
+### 5. Wizard de Configuração (Frontend)
+
+**Fluxo do usuário após processamento:**
+
+1. **Step 1 - Seleção**: Usuário visualiza todos os `study_plans` do edital
+2. **Step 2 - Revisão**: Ajusta disciplinas, tópicos e pesos
+3. **Step 3 - Planejamento**: 
+   - Define `start_date` e `exam_date`
+   - Configura `cycles_per_dow`
+   - Adiciona `exception_periods`
+   - Salva configurações
+
+4. **Após salvar Step 3**:
+   ```sql
+   -- Atualizar study_plan para ready
+   UPDATE public.study_plans 
+   SET 
+     status = 'ready',
+     current_step = 3,
+     updated_at = now()
+   WHERE id = 'uuid-do-study-plan';
+   ```
+
+### Diagrama de Estados
+
+```
+UPLOAD
+  ↓
+edital_file (status='processing')
+  ↓
+EDGE FUNCTION: Extração IA
+  ↓
+study_plans[] (status='processing') + exams + disciplines + topics
+  ↓
+edital_file (status='ready') ← Todos os planos criados
+  ↓
+WIZARD: Steps 1-3 (usuário configura cada plan)
+  ↓
+study_plan (status='ready', current_step=3) ← Plano individual configurado
+  ↓
+ALGORITMO: Gerar cronograma
+  ↓
+study_schedule[] (registros de ciclos de estudo)
+```
+
+### Observações Importantes
+
+1. **Múltiplos Concursos**: Um único edital pode gerar múltiplos `study_plans` (ex: edital com concurso nível médio e nível superior)
+
+2. **Processamento Assíncrono**: O status `edital_file.edital_status = 'processing'` permite feedback visual ao usuário durante extração
+
+3. **Integridade Referencial**: 
+   - `study_plans.edital_id` → `edital_file.id`
+   - `ON DELETE CASCADE` garante limpeza automática
+
+4. **RLS (Row Level Security)**: Todos os dados são isolados por `user_id`, garantindo privacidade
+
+5. **Rollback**: Se houver erro durante processamento:
+   ```sql
+   UPDATE public.edital_file 
+   SET edital_status = 'error' 
+   WHERE id = 'uuid-do-edital';
+   ```
