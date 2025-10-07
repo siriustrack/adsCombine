@@ -1,0 +1,85 @@
+{
+  "timestamp": "2025-10-06T01:21:50.195Z",
+  "totalDuration": 546905,
+  "totalProcessed": 7,
+  "successful": 3,
+  "skipped": 2,
+  "failed": 2,
+  "results": [
+    {
+      "editalName": "edital ENAC.txt",
+      "status": "skipped",
+      "stats": {
+        "concursos": 1,
+        "disciplinas": 10,
+        "materias": 103,
+        "questoes": 100,
+        "legislacoes": 0,
+        "integridadeOK": true
+      }
+    },
+    {
+      "editalName": "edital MPRS.txt",
+      "status": "skipped",
+      "stats": {
+        "concursos": 1,
+        "disciplinas": 2,
+        "materias": 21,
+        "questoes": 100,
+        "legislacoes": 0,
+        "integridadeOK": true
+      }
+    },
+    {
+      "editalName": "edital advogado da união.txt",
+      "status": "error",
+      "duration": 2,
+      "error": "JSON Parse error: Expected ']'"
+    },
+    {
+      "editalName": "edital concurso cartórios rs.txt",
+      "status": "error",
+      "duration": 199513,
+      "error": "Erro desconhecido no processamento"
+    },
+    {
+      "editalName": "edital juiz sc.txt",
+      "status": "success",
+      "duration": 112117,
+      "stats": {
+        "concursos": 1,
+        "disciplinas": 3,
+        "materias": 14,
+        "questoes": 100,
+        "legislacoes": 0,
+        "integridadeOK": false
+      }
+    },
+    {
+      "editalName": "edital oab.txt",
+      "status": "success",
+      "duration": 3,
+      "stats": {
+        "concursos": 1,
+        "disciplinas": 3,
+        "materias": 14,
+        "questoes": 100,
+        "legislacoes": 0,
+        "integridadeOK": false
+      }
+    },
+    {
+      "editalName": "edital prefeitura.txt",
+      "status": "success",
+      "duration": 115167,
+      "stats": {
+        "concursos": 1,
+        "disciplinas": 3,
+        "materias": 14,
+        "questoes": 100,
+        "legislacoes": 0,
+        "integridadeOK": false
+      }
+    }
+  ]
+}

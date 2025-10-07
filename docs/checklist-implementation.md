@@ -139,4 +139,11 @@
 
 ## OPEN AI KEY
 
-[REDACTED - Use environment variable OPENAI_API_KEY]
+**Configuração:** Use a variável de ambiente `OPENAI_API_KEY` no arquivo `.env`
+
+```bash
+# .env
+OPENAI_API_KEY=sua-chave-aqui
+```
+
+⚠️ **Importante:** Nunca commite chaves de API no repositório!

@@ -21,20 +21,35 @@ import type {
 } from '../types/types';
 
 // ============================================================================
-// TYPES PARA O JSON EXTRAÍDO
+// TYPES PARA O JSON EXTRAÍDO (ESTRUTURA REAL)
 // ============================================================================
 
 interface EditalJSON {
-  concurso: string;
-  orgao: string;
+  concursos: ConcursoJSON[];
+}
+
+interface ConcursoJSON {
+  metadata: MetadataJSON;
   fases: FaseJSON[];
+  disciplinas: DisciplinaJSON[];
+}
+
+interface MetadataJSON {
+  examName: string;
+  examOrg: string;
+  cargo?: string;
+  area?: string;
+  startDate: string;
+  examTurn?: string;
+  totalQuestions: number;
+  notes?: string;
 }
 
 interface FaseJSON {
   tipo: string; // "objetiva", "discursiva", "titulos", etc.
   data: string;
   turno: string;
-  disciplinas: DisciplinaJSON[];
+  totalQuestoes?: number;
 }
 
 interface DisciplinaJSON {
@@ -88,11 +103,15 @@ export async function preOrchestrate(
   }
 
   try {
+    // Se tiver múltiplos concursos, usar apenas o primeiro
+    const concurso = editalJSON.concursos[0];
+    
     // 2. TRANSFORMAR METADADOS
-    const metadata = transformMetadata(editalJSON);
+    const metadata = transformMetadata(concurso);
 
     // 3. TRANSFORMAR EXAMS (filtrar fases válidas)
-    const exams = transformExams(editalJSON.fases);
+    const totalQuestoes = concurso.metadata.totalQuestions;
+    const exams = transformExams(concurso.fases, totalQuestoes);
     if (exams.length === 0) {
       return { 
         success: false, 
@@ -101,7 +120,7 @@ export async function preOrchestrate(
     }
 
     // 4. TRANSFORMAR DISCIPLINES (achatar hierarquia + gerar cores)
-    const disciplines = transformDisciplines(editalJSON.fases);
+    const disciplines = transformDisciplines(concurso.disciplinas);
     if (disciplines.length === 0) {
       return { 
         success: false, 
@@ -157,11 +176,16 @@ function validateInput(
   if (!editalJSON || typeof editalJSON !== 'object') {
     return { success: false, error: 'editalJSON inválido: deve ser objeto' };
   }
-  if (!editalJSON.concurso || !editalJSON.orgao || !editalJSON.fases) {
-    return { success: false, error: 'editalJSON incompleto: faltam campos obrigatórios' };
+  if (!editalJSON.concursos || !Array.isArray(editalJSON.concursos)) {
+    return { success: false, error: 'editalJSON deve ter array de concursos' };
   }
-  if (!Array.isArray(editalJSON.fases) || editalJSON.fases.length === 0) {
-    return { success: false, error: 'editalJSON deve ter pelo menos 1 fase' };
+  if (editalJSON.concursos.length === 0) {
+    return { success: false, error: 'editalJSON deve ter pelo menos 1 concurso' };
+  }
+
+  const concurso = editalJSON.concursos[0];
+  if (!concurso.fases || !Array.isArray(concurso.fases) || concurso.fases.length === 0) {
+    return { success: false, error: 'concurso deve ter pelo menos 1 fase' };
   }
 
   return { success: true };
@@ -174,22 +198,20 @@ function validateInput(
 /**
  * Transforma metadados do concurso
  */
-function transformMetadata(editalJSON: EditalJSON): StudyPlanMetadata {
-  const primeiraFase = editalJSON.fases[0];
-  
+function transformMetadata(concurso: ConcursoJSON): StudyPlanMetadata {
   return {
-    examName: editalJSON.concurso,
-    examOrg: editalJSON.orgao,
-    startDate: normalizeDate(primeiraFase.data),
+    examName: concurso.metadata.examName,
+    examOrg: concurso.metadata.examOrg,
+    startDate: normalizeDate(concurso.metadata.startDate),
     fixedOffDays: [], // Pode ser configurado depois pelo usuário
-    notes: `Extraído de edital. ${editalJSON.fases.length} fase(s) identificada(s).`,
+    notes: concurso.metadata.notes || `Extraído de edital. ${concurso.fases.length} fase(s) identificada(s).`,
   };
 }
 
 /**
  * Transforma fases em exams (filtrar apenas tipos válidos)
  */
-function transformExams(fases: FaseJSON[]): ExamData[] {
+function transformExams(fases: FaseJSON[], totalQuestoes: number): ExamData[] {
   const validExams: ExamData[] = [];
 
   for (const fase of fases) {
@@ -208,14 +230,11 @@ function transformExams(fases: FaseJSON[]): ExamData[] {
       console.warn(`⚠️ Turno inválido: "${fase.turno}", usando "manha" como padrão`);
     }
 
-    // Calcular total de questões
-    const totalQuestions = calculateTotalQuestions(fase.disciplinas);
-
     validExams.push({
       examType: tipoNormalizado as 'objetiva' | 'discursiva' | 'prática' | 'oral',
       examDate: normalizeDate(fase.data),
       examTurn: (VALID_TURNS.includes(turnoNormalizado as any) ? turnoNormalizado : 'manha') as 'manha' | 'tarde' | 'noite',
-      totalQuestions,
+      totalQuestions: fase.totalQuestoes || totalQuestoes,
     });
   }
 
@@ -225,46 +244,43 @@ function transformExams(fases: FaseJSON[]): ExamData[] {
 /**
  * Transforma disciplinas hierárquicas em flat + gera cores
  */
-function transformDisciplines(fases: FaseJSON[]): DisciplineWithTopics[] {
+function transformDisciplines(disciplinas: DisciplinaJSON[]): DisciplineWithTopics[] {
   const allDisciplines: DisciplineWithTopics[] = [];
   let colorIndex = 0;
 
-  // Processar todas as fases (mesmo que usemos apenas 1 exam, queremos todas as disciplinas)
-  for (const fase of fases) {
-    for (const disciplina of fase.disciplinas) {
-      
-      // CASO 1: Disciplina é um grupo com matérias
-      if (disciplina.materias && disciplina.materias.length > 0) {
-        for (const materia of disciplina.materias) {
-          allDisciplines.push({
-            name: materia.nome,
-            color: COLOR_PALETTE[colorIndex % COLOR_PALETTE.length],
-            numberOfQuestions: materia.numeroQuestoes || 0,
-            topics: materia.subtopicos.map(subtopico => ({
-              name: subtopico,
-              weight: 1.0, // Peso padrão, pode ser inferido depois
-            })),
-          });
-          colorIndex++;
-        }
-      } 
-      // CASO 2: Disciplina simples com subtópicos diretos
-      else if (disciplina.subtopicos && disciplina.subtopicos.length > 0) {
+  for (const disciplina of disciplinas) {
+    
+    // CASO 1: Disciplina é um grupo com matérias
+    if (disciplina.materias && disciplina.materias.length > 0) {
+      for (const materia of disciplina.materias) {
         allDisciplines.push({
-          name: disciplina.nome,
+          name: materia.nome,
           color: COLOR_PALETTE[colorIndex % COLOR_PALETTE.length],
-          numberOfQuestions: disciplina.numeroQuestoes || 0,
-          topics: disciplina.subtopicos.map(subtopico => ({
+          numberOfQuestions: materia.numeroQuestoes || 0,
+          topics: materia.subtopicos.map(subtopico => ({
             name: subtopico,
-            weight: 1.0,
+            weight: 1.0, // Peso padrão, pode ser inferido depois
           })),
         });
         colorIndex++;
       }
-      // CASO 3: Ignorar se não tem conteúdo
-      else {
-        console.warn(`⚠️ Disciplina sem conteúdo: "${disciplina.nome}"`);
-      }
+    } 
+    // CASO 2: Disciplina simples com subtópicos diretos
+    else if (disciplina.subtopicos && disciplina.subtopicos.length > 0) {
+      allDisciplines.push({
+        name: disciplina.nome,
+        color: COLOR_PALETTE[colorIndex % COLOR_PALETTE.length],
+        numberOfQuestions: disciplina.numeroQuestoes || 0,
+        topics: disciplina.subtopicos.map(subtopico => ({
+          name: subtopico,
+          weight: 1.0,
+        })),
+      });
+      colorIndex++;
+    }
+    // CASO 3: Ignorar se não tem conteúdo
+    else {
+      console.warn(`⚠️ Disciplina sem conteúdo: "${disciplina.nome}"`);
     }
   }
 
@@ -339,30 +355,9 @@ function normalizeDate(date: string): string {
   return new Date().toISOString().split('T')[0];
 }
 
-/**
- * Calcula total de questões somando todas as disciplinas
- */
-function calculateTotalQuestions(disciplinas: DisciplinaJSON[]): number {
-  let total = 0;
-  
-  for (const disciplina of disciplinas) {
-    if (disciplina.numeroQuestoes) {
-      total += disciplina.numeroQuestoes;
-    }
-    if (disciplina.materias) {
-      for (const materia of disciplina.materias) {
-        if (materia.numeroQuestoes) {
-          total += materia.numeroQuestoes;
-        }
-      }
-    }
-  }
-  
-  return total;
-}
-
 // ============================================================================
 // EXPORTS
 // ============================================================================
 
-export { EditalJSON, FaseJSON, DisciplinaJSON, MateriaJSON };
+export { EditalJSON, ConcursoJSON, FaseJSON, DisciplinaJSON, MateriaJSON };
+
