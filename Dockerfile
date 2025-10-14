@@ -28,9 +28,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY package.json package-lock.json* ./
 
-# Instala TODAS as dependências (prod + dev) para garantir bindings nativos
-# --include=optional garante que @swc/core-linux-x64-gnu seja instalado
-RUN npm ci --include=optional
+# Instala TODAS as dependências (prod + dev) para garantir bindings nativos do SWC
+RUN npm ci
 
 COPY . .
 
