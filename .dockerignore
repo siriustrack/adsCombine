@@ -61,7 +61,12 @@ pids/
 tmp/
 temp/
 
-# Lock files (keep package-lock.json)
-bun.lock
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Lock files de outros gerenciadores
+package-lock.json
 yarn.lock
 pnpm-lock.yaml
