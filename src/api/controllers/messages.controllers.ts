@@ -7,7 +7,7 @@ import logger from '../../lib/logger';
 const FileInfoSchema = z
   .object({
     fileId: z.string(),
-    url: z.url(),
+    url: z.string().url(),
     mimeType: z.string(),
   })
   .loose();
