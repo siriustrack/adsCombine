@@ -33,8 +33,11 @@ RUN npm ci
 
 COPY . .
 
-# Build com SWC
-RUN npm run build
+# Verifica se o SWC foi instalado e lista arquivos fonte
+RUN ls -la node_modules/.bin/swc && \
+    ls -la src/ && \
+    echo "Iniciando build..." && \
+    npm run build
 
 # -------------------------------------------------------------------
 # 3) Production stage
