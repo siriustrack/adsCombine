@@ -4,13 +4,11 @@ import type { Request, Response } from 'express';
 import { type ZodError, z } from 'zod';
 import logger from '../../lib/logger';
 
-const FileInfoSchema = z
-  .object({
-    fileId: z.string(),
-    url: z.string().url(),
-    mimeType: z.string(),
-  })
-  .loose();
+const FileInfoSchema = z.object({
+  fileId: z.string(),
+  url: z.string().url(),
+  mimeType: z.string(),
+}).passthrough();
 
 export type FileInfo = z.infer<typeof FileInfoSchema>;
 
@@ -20,12 +18,10 @@ const BodySchema = z.object({
   files: z.array(FileInfoSchema).optional(),
 });
 
-const MessageSchema = z
-  .object({
-    conversationId: z.string(),
-    body: BodySchema,
-  })
-  .loose();
+const MessageSchema = z.object({
+  conversationId: z.string(),
+  body: BodySchema,
+}).passthrough();
 
 const ProcessMessageSchema = z.array(MessageSchema);
 export type ProcessMessage = z.infer<typeof ProcessMessageSchema>;

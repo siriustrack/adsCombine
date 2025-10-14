@@ -19,7 +19,7 @@ const VideoRequestSchema = z.object({
   videos: z
     .array(
       z.object({
-        url: z.url('Invalid video URL'),
+        url: z.string().url('Invalid video URL'),
       })
     )
     .min(1, 'Videos array must not be empty'),
@@ -33,7 +33,7 @@ const RawAssetsRequestSchema = z.object({
   videos: z
     .array(
       z.object({
-        url: z.url('Invalid video URL'),
+        url: z.string().url('Invalid video URL'),
       })
     )
     .min(1, 'Videos array must not be empty'),
@@ -42,23 +42,32 @@ export type RawAssetsRequestBody = z.infer<typeof RawAssetsRequestSchema>;
 
 export class VideosController {
   createVideoHandler = async (req: Request, res: Response) => {
-    const data = VideoRequestSchema.parse(req.body);
+    try {
+      const data = VideoRequestSchema.parse(req.body);
 
-    logger.info(
-      `[${data.fileName}] Received request: ${JSON.stringify({
-        fileName: data.fileName,
-        extension: data.extension,
-        width: data.width,
-        height: data.height,
-        codec: data.codec,
-        bitrate: data.bitrate,
-        videoCount: data.videos?.length || 0,
-      })}`
-    );
+      logger.info(
+        `[${data.fileName}] Received request: ${JSON.stringify({
+          fileName: data.fileName,
+          extension: data.extension,
+          width: data.width,
+          height: data.height,
+          codec: data.codec,
+          bitrate: data.bitrate,
+          videoCount: data.videos?.length || 0,
+        })}`
+      );
 
-    createVideosService.execute(data);
+      createVideosService.execute(data);
 
-    res.status(200).json({ message: 'Processing started' });
+      return res.status(200).json({ message: 'Processing started' });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        logger.error('Validation error for /create-video', { errors: error.issues });
+        return res.status(400).json({ error: 'Invalid request body', details: error.issues });
+      }
+      logger.error('Error in createVideoHandler', { error });
+      return res.status(500).json({ error: 'Internal server error' });
+    }
   };
 
   getVideosMetaHandler = async (_req: Request, res: Response) => {
@@ -80,18 +89,27 @@ export class VideosController {
   };
 
   createRawAssetsHandler = async (req: Request, res: Response) => {
-    const data = RawAssetsRequestSchema.parse(req.body);
+    try {
+      const data = RawAssetsRequestSchema.parse(req.body);
 
-    logger.info(
-      `[${data.fileName}] Received create-raw-assets request: ${JSON.stringify({
-        fileName: data.fileName,
-        extension: data.extension,
-        videoCount: data.videos?.length || 0,
-      })}`
-    );
+      logger.info(
+        `[${data.fileName}] Received create-raw-assets request: ${JSON.stringify({
+          fileName: data.fileName,
+          extension: data.extension,
+          videoCount: data.videos?.length || 0,
+        })}`
+      );
 
-    createRawAssetsService.execute(data);
+      createRawAssetsService.execute(data);
 
-    res.status(200).json({ message: 'Raw assets processing started' });
+      return res.status(200).json({ message: 'Raw assets processing started' });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        logger.error('Validation error for /create-raw-assets', { errors: error.issues });
+        return res.status(400).json({ error: 'Invalid request body', details: error.issues });
+      }
+      logger.error('Error in createRawAssetsHandler', { error });
+      return res.status(500).json({ error: 'Internal server error' });
+    }
   };
 }
