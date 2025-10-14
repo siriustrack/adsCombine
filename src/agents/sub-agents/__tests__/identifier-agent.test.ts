@@ -1,11 +1,13 @@
 import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 import { identifyPlans } from '../identifier-agent';
-import { callOpenAIWithFallback } from '../../services/openai-client';
+import { callAnthropicWithRetry } from '../../services/anthropic-client';
 
-jest.mock('../../services/openai-client');
+jest.mock('../../services/anthropic-client');
 
 describe('Identifier Agent Edge Cases', () => {
-  const mockCallOpenAI = callOpenAIWithFallback as jest.MockedFunction<typeof callOpenAIWithFallback>;
+  const mockCallClaude = callAnthropicWithRetry as jest.MockedFunction<
+    typeof callAnthropicWithRetry
+  >;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -41,7 +43,7 @@ describe('Identifier Agent Edge Cases', () => {
       const htmlContent = '<script>alert("xss")</script><b>Test</b> content';
       const sanitizedContent = 'Test content';
 
-      mockCallOpenAI.mockResolvedValue({
+      mockCallClaude.mockResolvedValue({
         success: true,
         data: [{
           metadata: { examName: 'Test Exam', examOrg: 'Test Org', startDate: '2023-12-25' },
@@ -52,8 +54,8 @@ describe('Identifier Agent Edge Cases', () => {
 
       await identifyPlans(htmlContent);
 
-      expect(mockCallOpenAI).toHaveBeenCalled();
-      const calledPrompt = mockCallOpenAI.mock.calls[0][1][0].content;
+      expect(mockCallClaude).toHaveBeenCalled();
+      const calledPrompt = mockCallClaude.mock.calls[0][1][0].content;
       expect(calledPrompt).toContain(sanitizedContent);
       expect(calledPrompt).not.toContain('<script>');
       expect(calledPrompt).not.toContain('<b>');
@@ -62,7 +64,7 @@ describe('Identifier Agent Edge Cases', () => {
 
   describe('OpenAI Integration', () => {
     it('should handle OpenAI API failure', async () => {
-      mockCallOpenAI.mockRejectedValue(new Error('API rate limit exceeded'));
+      mockCallClaude.mockRejectedValue(new Error('API rate limit exceeded'));
 
       const result = await identifyPlans('test content');
 
@@ -71,7 +73,7 @@ describe('Identifier Agent Edge Cases', () => {
     });
 
     it('should handle malformed JSON response', async () => {
-      mockCallOpenAI.mockResolvedValue({
+      mockCallClaude.mockResolvedValue({
         choices: [{
           message: {
             content: 'invalid json'
@@ -108,7 +110,7 @@ describe('Identifier Agent Edge Cases', () => {
         }]
       };
 
-      mockCallOpenAI.mockResolvedValue({
+      mockCallClaude.mockResolvedValue({
         choices: [{
           message: {
             content: JSON.stringify(futureMockResponse)
@@ -140,7 +142,7 @@ describe('Identifier Agent Edge Cases', () => {
         }]
       };
 
-      mockCallOpenAI.mockResolvedValue({
+      mockCallClaude.mockResolvedValue({
         choices: [{
           message: {
             content: JSON.stringify(futureMockResponse)
@@ -168,7 +170,7 @@ describe('Identifier Agent Edge Cases', () => {
         }]
       };
 
-      mockCallOpenAI.mockResolvedValue({
+      mockCallClaude.mockResolvedValue({
         choices: [{
           message: {
             content: JSON.stringify(mockResponse)
@@ -196,7 +198,7 @@ describe('Identifier Agent Edge Cases', () => {
         }]
       };
 
-      mockCallOpenAI.mockResolvedValue({
+      mockCallClaude.mockResolvedValue({
         choices: [{
           message: {
             content: JSON.stringify(mockResponse)
@@ -228,7 +230,7 @@ describe('Identifier Agent Edge Cases', () => {
         }]
       };
 
-      mockCallOpenAI.mockResolvedValue({
+      mockCallClaude.mockResolvedValue({
         choices: [{
           message: {
             content: JSON.stringify(mockResponse)
