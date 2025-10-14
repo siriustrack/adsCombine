@@ -20,3 +20,4 @@ yarn.lock
 # Editor / SO
 .vscode/
 .DS_Store
+.npm/
