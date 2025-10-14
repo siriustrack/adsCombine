@@ -21,16 +21,16 @@ RUN npm ci --only=production --ignore-scripts && \
 FROM node:20-bullseye-slim AS builder
 WORKDIR /app
 
-# Ferramentas de build
+# Ferramentas de build (incluindo para SWC bindings nativos)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json* ./
-COPY --from=deps /app/node_modules ./node_modules
 
-# Instala devDependencies para build
-RUN npm install --only=development
+# Instala TODAS as dependências (prod + dev) para garantir bindings nativos
+# --include=optional garante que @swc/core-linux-x64-gnu seja instalado
+RUN npm ci --include=optional
 
 COPY . .
 
