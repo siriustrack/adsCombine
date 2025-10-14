@@ -1,58 +1,57 @@
 # -------------------------------------------------------------------
-# 1) Dependencies stage (com ferramentas de build p/ nativos)
+# 1) Dependencies stage
 # -------------------------------------------------------------------
-FROM node:lts-bullseye-slim AS deps
+FROM node:20-bullseye-slim AS deps
 WORKDIR /app
 
-# Ferramentas necessárias para compilar dependências nativas (ex.: sharp)
+# Ferramentas necessárias para compilar dependências nativas
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 make g++ ca-certificates curl git unzip \
+    python3 make g++ ca-certificates curl git \
     && rm -rf /var/lib/apt/lists/*
 
-# Bun para instalar deps rapidamente
-RUN curl -fsSL https://bun.com/install | bash -s "bun-v1.2.19"
-ENV PATH="/root/.bun/bin:${PATH}"
+COPY package.json package-lock.json* ./
 
-COPY package.json bun.lock* ./
-# Instala deps já compilando nativos para bullseye
-RUN bun install --frozen-lockfile
+# Instala deps com npm ci (mais rápido e determinístico)
+RUN npm ci --only=production --ignore-scripts && \
+    npm cache clean --force
 
 # -------------------------------------------------------------------
-# 2) Build stage (reaproveita node_modules do deps)
+# 2) Build stage
 # -------------------------------------------------------------------
-FROM node:lts-bullseye-slim AS builder
+FROM node:20-bullseye-slim AS builder
 WORKDIR /app
 
-COPY --from=deps /root/.bun /root/.bun
-ENV PATH="/root/.bun/bin:${PATH}"
+# Ferramentas de build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
 
+COPY package.json package-lock.json* ./
 COPY --from=deps /app/node_modules ./node_modules
+
+# Instala devDependencies para build
+RUN npm install --only=development
+
 COPY . .
 
-# Se seu build usa bun:
-RUN bun run build
-# (ou) RUN npm run build
+# Build com SWC
+RUN npm run build
 
 # -------------------------------------------------------------------
-# 3) Production stage (runtime mínimo + binários OCR)
+# 3) Production stage
 # -------------------------------------------------------------------
-FROM node:lts-bullseye-slim AS production
+FROM node:20-bullseye-slim AS production
 WORKDIR /app
 
 ENV NODE_ENV=production
 
 # ======== OCR & PDF tools (runtime only) ========
-# poppler-utils -> pdftoppm/pdfinfo | tesseract + por | imagemagick (mogrify)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
     tesseract-ocr tesseract-ocr-por \
     imagemagick \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-
-# Evitar que o ImageMagick bloqueie operações simples por policy (não vamos ler PDF com IM)
-# (normalmente não precisa mexer no policy.xml; usando poppler pra PDF)
-# Caso precise fazer convert/mogrify em TIFF/PNG apenas, está ok.
 
 # ======== ENV de performance/estabilidade ========
 # Limita threads internas do Tesseract/OpenMP (cada worker = 1 thread de OCR)
