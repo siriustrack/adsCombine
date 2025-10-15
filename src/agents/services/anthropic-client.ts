@@ -83,8 +83,8 @@ export async function callAnthropicWithRetry(
               {
                 type: 'text',
                 text: config.systemPrompt,
-                cache_control: { type: 'ephemeral' }, // Cache por 5 minutos
-              },
+                cache_control: { type: 'ephemeral' } as any, // Cache por 5 minutos
+              } as any,
             ]
           : config.systemPrompt;
       }

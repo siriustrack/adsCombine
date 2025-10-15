@@ -14,29 +14,55 @@ export type EditalProcessBody = z.infer<typeof EditalProcessBodySchema>;
 
 export class EditaisController {
   processEditalHandler = async (req: Request, res: Response) => {
+    const requestId = res.locals.requestId || 'no-request-id';
+    
+    logger.info('[EDITAL-PROCESS] 📥 Request received', {
+      requestId,
+      hasBody: !!req.body,
+      bodyKeys: Object.keys(req.body || {}),
+    });
+
     const { value: body, error } = await wrapPromiseResult<EditalProcessBody, ZodError>(
       EditalProcessBodySchema.parseAsync(req.body)
     );
 
     if (error) {
-      logger.error('Validation error for /edital-process', { errors: error.issues });
+      logger.error('[EDITAL-PROCESS] ❌ Validation error', { 
+        requestId,
+        errors: error.issues 
+      });
       return res.status(400).json({ error: 'Invalid request body', details: error.issues });
     }
 
-    logger.info('Received /edital-process request', {
+    logger.info('[EDITAL-PROCESS] ✅ Validation passed', {
+      requestId,
       user_id: body.user_id,
       schedule_plan_id: body.schedule_plan_id,
       url: body.url,
+      urlDomain: new URL(body.url).hostname,
     });
 
     try {
+      logger.info('[EDITAL-PROCESS] 🚀 Starting edital processing service', { requestId });
+      
       const result = await editalProcessService.execute(body);
+
+      logger.info('[EDITAL-PROCESS] ✅ Processing initiated successfully', {
+        requestId,
+        jobId: result.jobId,
+        filePath: result.filePath,
+        status: result.status,
+      });
 
       return res.status(200).json(result);
     } catch (error) {
-      logger.error('Error processing edital request', {
+      logger.error('[EDITAL-PROCESS] ❌ Critical error', {
+        requestId,
         error: error instanceof Error ? error.message : 'Unknown error',
-        body,
+        stack: error instanceof Error ? error.stack : undefined,
+        user_id: body.user_id,
+        schedule_plan_id: body.schedule_plan_id,
+        url: body.url,
       });
       return res.status(500).json({ error: 'Internal server error' });
     }

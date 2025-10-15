@@ -52,6 +52,14 @@ export class EditalProcessService {
     const { user_id, schedule_plan_id, url, options } = request;
     const jobId = randomUUID();
 
+    logger.info('[EDITAL-SERVICE] 🎯 Starting edital processing', { 
+      jobId, 
+      user_id, 
+      schedule_plan_id, 
+      url,
+      urlDomain: new URL(url).hostname,
+    });
+
     // Generate random filename
     const randomName = randomUUID();
     const fileName = `${randomName}.json`; // Mudado para .json
@@ -61,12 +69,21 @@ export class EditalProcessService {
     const scheduleDir = path.join(userDir, schedule_plan_id);
     const filePath = path.join(scheduleDir, fileName);
 
+    logger.info('[EDITAL-SERVICE] 📁 Creating directories', { 
+      jobId,
+      userDir, 
+      scheduleDir,
+      fileName,
+    });
+
     // Ensure directories exist
     if (!fs.existsSync(userDir)) {
       fs.mkdirSync(userDir, { recursive: true });
+      logger.info('[EDITAL-SERVICE] ✅ Created user directory', { jobId, userDir });
     }
     if (!fs.existsSync(scheduleDir)) {
       fs.mkdirSync(scheduleDir, { recursive: true });
+      logger.info('[EDITAL-SERVICE] ✅ Created schedule directory', { jobId, scheduleDir });
     }
 
     // Create empty file with processing status
@@ -76,9 +93,20 @@ export class EditalProcessService {
       startedAt: new Date().toISOString(),
     };
     fs.writeFileSync(filePath, JSON.stringify(processingStatus, null, 2), 'utf8');
+    
+    logger.info('[EDITAL-SERVICE] 📝 Created processing status file', { 
+      jobId, 
+      filePath,
+    });
 
     // Return response immediately
     const publicPath = `/files/${user_id}/${schedule_plan_id}/${fileName}`;
+
+    logger.info('[EDITAL-SERVICE] ⚡ Returning immediate response, processing will continue in background', { 
+      jobId, 
+      publicPath,
+      status: 'processing',
+    });
 
     // Process in background
     this.processInBackground(url, filePath, jobId, options);
@@ -99,33 +127,37 @@ export class EditalProcessService {
     const startTime = Date.now();
     const timer = setInterval(() => {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      logger.info('Edital processing time elapsed', { elapsed, url, outputPath, jobId });
+      logger.info('[EDITAL-BG] ⏱️  Processing time elapsed', { elapsed, jobId });
     }, 10000);
 
     try {
-      logger.info('Starting edital processing in background', { url, outputPath, jobId });
+      logger.info('[EDITAL-BG] 🔄 Starting background processing', { url, jobId });
 
       // Step 1: Fetch content from URL with retry
-      logger.info('Step 1: Fetching content from URL', { url });
+      logger.info('[EDITAL-BG] 📥 Step 1/7: Fetching content from URL', { url, jobId });
       const content = await this.fetchContentWithRetry(url, options?.maxRetries || this.MAX_RETRIES);
-      logger.info('Step 2: Content fetched successfully', { 
+      logger.info('[EDITAL-BG] ✅ Step 2/7: Content fetched successfully', { 
         contentLength: content.length,
+        contentSizeKB: Math.floor(content.length / 1024),
         estimatedTokens: Math.floor(content.length / 4),
-        url 
+        url,
+        jobId,
       });
 
       // Step 3: Determine if chunking is needed
       const requiresChunking = content.length > 80000;
-      logger.info('Step 3: Analyzing content size', { 
+      logger.info('[EDITAL-BG] 🔍 Step 3/7: Analyzing content size', { 
         contentLength: content.length,
         requiresChunking,
-        chunkingEnabled: options?.chunkingEnabled ?? true
+        chunkingEnabled: options?.chunkingEnabled ?? true,
+        jobId,
       });
 
       // Step 4: Process with Claude (with or without chunking)
-      logger.info('Step 4: Starting AI processing with Claude', { 
+      logger.info('[EDITAL-BG] 🤖 Step 4/7: Starting AI processing with Claude', { 
         model: anthropicConfig.model,
-        requiresChunking 
+        requiresChunking,
+        jobId,
       });
 
       let processedData: EditalProcessado;
@@ -136,33 +168,44 @@ export class EditalProcessService {
         processedData = await this.processWithClaude(content);
       }
 
-      logger.info('Step 5: AI processing completed', { 
+      logger.info('[EDITAL-BG] ✅ Step 5/7: AI processing completed', { 
         concursos: processedData.concursos.length,
-        totalDisciplinas: processedData.validacao.totalDisciplinas 
+        totalDisciplinas: processedData.validacao.totalDisciplinas,
+        totalQuestoes: processedData.validacao.totalQuestoes,
+        jobId,
       });
 
       // Step 6: Validate schema
       if (options?.validateSchema ?? true) {
-        logger.info('Step 6: Validating schema and integrity');
+        logger.info('[EDITAL-BG] ✔️  Step 6/7: Validating schema and integrity', { jobId });
         const validation = validateEditalIntegrity(processedData);
         
         if (!validation.isValid) {
-          logger.error('Schema validation failed', { 
+          logger.error('[EDITAL-BG] ❌ Schema validation failed', { 
             errors: validation.errors,
-            warnings: validation.warnings 
+            warnings: validation.warnings,
+            jobId,
           });
           // Adiciona erros na validação do próprio dado
           processedData.validacao.erros.push(...validation.errors);
           processedData.validacao.avisos.push(...validation.warnings);
           processedData.validacao.integridadeOK = false;
         } else if (validation.warnings.length > 0) {
-          logger.warn('Schema validation warnings', { warnings: validation.warnings });
+          logger.warn('[EDITAL-BG] ⚠️  Schema validation warnings', { 
+            warnings: validation.warnings,
+            jobId,
+          });
           processedData.validacao.avisos.push(...validation.warnings);
+        } else {
+          logger.info('[EDITAL-BG] ✅ Schema validation passed', { jobId });
         }
       }
 
       // Step 7: Write result to file
-      logger.info('Step 7: Writing processed content to file', { outputPath });
+      logger.info('[EDITAL-BG] 💾 Step 7/7: Writing processed content to file', { 
+        outputPath,
+        jobId,
+      });
       const finalOutput = {
         ...processedData,
         metadataProcessamento: {
@@ -176,21 +219,28 @@ export class EditalProcessService {
 
       fs.writeFileSync(outputPath, JSON.stringify(finalOutput, null, 2), 'utf8');
 
-      logger.info('Edital processing completed successfully', { 
+      const totalTime = Math.floor((Date.now() - startTime) / 1000);
+      logger.info('[EDITAL-BG] 🎉 Edital processing completed successfully', { 
         outputPath, 
-        totalTime: Math.floor((Date.now() - startTime) / 1000),
+        totalTime,
+        totalTimeFormatted: `${Math.floor(totalTime / 60)}m ${totalTime % 60}s`,
         jobId,
-        concursos: processedData.concursos.length
+        concursos: processedData.concursos.length,
+        totalDisciplinas: processedData.validacao.totalDisciplinas,
+        totalQuestoes: processedData.validacao.totalQuestoes,
+        integridadeOK: processedData.validacao.integridadeOK,
       });
 
     } catch (error) {
-      logger.error('Error processing edital in background', {
+      const totalTime = Math.floor((Date.now() - startTime) / 1000);
+      logger.error('[EDITAL-BG] ❌ Critical error during processing', {
         error: error instanceof Error ? error.message : 'Unknown error',
         stack: error instanceof Error ? error.stack : undefined,
         url,
         outputPath,
         jobId,
-        totalTime: Math.floor((Date.now() - startTime) / 1000),
+        totalTime,
+        totalTimeFormatted: `${Math.floor(totalTime / 60)}m ${totalTime % 60}s`,
       });
 
       // Write error to file in JSON format
@@ -234,7 +284,12 @@ export class EditalProcessService {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        logger.info('Fetching content from URL', { url, attempt, maxRetries });
+        logger.info('[EDITAL-FETCH] 📡 Attempting to fetch content', { 
+          url, 
+          attempt, 
+          maxRetries,
+          urlDomain: new URL(url).hostname,
+        });
         
         const response = await axios.get(url, {
           timeout: 30000, // 30 seconds timeout
@@ -244,10 +299,18 @@ export class EditalProcessService {
           maxContentLength: 50 * 1024 * 1024, // 50MB max
         });
 
+        logger.info('[EDITAL-FETCH] ✅ Content fetched successfully', {
+          url,
+          attempt,
+          statusCode: response.status,
+          contentType: response.headers['content-type'],
+          contentLength: response.data?.length || 0,
+        });
+
         return response.data;
       } catch (error) {
         lastError = error as Error;
-        logger.warn('Failed to fetch content', { 
+        logger.warn('[EDITAL-FETCH] ⚠️  Failed to fetch content', { 
           url, 
           attempt, 
           maxRetries, 
@@ -256,12 +319,22 @@ export class EditalProcessService {
 
         if (attempt < maxRetries) {
           const delay = this.RETRY_DELAY * attempt; // Exponential backoff
-          logger.info('Retrying after delay', { delay, attempt });
+          logger.info('[EDITAL-FETCH] 🔄 Retrying after delay', { 
+            delay, 
+            delaySeconds: delay / 1000,
+            attempt,
+            nextAttempt: attempt + 1,
+          });
           await new Promise(resolve => setTimeout(resolve, delay));
         }
       }
     }
 
+    logger.error('[EDITAL-FETCH] ❌ All fetch attempts failed', { 
+      url, 
+      maxRetries,
+      lastError: lastError?.message,
+    });
     throw new Error(`Failed to fetch content after ${maxRetries} attempts: ${lastError?.message}`);
   }
 
