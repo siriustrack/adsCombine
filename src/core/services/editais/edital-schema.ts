@@ -56,7 +56,7 @@ export const MetadataConcursoSchema = z.object({
   area: z.string().optional(),
   especialidade: z.string().optional(),
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data deve estar no formato YYYY-MM-DD'),
-  examTurn: z.enum(['manha', 'tarde', 'noite', 'integral']),
+  examTurn: z.enum(['manha', 'tarde', 'noite', 'integral', 'nao_especificado']),
   totalQuestions: z.number().int().positive('Total de questões deve ser positivo'),
   notaMinimaAprovacao: z.number().optional(),
   notaMinimaEliminatoria: z.number().optional(),

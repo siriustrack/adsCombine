@@ -474,8 +474,8 @@ Sua resposta DEVE ser EXCLUSIVAMENTE um JSON válido seguindo EXATAMENTE este sc
         "cargo": "string (opcional - nome do cargo)",
         "area": "string (opcional - área)",
         "startDate": "YYYY-MM-DD (data da prova objetiva)",
-        "examTurn": "manha|tarde|noite|integral",
-        "totalQuestions": number (total de questões da prova objetiva),
+        "examTurn": "manha|tarde|noite|integral|nao_especificado (use 'nao_especificado' se não estiver claro)",
+        "totalQuestions": number (total de questões da prova objetiva, mínimo 1),
         "notaMinimaAprovacao": number (opcional),
         "notaMinimaEliminatoria": number (opcional),
         "criteriosEliminatorios": ["string", "string"],
@@ -548,8 +548,15 @@ Sua resposta DEVE ser EXCLUSIVAMENTE um JSON válido seguindo EXATAMENTE este sc
 - Converta DD/MM/AAAA para YYYY-MM-DD
 - Ex: "30/04/2023" → "2023-04-30"
 - Se data não estiver especificada: use "a_divulgar"
+- OBRIGATÓRIO: startDate deve estar em formato YYYY-MM-DD válido
 
-### 3. DISCIPLINAS E MATÉRIAS
+### 3. VALORES OBRIGATÓRIOS
+- examTurn: Se não especificado, use "nao_especificado"
+- totalQuestions: DEVE ser >= 1 (some todas as questões das disciplinas)
+- fases: DEVE ter ao menos 1 fase (mínimo: prova objetiva)
+- disciplinas: DEVE ter ao menos 1 disciplina
+
+### 4. DISCIPLINAS E MATÉRIAS
 - Extraia TODAS as disciplinas da prova objetiva
 - Para cada disciplina, capture o número EXATO de questões
 - Liste TODAS as matérias na ordem que aparecem
