@@ -2,11 +2,11 @@ import { z } from 'zod';
 
 // Schema de Legislação
 export const LegislacaoSchema = z.object({
-  tipo: z.enum(['lei', 'decreto', 'decreto_lei', 'resolucao', 'portaria', 'instrucao_normativa', 'sumula']),
+  tipo: z.enum(['lei', 'lei_complementar', 'decreto', 'decreto_lei', 'resolucao', 'portaria', 'instrucao_normativa', 'sumula']),
   numero: z.string(),
   ano: z.string().regex(/^\d{4}$/),
   nome: z.string(),
-  complemento: z.string().optional(),
+  complemento: z.string().optional().nullable(),
 });
 
 export type Legislacao = z.infer<typeof LegislacaoSchema>;
@@ -17,8 +17,8 @@ export const MateriaSchema = z.object({
   ordem: z.number().int().positive(),
   subtopicos: z.array(z.string()).default([]),
   legislacoes: z.array(LegislacaoSchema).default([]),
-  bibliografia: z.string().optional(),
-  observacoes: z.string().optional(),
+  bibliografia: z.string().optional().nullable(),
+  observacoes: z.string().optional().nullable(),
 });
 
 export type Materia = z.infer<typeof MateriaSchema>;
@@ -29,7 +29,7 @@ export const DisciplinaSchema = z.object({
   numeroQuestoes: z.number().int().nonnegative(),
   peso: z.number().positive().default(1.0),
   materias: z.array(MateriaSchema).min(1, 'Disciplina deve ter ao menos uma matéria'),
-  observacoes: z.string().optional(),
+  observacoes: z.string().optional().nullable(),
 });
 
 export type Disciplina = z.infer<typeof DisciplinaSchema>;
@@ -37,12 +37,12 @@ export type Disciplina = z.infer<typeof DisciplinaSchema>;
 // Schema de Fase do Concurso
 export const FaseConcursoSchema = z.object({
   tipo: z.enum(['objetiva', 'discursiva', 'pratica', 'oral', 'titulos', 'aptidao_fisica']),
-  data: z.string().regex(/^\d{4}-\d{2}-\d{2}$|^a_divulgar$/, 'Data deve estar no formato YYYY-MM-DD ou "a_divulgar"'),
+  data: z.string().regex(/^\d{4}-\d{2}-\d{2}$|^a_divulgar$/, 'Data deve estar no formato YYYY-MM-DD ou "a_divulgar"').nullable(),
   turno: z.enum(['manha', 'tarde', 'noite', 'integral', 'nao_especificado']),
-  totalQuestoes: z.number().int().nonnegative().optional(),
-  duracao: z.string().optional(), // Ex: "4 horas"
+  totalQuestoes: z.number().int().nonnegative().optional().nullable(),
+  duracao: z.string().optional().nullable(), // Ex: "4 horas"
   caraterEliminatorio: z.boolean().default(false),
-  notaMinima: z.number().optional(),
+  notaMinima: z.number().optional().nullable(),
   peso: z.number().positive().default(1.0),
 });
 
@@ -52,19 +52,19 @@ export type FaseConcurso = z.infer<typeof FaseConcursoSchema>;
 export const MetadataConcursoSchema = z.object({
   examName: z.string().min(1, 'Nome do concurso é obrigatório'),
   examOrg: z.string().min(1, 'Órgão é obrigatório'),
-  cargo: z.string().optional(),
-  area: z.string().optional(),
-  especialidade: z.string().optional(),
-  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data deve estar no formato YYYY-MM-DD'),
+  cargo: z.string().optional().nullable(),
+  area: z.string().optional().nullable(),
+  especialidade: z.string().optional().nullable(),
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data deve estar no formato YYYY-MM-DD').nullable(),
   examTurn: z.enum(['manha', 'tarde', 'noite', 'integral', 'nao_especificado']),
   totalQuestions: z.number().int().positive('Total de questões deve ser positivo'),
-  notaMinimaAprovacao: z.number().optional(),
-  notaMinimaEliminatoria: z.number().optional(),
+  notaMinimaAprovacao: z.number().optional().nullable(),
+  notaMinimaEliminatoria: z.number().optional().nullable(),
   criteriosEliminatorios: z.array(z.string()).default([]),
-  notes: z.string().optional(),
-  editalUrl: z.string().url().optional(),
-  inscricoesInicio: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  inscricoesFim: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  notes: z.string().optional().nullable(),
+  editalUrl: z.string().url().optional().nullable(),
+  inscricoesInicio: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
+  inscricoesFim: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
 });
 
 export type MetadataConcurso = z.infer<typeof MetadataConcursoSchema>;
@@ -154,17 +154,19 @@ export function validateEditalIntegrity(edital: EditalProcessado): {
     }
 
     // Validar datas
-    try {
-      const startDate = new Date(concurso.metadata.startDate);
-      if (startDate < new Date('2020-01-01')) {
-        warnings.push(
-          `[${concurso.metadata.examName}] Data de início parece muito antiga: ${concurso.metadata.startDate}`
+    if (concurso.metadata.startDate !== null) {
+      try {
+        const startDate = new Date(concurso.metadata.startDate);
+        if (startDate < new Date('2020-01-01')) {
+          warnings.push(
+            `[${concurso.metadata.examName}] Data de início parece muito antiga: ${concurso.metadata.startDate}`
+          );
+        }
+      } catch {
+        errors.push(
+          `[${concurso.metadata.examName}] Data de início inválida: ${concurso.metadata.startDate}`
         );
       }
-    } catch {
-      errors.push(
-        `[${concurso.metadata.examName}] Data de início inválida: ${concurso.metadata.startDate}`
-      );
     }
   }
 

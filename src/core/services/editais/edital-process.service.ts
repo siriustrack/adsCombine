@@ -144,29 +144,25 @@ export class EditalProcessService {
         jobId,
       });
 
-      // Step 3: Determine if chunking is needed
-      const requiresChunking = content.length > 80000;
+      // Step 3: Claude Sonnet 4.5 has 200K token context window (800K chars)
+      // Our editals are typically ~180K chars = ~45K tokens
+      // No need for chunking! Process entire document at once
       logger.info('[EDITAL-BG] 🔍 Step 3/7: Analyzing content size', { 
         contentLength: content.length,
-        requiresChunking,
-        chunkingEnabled: options?.chunkingEnabled ?? true,
+        estimatedTokens: Math.floor(content.length / 4),
+        contextWindowTokens: 200000,
+        chunkingDisabled: 'Claude Sonnet 4.5 has 200K context - no chunking needed',
         jobId,
       });
 
-      // Step 4: Process with Claude (with or without chunking)
+      // Step 4: Process with Claude (entire document at once)
       logger.info('[EDITAL-BG] 🤖 Step 4/7: Starting AI processing with Claude', { 
         model: anthropicConfig.model,
-        requiresChunking,
+        processingMode: 'full-document',
         jobId,
       });
 
-      let processedData: EditalProcessado;
-
-      if (requiresChunking && (options?.chunkingEnabled ?? true)) {
-        processedData = await this.processWithChunking(content);
-      } else {
-        processedData = await this.processWithClaude(content);
-      }
+      const processedData = await this.processWithClaude(content);
 
       logger.info('[EDITAL-BG] ✅ Step 5/7: AI processing completed', { 
         concursos: processedData.concursos.length,
@@ -547,8 +543,8 @@ Sua resposta DEVE ser EXCLUSIVAMENTE um JSON válido seguindo EXATAMENTE este sc
 ### 2. DATAS
 - Converta DD/MM/AAAA para YYYY-MM-DD
 - Ex: "30/04/2023" → "2023-04-30"
-- Se data não estiver especificada: use "a_divulgar"
-- OBRIGATÓRIO: startDate deve estar em formato YYYY-MM-DD válido
+- Se data não estiver especificada ou for "a divulgar": use null
+- OBRIGATÓRIO: startDate deve ser YYYY-MM-DD válido OU null (sem aspas no JSON)
 
 ### 3. VALORES OBRIGATÓRIOS
 - examTurn: Se não especificado, use "nao_especificado"
@@ -559,7 +555,11 @@ Sua resposta DEVE ser EXCLUSIVAMENTE um JSON válido seguindo EXATAMENTE este sc
 ### 4. DISCIPLINAS E MATÉRIAS
 - Extraia TODAS as disciplinas da prova objetiva
 - Para cada disciplina, capture o número EXATO de questões
+- Se o número de questões NÃO estiver especificado para uma disciplina: use 0
 - Liste TODAS as matérias na ordem que aparecem
+- Se NÃO encontrar matérias detalhadas para uma disciplina: crie matéria genérica com nome da disciplina
+- IMPORTANTE: SEMPRE crie pelo menos 1 matéria, mesmo que seja genérica
+- EXEMPLO de disciplina sem detalhes: crie matéria genérica "Nome da Disciplina - Conteúdo Geral"
 - Use campo "ordem" sequencial (1, 2, 3, ...)
 
 ### 4. LEGISLAÇÕES
