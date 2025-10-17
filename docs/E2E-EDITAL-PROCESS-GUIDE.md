@@ -741,7 +741,7 @@ Um teste E2E bem-sucedido deve resultar em:
 ✅ **1 edital** na tabela `editals` (status='completed')  
 ✅ **N concursos** na tabela `exams` (depende do edital)  
 ✅ **M disciplinas** na tabela `disciplines`  
-✅ **X matérias** na tabela `subjects`  
+✅ **X matérias** na tabela `subjects` // DIEGO ATENCAO AQUI ELE SE CONFUDNO ENTRE SUBJECTS E TOPICS 
 ✅ **Y legislações** na tabela `legislations` (se houver)  
 ✅ **Arquivo JSON** salvo em `/public/{user_id}/{schedule_plan_id}/`  
 ✅ **Logs completos** sem erros críticos  
