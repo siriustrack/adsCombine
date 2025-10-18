@@ -10,7 +10,9 @@ import {
   EditalProcessado, 
   EditalProcessadoSchema, 
   validateEditalIntegrity,
-  type Concurso 
+  type Concurso,
+  EditalStructureSchema,
+  type EditalStructure,
 } from './edital-schema';
 import { EditalChunker, type ContentChunk } from './edital-chunker';
 
@@ -18,6 +20,10 @@ export interface EditalProcessRequest {
   user_id: string;
   schedule_plan_id: string;
   url: string;
+  edital_bucket_path: string; // NOT NULL no banco
+  file_name?: string; // Opcional
+  file_size?: number; // Opcional
+  mime_type?: string; // Opcional
   options?: {
     maxRetries?: number;
     chunkingEnabled?: boolean;
@@ -29,6 +35,15 @@ export interface EditalProcessResponse {
   filePath: string;
   status: 'processing';
   jobId: string;
+  user_id: string;
+  estimation: {
+    totalCharacters: number;
+    totalCharactersKB: number;
+    estimatedTimeMs: number;
+    estimatedTimeSeconds: number;
+    estimatedTimeMinutes: number;
+    estimatedCompletionAt: string;
+  };
 }
 
 export class EditalProcessService {
@@ -49,7 +64,7 @@ export class EditalProcessService {
   }
 
   async execute(request: EditalProcessRequest): Promise<EditalProcessResponse> {
-    const { user_id, schedule_plan_id, url, options } = request;
+    const { user_id, schedule_plan_id, url, edital_bucket_path, file_name, file_size, mime_type, options } = request;
     const jobId = randomUUID();
 
     logger.info('[EDITAL-SERVICE] 🎯 Starting edital processing', { 
@@ -58,6 +73,10 @@ export class EditalProcessService {
       schedule_plan_id, 
       url,
       urlDomain: new URL(url).hostname,
+      edital_bucket_path,
+      file_name,
+      file_size,
+      mime_type,
     });
 
     // Generate random filename
@@ -86,35 +105,110 @@ export class EditalProcessService {
       logger.info('[EDITAL-SERVICE] ✅ Created schedule directory', { jobId, scheduleDir });
     }
 
-    // Create empty file with processing status
-    const processingStatus = {
-      status: 'processing',
-      jobId,
-      startedAt: new Date().toISOString(),
-    };
-    fs.writeFileSync(filePath, JSON.stringify(processingStatus, null, 2), 'utf8');
+    // Fetch content to calculate estimation (quick pre-fetch)
+    logger.info('[EDITAL-SERVICE] 📊 Pre-fetching content for estimation', { jobId, url });
+    let estimatedChars = 0;
+    let estimatedTimeMs = 0;
     
-    logger.info('[EDITAL-SERVICE] 📝 Created processing status file', { 
-      jobId, 
-      filePath,
-    });
+    try {
+      // Quick fetch to get content size (with timeout)
+      const contentSample = await this.fetchContentWithRetry(url, 1);
+      estimatedChars = contentSample.length;
+      
+      // Calculate estimated processing time based on test results
+      // Average: 2.55ms per character + 5s overhead
+      const MS_PER_CHAR = 2.55;
+      const OVERHEAD_MS = 5000;
+      estimatedTimeMs = Math.floor((estimatedChars * MS_PER_CHAR) + OVERHEAD_MS);
+      
+      logger.info('[EDITAL-SERVICE] 📊 Estimation calculated', {
+        jobId,
+        estimatedChars,
+        estimatedCharsKB: Math.floor(estimatedChars / 1024),
+        estimatedTimeMs,
+        estimatedTimeSeconds: Math.floor(estimatedTimeMs / 1000),
+        estimatedTimeMinutes: Math.floor(estimatedTimeMs / 60000),
+      });
+      
+      // Create processing status file with estimation
+      const processingStatus = {
+        status: 'processing',
+        jobId,
+        user_id,
+        startedAt: new Date().toISOString(),
+        estimation: {
+          totalCharacters: estimatedChars,
+          totalCharactersKB: Math.floor(estimatedChars / 1024),
+          estimatedTimeMs,
+          estimatedTimeSeconds: Math.floor(estimatedTimeMs / 1000),
+          estimatedCompletionAt: new Date(Date.now() + estimatedTimeMs).toISOString(),
+        },
+      };
+      fs.writeFileSync(filePath, JSON.stringify(processingStatus, null, 2), 'utf8');
+      
+      logger.info('[EDITAL-SERVICE] 📝 Created processing status file with estimation', { 
+        jobId, 
+        filePath,
+      });
 
-    // Return response immediately
+      // Process in background (content already fetched, will reuse)
+      this.processInBackground(url, filePath, jobId, options, contentSample);
+
+    } catch (estimationError) {
+      // If estimation fails, proceed anyway with default values
+      logger.warn('[EDITAL-SERVICE] ⚠️  Failed to calculate estimation, using defaults', {
+        jobId,
+        error: estimationError instanceof Error ? estimationError.message : 'Unknown',
+      });
+      
+      // Default estimation: 150KB = 6.5min
+      estimatedChars = 150000;
+      estimatedTimeMs = 390000;
+      
+      const processingStatus = {
+        status: 'processing',
+        jobId,
+        user_id,
+        startedAt: new Date().toISOString(),
+        estimation: {
+          totalCharacters: estimatedChars,
+          totalCharactersKB: 150,
+          estimatedTimeMs,
+          estimatedTimeSeconds: 390,
+          estimatedCompletionAt: new Date(Date.now() + estimatedTimeMs).toISOString(),
+          note: 'Default estimation used (actual content fetch failed)',
+        },
+      };
+      fs.writeFileSync(filePath, JSON.stringify(processingStatus, null, 2), 'utf8');
+      
+      // Process in background (will fetch again)
+      this.processInBackground(url, filePath, jobId, options);
+    }
+
+    // Return response immediately with estimation
     const publicPath = `/files/${user_id}/${schedule_plan_id}/${fileName}`;
 
-    logger.info('[EDITAL-SERVICE] ⚡ Returning immediate response, processing will continue in background', { 
+    logger.info('[EDITAL-SERVICE] ⚡ Returning immediate response with estimation', { 
       jobId, 
       publicPath,
       status: 'processing',
+      estimatedTimeMs,
+      estimatedTimeMinutes: Math.floor(estimatedTimeMs / 60000),
     });
-
-    // Process in background
-    this.processInBackground(url, filePath, jobId, options);
 
     return {
       filePath: publicPath,
       status: 'processing',
       jobId,
+      user_id,
+      estimation: {
+        totalCharacters: estimatedChars,
+        totalCharactersKB: Math.floor(estimatedChars / 1024),
+        estimatedTimeMs,
+        estimatedTimeSeconds: Math.floor(estimatedTimeMs / 1000),
+        estimatedTimeMinutes: Math.floor(estimatedTimeMs / 60000),
+        estimatedCompletionAt: new Date(Date.now() + estimatedTimeMs).toISOString(),
+      },
     };
   }
 
@@ -122,7 +216,8 @@ export class EditalProcessService {
     url: string, 
     outputPath: string,
     jobId: string,
-    options?: EditalProcessRequest['options']
+    options?: EditalProcessRequest['options'],
+    preloadedContent?: string
   ) {
     const startTime = Date.now();
     const timer = setInterval(() => {
@@ -133,10 +228,21 @@ export class EditalProcessService {
     try {
       logger.info('[EDITAL-BG] 🔄 Starting background processing', { url, jobId });
 
-      // Step 1: Fetch content from URL with retry
-      logger.info('[EDITAL-BG] 📥 Step 1/7: Fetching content from URL', { url, jobId });
-      const content = await this.fetchContentWithRetry(url, options?.maxRetries || this.MAX_RETRIES);
-      logger.info('[EDITAL-BG] ✅ Step 2/7: Content fetched successfully', { 
+      // Step 1: Fetch content (or use preloaded)
+      let content: string;
+      
+      if (preloadedContent) {
+        logger.info('[EDITAL-BG] ✅ Step 1/7: Using preloaded content', { 
+          contentLength: preloadedContent.length,
+          jobId,
+        });
+        content = preloadedContent;
+      } else {
+        logger.info('[EDITAL-BG] 📥 Step 1/7: Fetching content from URL', { url, jobId });
+        content = await this.fetchContentWithRetry(url, options?.maxRetries || this.MAX_RETRIES);
+      }
+      
+      logger.info('[EDITAL-BG] ✅ Step 2/7: Content ready for processing', { 
         contentLength: content.length,
         contentSizeKB: Math.floor(content.length / 1024),
         estimatedTokens: Math.floor(content.length / 4),
@@ -155,19 +261,19 @@ export class EditalProcessService {
         jobId,
       });
 
-      // Step 4: Process with Claude (entire document at once)
-      logger.info('[EDITAL-BG] 🤖 Step 4/7: Starting AI processing with Claude', { 
+      // Step 4: Process with Claude (adaptive strategy)
+      logger.info('[EDITAL-BG] 🤖 Step 4/7: Starting AI processing with Claude (adaptive strategy)', { 
         model: anthropicConfig.model,
-        processingMode: 'full-document',
         jobId,
       });
 
-      const processedData = await this.processWithClaude(content);
+      const processedData = await this.processEditalAdaptive(content);
 
       logger.info('[EDITAL-BG] ✅ Step 5/7: AI processing completed', { 
         concursos: processedData.concursos.length,
         totalDisciplinas: processedData.validacao.totalDisciplinas,
         totalQuestoes: processedData.validacao.totalQuestoes,
+        strategy: processedData.metadataProcessamento.strategy || 'unknown',
         jobId,
       });
 
@@ -440,7 +546,560 @@ export class EditalProcessService {
     return Array.from(seen.values());
   }
 
-  private async processWithClaude(
+  /**
+   * 🎯 ADAPTIVE STRATEGY: Try full extraction first, fallback to chunking if needed
+   * 
+   * This method implements the optimal extraction strategy:
+   * 1. Always tries single-call extraction first (cheap, works for most editais)
+   * 2. Automatically falls back to hierarchical chunking if truncation occurs
+   * 3. No arbitrary heuristics - let the AI decide based on actual output size
+   */
+  private async processEditalAdaptive(content: string): Promise<EditalProcessado> {
+    try {
+      logger.info('[ADAPTIVE] 🎯 Strategy 1: Attempting full extraction (single call)');
+      logger.info('[ADAPTIVE] 📊 Content stats', {
+        contentLength: content.length,
+        contentSizeKB: Math.floor(content.length / 1024),
+        estimatedTokens: Math.floor(content.length / 4),
+      });
+
+      // Try full extraction with high max_tokens (only pay for what we use)
+      const result = await this.processWithClaude(content);
+      
+      logger.info('[ADAPTIVE] ✅ Full extraction successful!', {
+        concursos: result.concursos.length,
+        disciplinas: result.validacao.totalDisciplinas,
+        materias: result.validacao.totalMaterias,
+      });
+
+      // Add strategy metadata
+      return {
+        ...result,
+        metadataProcessamento: {
+          ...result.metadataProcessamento,
+          strategy: 'full-extraction-single-call',
+        },
+      };
+
+    } catch (error) {
+      if (this.isTruncationError(error)) {
+        logger.warn('[ADAPTIVE] ⚠️  Full extraction truncated - switching to Strategy 2');
+        logger.info('[ADAPTIVE] 🔄 Strategy 2: Hierarchical chunking (structure + disciplines)');
+        
+        return await this.processWithHierarchicalChunking(content);
+      }
+      
+      // If it's not a truncation error, propagate it
+      logger.error('[ADAPTIVE] ❌ Unexpected error during processing', {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * 🔀 HIERARCHICAL CHUNKING STRATEGY
+   * 
+   * Pass 1: Extract structure only (metadata + discipline list) → ~4-8K tokens output
+   * Pass 2: Extract details for each discipline in parallel → 14×8K tokens output
+   * Pass 3: Merge results programmatically (JavaScript, not AI)
+   * 
+   * CRITICAL: Input is ALWAYS complete text (no input chunking to preserve context)
+   */
+  private async processWithHierarchicalChunking(content: string): Promise<EditalProcessado> {
+    const startTime = Date.now();
+
+    // Pass 1: Extract structure
+    logger.info('[CHUNKING] 📋 Pass 1/3: Extracting structure (metadata + disciplines)');
+    const structure = await this.extractStructureOnly(content);
+    
+    logger.info('[CHUNKING] ✅ Structure extracted', {
+      disciplinas: structure.disciplinas.length,
+      fases: structure.fases.length,
+    });
+
+    // Pass 2: Extract discipline details in parallel
+    const totalDisciplinas = structure.disciplinas.length;
+    logger.info('[CHUNKING] 📚 Pass 2/3: Extracting details for disciplines', {
+      total: totalDisciplinas,
+      mode: 'parallel-with-fallback',
+    });
+
+    // 🔧 CORREÇÃO CRÍTICA 1: Promise.allSettled (não falha tudo se 1 falhar)
+    const results = await Promise.allSettled(
+      structure.disciplinas.map((disc, idx) => 
+        this.extractDisciplineDetails(content, disc, idx + 1, totalDisciplinas)
+      )
+    );
+
+    // Separar sucessos e falhas
+    const disciplinasDetalhadas = results
+      .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled')
+      .map(r => r.value);
+
+    const failures = results
+      .filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+
+    if (failures.length > 0) {
+      logger.warn('[CHUNKING] ⚠️  Some disciplines failed to extract', {
+        totalFailed: failures.length,
+        totalSuccess: disciplinasDetalhadas.length,
+        failures: failures.map((f, idx) => ({
+          index: idx,
+          reason: f.reason instanceof Error ? f.reason.message : String(f.reason),
+        })),
+      });
+    }
+
+    logger.info('[CHUNKING] ✅ Discipline extraction completed', {
+      totalDisciplinas,
+      successCount: disciplinasDetalhadas.length,
+      failureCount: failures.length,
+      totalMaterias: disciplinasDetalhadas.reduce((acc, d) => acc + d.materias.length, 0),
+    });
+
+    // Pass 3: Merge programmatically (no AI)
+    logger.info('[CHUNKING] 🔗 Pass 3/3: Merging results programmatically');
+    const merged = this.mergeStructureAndDetails(structure, disciplinasDetalhadas);
+
+    const totalTime = Math.floor((Date.now() - startTime) / 1000);
+    logger.info('[CHUNKING] 🎉 Hierarchical chunking completed', {
+      totalTime,
+      totalTimeFormatted: `${Math.floor(totalTime / 60)}m ${totalTime % 60}s`,
+      concursos: merged.concursos.length,
+      disciplinas: merged.validacao.totalDisciplinas,
+      materias: merged.validacao.totalMaterias,
+    });
+
+    return {
+      ...merged,
+      metadataProcessamento: {
+        ...merged.metadataProcessamento,
+        strategy: 'hierarchical-chunking',
+        chunking: {
+          totalPasses: 2 + totalDisciplinas, // structure + N disciplines
+          disciplinasExtracted: totalDisciplinas,
+          processingTime: totalTime,
+        },
+      },
+    };
+  }
+
+  /**
+   * 📋 PASS 1: Extract ONLY structure (metadata + discipline names)
+   * Output: ~4-8K tokens (very small, no truncation risk)
+   */
+  private async extractStructureOnly(content: string): Promise<EditalStructure> {
+    const systemPrompt = `You are extracting the STRUCTURE of a Brazilian public exam edital.
+
+Extract ONLY:
+1. Metadata (exam name, institution, date, etc.)
+2. Phases (if multiple phases exist)
+3. Disciplines list (names only, basic info)
+
+⚠️ CRITICAL: Do NOT extract "materias" (subjects) details. Just discipline names.
+
+Return minimal JSON:
+\`\`\`json
+{
+  "metadata": {
+    "examName": "string",
+    "examOrg": "string",
+    "cargo": "string (optional)",
+    "area": "string (optional)",
+    "startDate": "YYYY-MM-DD or null",
+    "examTurn": "manha|tarde|noite|integral|nao_especificado",
+    "totalQuestions": number,
+    "notes": "string (optional)"
+  },
+  "fases": [
+    {
+      "tipo": "objetiva|discursiva|pratica|oral|titulos|aptidao_fisica",
+      "data": "YYYY-MM-DD or null",
+      "turno": "manha|tarde|noite|integral|nao_especificado",
+      "totalQuestoes": number (optional),
+      "caraterEliminatorio": boolean,
+      "peso": number
+    }
+  ],
+  "disciplinas": [
+    {
+      "nome": "Direito Civil",
+      "numeroQuestoes": 10,
+      "peso": 1.0,
+      "observacoes": "Block I (optional)"
+    }
+  ]
+}
+\`\`\`
+
+⚠️ REMEMBER: Extract SUBJECTS, not BLOCKS/GROUPS.
+Example: Extract "Direito Civil", "Direito Penal" (subjects)
+NOT "Bloco I", "Bloco II" (blocks)
+
+Return ONLY the JSON, no additional text.`;
+
+    let responseText = '';
+    
+    try {
+      const stream = this.anthropic.messages.stream({
+        model: anthropicConfig.model,
+        max_tokens: 64000, // High limit but will only use ~4-8K
+        temperature: 0,
+        system: systemPrompt,
+        messages: [
+          {
+            role: 'user',
+            content: `Extract structure from this Brazilian exam edital:\n\n${content}`,
+          },
+        ],
+      });
+
+      for await (const chunk of stream) {
+        if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text_delta') {
+          responseText += chunk.delta.text;
+        }
+      }
+
+      if (!responseText) {
+        throw new Error('Empty response from Claude streaming');
+      }
+
+      // 🔧 CORREÇÃO CRÍTICA 3: Melhor parsing e validação de JSON
+      let cleaned = responseText.trim();
+      
+      // Estratégia 1: Code block com ```json
+      let codeBlockMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+      if (codeBlockMatch) {
+        cleaned = codeBlockMatch[1].trim();
+      } else {
+        // Estratégia 2: Encontrar primeiro { e último }
+        const firstBrace = cleaned.indexOf('{');
+        const lastBrace = cleaned.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+          cleaned = cleaned.substring(firstBrace, lastBrace + 1);
+          logger.info('[STRUCTURE] Extracted JSON by finding braces');
+        }
+      }
+
+      const parsed = JSON.parse(cleaned);
+      
+      // 🔧 CORREÇÃO CRÍTICA 3: Validar com schema Zod
+      const validated = EditalStructureSchema.parse(parsed);
+      
+      logger.info('[STRUCTURE] ✅ Structure parsed and validated successfully', {
+        disciplinas: validated.disciplinas.length,
+        fases: validated.fases.length,
+        totalQuestions: validated.metadata.totalQuestions,
+      });
+
+      return validated;
+
+    } catch (error) {
+      logger.error('[STRUCTURE] ❌ Failed to extract structure', {
+        error: error instanceof Error ? error.message : 'Unknown',
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * 📖 PASS 2: Extract details for ONE discipline (materias + subtopicos)
+   * Input: FULL edital text (preserves context)
+   * Output: Array of materias (~8K tokens per discipline)
+   */
+  private async extractDisciplineDetails(
+    fullContent: string,
+    disciplina: { nome: string; numeroQuestoes?: number; observacoes?: string | null },
+    currentIndex: number,
+    totalCount: number
+  ): Promise<{ nome: string; materias: any[]; numeroQuestoes: number; peso: number; observacoes?: string | null }> {
+    
+    logger.info(`[DISCIPLINE] 📖 [${currentIndex}/${totalCount}] Extracting: ${disciplina.nome}`);
+
+    const systemPrompt = `You are extracting detailed content for a SPECIFIC discipline from a Brazilian exam edital.
+
+**Target Discipline:** "${disciplina.nome}"
+
+Extract ONLY the "materias" (subjects/topics) for this discipline, including:
+1. Materia name (exact as in edital)
+2. Order (sequential 1, 2, 3...)
+3. Sub-topics (if any)
+4. Legislation references (if any)
+5. Bibliography (if any)
+
+Return JSON array:
+\`\`\`json
+[
+  {
+    "nome": "Materia name",
+    "ordem": 1,
+    "subtopicos": ["topic 1", "topic 2"],
+    "legislacoes": [
+      {
+        "tipo": "lei",
+        "numero": "8112",
+        "ano": "1990",
+        "nome": "Regime Jurídico dos Servidores Públicos"
+      }
+    ],
+    "bibliografia": "Book references",
+    "observacoes": "Additional notes"
+  }
+]
+\`\`\`
+
+⚠️ IMPORTANT: Extract ONLY for "${disciplina.nome}". Ignore other disciplines.
+
+If you cannot find detailed materias, create at least 1 generic materia:
+\`\`\`json
+[
+  {
+    "nome": "${disciplina.nome} - Conteúdo Geral",
+    "ordem": 1,
+    "subtopicos": [],
+    "legislacoes": []
+  }
+]
+\`\`\`
+
+Return ONLY the JSON array, no additional text.`;
+
+    let responseText = '';
+
+    try {
+      const stream = this.anthropic.messages.stream({
+        model: anthropicConfig.model,
+        max_tokens: 64000, // High limit, typically uses ~8K per discipline
+        temperature: 0,
+        system: systemPrompt,
+        messages: [
+          {
+            role: 'user',
+            content: fullContent, // ✅ FULL content, not chunked
+          },
+        ],
+      });
+
+      for await (const chunk of stream) {
+        if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text_delta') {
+          responseText += chunk.delta.text;
+        }
+      }
+
+      if (!responseText) {
+        throw new Error('Empty response from Claude streaming');
+      }
+
+      // Clean and parse JSON
+      let cleaned = responseText.trim();
+      const codeBlockMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+      if (codeBlockMatch) {
+        cleaned = codeBlockMatch[1].trim();
+      }
+
+      const materias = JSON.parse(cleaned);
+      
+      logger.info(`[DISCIPLINE] ✅ [${currentIndex}/${totalCount}] ${disciplina.nome}: ${materias.length} matérias extracted`);
+
+      return {
+        nome: disciplina.nome,
+        materias,
+        numeroQuestoes: disciplina.numeroQuestoes || 0,
+        peso: 1.0,
+        observacoes: disciplina.observacoes,
+      };
+
+    } catch (error) {
+      logger.error(`[DISCIPLINE] ❌ [${currentIndex}/${totalCount}] Failed to extract ${disciplina.nome}`, {
+        error: error instanceof Error ? error.message : 'Unknown',
+      });
+      
+      // Return minimal structure on error
+      return {
+        nome: disciplina.nome,
+        materias: [
+          {
+            nome: `${disciplina.nome} - Conteúdo não extraído`,
+            ordem: 1,
+            subtopicos: [],
+            legislacoes: [],
+          },
+        ],
+        numeroQuestoes: disciplina.numeroQuestoes || 0,
+        peso: 1.0,
+        observacoes: `Erro na extração: ${error instanceof Error ? error.message : 'Unknown'}`,
+      };
+    }
+  }
+
+  /**
+   * 🔗 PASS 3: Merge structure and details programmatically (NOT using AI)
+   * 🔧 CORREÇÃO CRÍTICA 2: Merge por nome, não por index
+   */
+  private mergeStructureAndDetails(structure: EditalStructure, disciplinasDetalhadas: any[]): EditalProcessado {
+    // Criar mapa de disciplinas detalhadas por nome
+    const disciplinasMap = new Map(
+      disciplinasDetalhadas.map(d => [d.nome, d])
+    );
+
+    logger.info('[MERGE] 🔗 Merging structure with details', {
+      totalStructure: structure.disciplinas.length,
+      totalDetails: disciplinasDetalhadas.length,
+    });
+
+    // Merge disciplinas da estrutura com detalhes (por nome, não index)
+    const disciplinas = structure.disciplinas.map(structDisc => {
+      const details = disciplinasMap.get(structDisc.nome);
+      
+      if (!details) {
+        logger.warn(`[MERGE] ⚠️  Disciplina sem detalhes: ${structDisc.nome}`);
+        return {
+          nome: structDisc.nome,
+          materias: [
+            {
+              nome: `${structDisc.nome} - Conteúdo Geral`,
+              ordem: 1,
+              subtopicos: [],
+              legislacoes: [],
+            },
+          ],
+          numeroQuestoes: structDisc.numeroQuestoes || 0,
+          peso: structDisc.peso || 1.0,
+          observacoes: structDisc.observacoes || 'Detalhes não extraídos',
+        };
+      }
+      
+      return {
+        nome: details.nome,
+        materias: details.materias,
+        numeroQuestoes: details.numeroQuestoes || structDisc.numeroQuestoes || 0,
+        peso: details.peso || structDisc.peso || 1.0,
+        observacoes: details.observacoes || structDisc.observacoes,
+      };
+    });
+
+    const totalQuestoes = disciplinas.reduce((acc, d) => acc + (d.numeroQuestoes || 0), 0);
+    const totalMaterias = disciplinas.reduce((acc, d) => acc + d.materias.length, 0);
+
+    // Validation
+    const avisos: string[] = [];
+    const erros: string[] = [];
+
+    // Verificar se todas disciplinas da estrutura têm detalhes
+    const missingDetails = structure.disciplinas.filter(
+      structDisc => !disciplinasMap.has(structDisc.nome)
+    );
+    if (missingDetails.length > 0) {
+      avisos.push(
+        `${missingDetails.length} disciplines missing details: ${missingDetails.map(d => d.nome).join(', ')}`
+      );
+    }
+
+    // Verificar detalhes órfãos (disciplinas em details mas não em structure)
+    const orphanDetails = disciplinasDetalhadas.filter(
+      det => !structure.disciplinas.some(s => s.nome === det.nome)
+    );
+    if (orphanDetails.length > 0) {
+      avisos.push(
+        `${orphanDetails.length} orphan details found (not in structure): ${orphanDetails.map(d => d.nome).join(', ')}`
+      );
+    }
+
+    if (structure.metadata.totalQuestions && totalQuestoes !== structure.metadata.totalQuestions) {
+      avisos.push(
+        `Sum of questions (${totalQuestoes}) differs from declared total (${structure.metadata.totalQuestions})`
+      );
+    }
+
+    if (disciplinas.length === 0) {
+      erros.push('No disciplines extracted');
+    }
+
+    if (totalMaterias === 0) {
+      avisos.push('No materias extracted for any discipline');
+    }
+
+    return {
+      concursos: [
+        {
+          metadata: structure.metadata,
+          fases: structure.fases || [],
+          disciplinas,
+        },
+      ],
+      validacao: {
+        totalDisciplinas: disciplinas.length,
+        totalQuestoes,
+        totalMaterias,
+        integridadeOK: erros.length === 0,
+        avisos,
+        erros,
+      },
+      metadataProcessamento: {
+        dataProcessamento: new Date().toISOString(),
+        versaoSchema: '1.0',
+        modeloIA: anthropicConfig.model,
+      },
+    };
+  }
+
+  /**
+   * 🔧 CORREÇÃO CRÍTICA 4: Melhor detecção de truncamento
+   * Check if error is related to truncation/timeout/incomplete response
+   */
+  private isTruncationError(error: any): boolean {
+    // Check error message
+    const msg = error?.message?.toLowerCase() || '';
+    const hasErrorMsg = 
+      msg.includes('socket') ||
+      msg.includes('truncat') ||
+      msg.includes('incomplete') ||
+      msg.includes('connection closed') ||
+      msg.includes('timeout') ||
+      msg.includes('max_tokens') ||
+      msg.includes('timed out') ||
+      msg.includes('aborted');
+    
+    if (hasErrorMsg) {
+      logger.info('[TRUNCATION] Detected via error message', { message: error.message });
+      return true;
+    }
+    
+    // Check if result is valid but suspiciously small
+    if (error?.result) {
+      const result = error.result;
+      if (result.validacao) {
+        const isDisciplinasLow = result.validacao.totalDisciplinas < 5;
+        const isMateriasLow = result.validacao.totalMaterias < 10;
+        
+        if (isDisciplinasLow || isMateriasLow) {
+          logger.info('[TRUNCATION] Detected via low counts', {
+            disciplinas: result.validacao.totalDisciplinas,
+            materias: result.validacao.totalMaterias,
+          });
+          return true;
+        }
+      }
+    }
+    
+    // Check if response text is incomplete JSON
+    const responseText = error?.responseText || '';
+    if (responseText.length > 0) {
+      const isIncompleteJSON = !responseText.trim().endsWith('}');
+      if (isIncompleteJSON) {
+        logger.info('[TRUNCATION] Detected via incomplete JSON', {
+          lastChars: responseText.slice(-50),
+        });
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
+  public async processWithClaude(
     content: string,
     context?: { isChunk?: boolean; chunkId?: number; totalChunks?: number }
   ): Promise<EditalProcessado> {
@@ -448,17 +1107,153 @@ export class EditalProcessService {
       ? `\n\n**IMPORTANTE**: Este é o CHUNK ${(context.chunkId || 0) + 1} de ${context.totalChunks}. Extraia APENAS os dados presentes neste segmento.`
       : '';
 
-    const systemPrompt = `# AGENTE EXTRATOR DE EDITAIS - MODO JSON ESTRUTURADO
+    const systemPrompt = `# BRAZILIAN PUBLIC EXAM EDITAL EXTRACTION AGENT - STRUCTURED JSON MODE
 
-Você é um especialista em análise e extração de dados de editais de concursos públicos brasileiros.
+You are an expert in analyzing and extracting data from Brazilian public examination edicts (editais de concursos públicos).
 
-## OBJETIVO CRÍTICO
+## CRITICAL OBJECTIVE
 
-Extrair com **100% de precisão** TODAS as informações sobre disciplinas, matérias e distribuição de questões das provas objetivas.
+Extract with **100% precision** ALL information about subjects (disciplinas), topics (matérias), and question distribution for objective exams.
 
-## FORMATO DE SAÍDA OBRIGATÓRIO
+## ⚠️ CRITICAL DISTINCTION: BLOCKS/GROUPS vs ACTUAL SUBJECTS
 
-Sua resposta DEVE ser EXCLUSIVAMENTE um JSON válido seguindo EXATAMENTE este schema:
+**MANY Brazilian editais organize subjects into hierarchical BLOCKS/GROUPS.**
+
+Common patterns you WILL encounter:
+- "Bloco I", "Bloco II", "Bloco III" (Block I, II, III)
+- "Grupo 1: Conhecimentos Gerais", "Grupo 2: Conhecimentos Específicos" (Group 1: General Knowledge, Group 2: Specific Knowledge)
+- "Parte A", "Parte B" (Part A, Part B)
+- "Conhecimentos Básicos", "Conhecimentos Específicos" (Basic Knowledge, Specific Knowledge)
+
+### 🚫 WHAT YOU MUST NOT DO:
+
+**NEVER extract BLOCKS/GROUPS as if they were subjects!**
+
+❌ **WRONG EXAMPLE:**
+\`\`\`json
+{
+  "disciplinas": [
+    { "nome": "Bloco I", "numeroQuestoes": 40 },
+    { "nome": "Bloco II", "numeroQuestoes": 60 }
+  ]
+}
+\`\`\`
+
+### ✅ WHAT YOU MUST DO:
+
+**ALWAYS extract the ACTUAL SUBJECTS within each block/group!**
+
+✅ **CORRECT EXAMPLE:**
+\`\`\`json
+{
+  "disciplinas": [
+    { "nome": "Direito Civil", "numeroQuestoes": 10, "observacoes": "Block I" },
+    { "nome": "Direito Processual Civil", "numeroQuestoes": 10, "observacoes": "Block I" },
+    { "nome": "Direito do Consumidor", "numeroQuestoes": 10, "observacoes": "Block I" },
+    { "nome": "Direito da Criança e do Adolescente", "numeroQuestoes": 10, "observacoes": "Block I" },
+    { "nome": "Direito Penal", "numeroQuestoes": 15, "observacoes": "Block II" },
+    { "nome": "Direito Processual Penal", "numeroQuestoes": 15, "observacoes": "Block II" },
+    { "nome": "Direito Constitucional", "numeroQuestoes": 15, "observacoes": "Block II" },
+    { "nome": "Direito Administrativo", "numeroQuestoes": 15, "observacoes": "Block II" }
+  ]
+}
+\`\`\`
+
+### 📋 DETAILED EXTRACTION RULES FOR HIERARCHICAL STRUCTURES:
+
+1. **Identify the hierarchy level:** Look for structural markers like:
+   - "BLOCO I (40 questões):" followed by subject names
+   - "Grupo 1 - Conhecimentos Gerais:" followed by subject list
+   - Indented or bulleted lists under group headers
+
+2. **Extract subjects, not containers:**
+   - Container: "Bloco I", "Grupo 1", "Parte A" → Do NOT extract as subject
+   - Subject: "Português", "Matemática", "Direito Civil" → DO extract
+
+3. **Handle question distribution:**
+   - If block has 40 questions and 4 subjects → Distribute proportionally or search for explicit distribution
+   - If explicit distribution exists → Use exact numbers
+   - If no distribution → Use 0 and document in "observacoes"
+
+4. **Use 'observacoes' field to preserve block information:**
+   - Add "Block I", "Group 1: General Knowledge", etc. in the "observacoes" field
+   - This preserves hierarchy without corrupting subject extraction
+
+5. **Validation check:**
+   - If you extract < 5 subjects for a 100-question exam → YOU PROBABLY EXTRACTED BLOCKS, NOT SUBJECTS
+   - Brazilian public exams typically have 8-15+ subjects
+   - Re-examine and extract the actual subjects within the blocks
+
+### 🔍 REAL-WORLD EXAMPLE FROM ACTUAL EDITAL:
+
+**Text in edital:**
+\`\`\`
+DISCIPLINAS                    QUESTÕES
+Bloco I:                       40
+  Direito Civil
+  Direito Processual Civil
+  Direito do Consumidor
+  Direito da Criança e do Adolescente
+
+Bloco II:                      30
+  Direito Penal
+  Direito Processual Penal
+  Direito Constitucional
+  Direito Eleitoral
+
+Bloco III:                     30
+  Direito Empresarial
+  Direito Tributário
+  Direito Ambiental
+  Direito Administrativo
+  Noções Gerais de Direito
+  Direitos Humanos
+\`\`\`
+
+**CORRECT extraction (14 subjects):**
+\`\`\`json
+{
+  "disciplinas": [
+    { "nome": "Direito Civil", "numeroQuestoes": 0, "observacoes": "Bloco I - 40 questões total" },
+    { "nome": "Direito Processual Civil", "numeroQuestoes": 0, "observacoes": "Bloco I" },
+    { "nome": "Direito do Consumidor", "numeroQuestoes": 0, "observacoes": "Bloco I" },
+    { "nome": "Direito da Criança e do Adolescente", "numeroQuestoes": 0, "observacoes": "Bloco I" },
+    { "nome": "Direito Penal", "numeroQuestoes": 0, "observacoes": "Bloco II - 30 questões total" },
+    { "nome": "Direito Processual Penal", "numeroQuestoes": 0, "observacoes": "Bloco II" },
+    { "nome": "Direito Constitucional", "numeroQuestoes": 0, "observacoes": "Bloco II" },
+    { "nome": "Direito Eleitoral", "numeroQuestoes": 0, "observacoes": "Bloco II" },
+    { "nome": "Direito Empresarial", "numeroQuestoes": 0, "observacoes": "Bloco III - 30 questões total" },
+    { "nome": "Direito Tributário", "numeroQuestoes": 0, "observacoes": "Bloco III" },
+    { "nome": "Direito Ambiental", "numeroQuestoes": 0, "observacoes": "Bloco III" },
+    { "nome": "Direito Administrativo", "numeroQuestoes": 0, "observacoes": "Bloco III" },
+    { "nome": "Noções Gerais de Direito", "numeroQuestoes": 0, "observacoes": "Bloco III" },
+    { "nome": "Direitos Humanos", "numeroQuestoes": 0, "observacoes": "Bloco III" }
+  ]
+}
+\`\`\`
+
+**WRONG extraction (3 subjects) - DO NOT DO THIS:**
+\`\`\`json
+{
+  "disciplinas": [
+    { "nome": "Bloco I", "numeroQuestoes": 40 },
+    { "nome": "Bloco II", "numeroQuestoes": 30 },
+    { "nome": "Bloco III", "numeroQuestoes": 30 }
+  ]
+}
+\`\`\`
+
+### 🎯 FINAL VALIDATION:
+
+Before returning your JSON, ask yourself:
+1. **Did I extract BLOCKS or SUBJECTS?** If answer is "blocks" → WRONG, go back
+2. **Is the number of subjects realistic?** (8-15+ for typical Brazilian exams)
+3. **Are all subjects actual knowledge areas?** (not "Part A", "Group 1", etc.)
+4. **Did I preserve hierarchy in 'observacoes'?** (so information isn't lost)
+
+## MANDATORY OUTPUT FORMAT
+
+Your response MUST be EXCLUSIVELY a valid JSON following EXACTLY this schema:
 
 \`\`\`json
 {
@@ -532,75 +1327,75 @@ Sua resposta DEVE ser EXCLUSIVAMENTE um JSON válido seguindo EXATAMENTE este sc
 }
 \`\`\`
 
-## REGRAS CRÍTICAS DE EXTRAÇÃO
+## CRITICAL EXTRACTION RULES
 
-### 1. PRECISÃO ABSOLUTA
-- ✅ Copie nomes LITERALMENTE como aparecem no edital
-- ✅ Não parafrasie, interprete ou resuma
-- ✅ Preserve pontuação, acentos e maiúsculas exatas
-- ❌ NUNCA invente dados que não estejam explícitos
+### 1. ABSOLUTE PRECISION
+- ✅ Copy names LITERALLY as they appear in the edital
+- ✅ Do NOT paraphrase, interpret, or summarize
+- ✅ Preserve exact punctuation, accents, and capitalization
+- ❌ NEVER invent data that is not explicitly stated
 
-### 2. DATAS
-- Converta DD/MM/AAAA para YYYY-MM-DD
-- Ex: "30/04/2023" → "2023-04-30"
-- Se data não estiver especificada ou for "a divulgar": use null
-- OBRIGATÓRIO: startDate deve ser YYYY-MM-DD válido OU null (sem aspas no JSON)
+### 2. DATES
+- Convert DD/MM/YYYY to YYYY-MM-DD format
+- Example: "30/04/2023" → "2023-04-30"
+- If date is not specified or is "to be announced": use null
+- MANDATORY: startDate must be valid YYYY-MM-DD OR null (without quotes in JSON)
 
-### 3. VALORES OBRIGATÓRIOS
-- examTurn: Se não especificado, use "nao_especificado"
-- totalQuestions: DEVE ser >= 1 (some todas as questões das disciplinas)
-- fases: DEVE ter ao menos 1 fase (mínimo: prova objetiva)
-- disciplinas: DEVE ter ao menos 1 disciplina
+### 3. MANDATORY VALUES
+- examTurn: If not specified, use "nao_especificado"
+- totalQuestions: MUST be >= 1 (sum all questions from all subjects)
+- fases: MUST have at least 1 phase (minimum: objective exam)
+- disciplinas: MUST have at least 1 subject
 
-### 4. DISCIPLINAS E MATÉRIAS
-- Extraia TODAS as disciplinas da prova objetiva
-- Para cada disciplina, capture o número EXATO de questões
-- Se o número de questões NÃO estiver especificado para uma disciplina: use 0
-- Liste TODAS as matérias na ordem que aparecem
-- Se NÃO encontrar matérias detalhadas para uma disciplina: crie matéria genérica com nome da disciplina
-- IMPORTANTE: SEMPRE crie pelo menos 1 matéria, mesmo que seja genérica
-- EXEMPLO de disciplina sem detalhes: crie matéria genérica "Nome da Disciplina - Conteúdo Geral"
-- Use campo "ordem" sequencial (1, 2, 3, ...)
+### 4. SUBJECTS AND TOPICS
+- Extract ALL subjects from the objective exam
+- For each subject, capture the EXACT number of questions
+- If number of questions is NOT specified for a subject: use 0
+- List ALL topics in the order they appear
+- If you DON'T find detailed topics for a subject: create generic topic with subject name
+- IMPORTANT: ALWAYS create at least 1 topic, even if generic
+- EXAMPLE of subject without details: create generic topic "Subject Name - General Content"
+- Use sequential "ordem" field (1, 2, 3, ...)
 
-### 4. LEGISLAÇÕES
-- Capture número completo: "Lei nº 8.112/1990" → {"tipo": "lei", "numero": "8112", "ano": "1990"}
-- Inclua nome: "nome": "Regime Jurídico dos Servidores Públicos"
-- Tipos válidos: lei, decreto, decreto_lei, resolucao, portaria, instrucao_normativa, sumula
+### 5. LEGISLATION
+- Capture complete number: "Lei nº 8.112/1990" → {"tipo": "lei", "numero": "8112", "ano": "1990"}
+- Include name: "nome": "Legal Regime of Public Servants"
+- Valid types: lei, lei_complementar, decreto, decreto_lei, resolucao, portaria, instrucao_normativa, sumula
 
-### 5. SUBTÓPICOS
-- Se matéria tem itens numerados (1.1, 1.2, etc), adicione em "subtopicos"
-- Mantenha hierarquia e ordem
-- Ex: "1. Direito Constitucional" com "1.1 Princípios" → subtopicos: ["1.1 Princípios"]
+### 6. SUBTOPICS
+- If topic has numbered items (1.1, 1.2, etc), add to "subtopicos"
+- Maintain hierarchy and order
+- Example: "1. Constitutional Law" with "1.1 Principles" → subtopicos: ["1.1 Princípios"]
 
-### 6. VALIDAÇÃO
-- Some questões de todas as disciplinas
-- Verifique se soma == totalQuestions do metadata
-- Se divergir, adicione em "avisos" do objeto validacao
-- Marque "integridadeOK": true apenas se tudo estiver correto
+### 7. VALIDATION
+- Sum questions from all subjects
+- Verify if sum == totalQuestions from metadata
+- If divergent, add to "avisos" in validacao object
+- Mark "integridadeOK": true only if everything is correct
 
-### 7. MÚLTIPLOS CONCURSOS
-- Se edital tem vários cargos/concursos, crie entrada separada no array "concursos"
-- Cada concurso é um objeto completo com metadata, fases e disciplinas próprias
+### 8. MULTIPLE EXAMS
+- If edital has multiple positions/exams, create separate entry in "concursos" array
+- Each exam is a complete object with its own metadata, phases, and subjects
 
 ${chunkInfo}
 
-## EXEMPLO DE SAÍDA
+## OUTPUT EXAMPLE
 
 \`\`\`json
 {
   "concursos": [
     {
       "metadata": {
-        "examName": "Analista Judiciário - Área Judiciária",
+        "examName": "Judicial Analyst - Judicial Area",
         "examOrg": "TRF3",
-        "cargo": "Analista Judiciário",
-        "area": "Judiciária",
+        "cargo": "Judicial Analyst",
+        "area": "Judicial",
         "startDate": "2025-03-15",
         "examTurn": "manha",
         "totalQuestions": 120,
         "notaMinimaEliminatoria": 40,
-        "criteriosEliminatorios": ["Nota inferior a 40 pontos na prova objetiva"],
-        "notes": "Caráter eliminatório e classificatório"
+        "criteriosEliminatorios": ["Score below 40 points on objective exam"],
+        "notes": "Eliminatory and classificatory nature"
       },
       "fases": [
         {
@@ -675,7 +1470,7 @@ ${chunkInfo}
     "totalQuestoes": 35,
     "totalMaterias": 4,
     "integridadeOK": false,
-    "avisos": ["Soma das questões (35) difere do total declarado (120). Possível extração parcial."],
+    "avisos": ["Sum of questions (35) differs from declared total (120). Possible partial extraction."],
     "erros": []
   },
   "metadataProcessamento": {
@@ -686,15 +1481,16 @@ ${chunkInfo}
 }
 \`\`\`
 
-## INSTRUÇÕES FINAIS
+## FINAL INSTRUCTIONS
 
-1. Retorne APENAS o JSON, sem texto adicional, sem markdown, sem explicações
-2. Garanta que o JSON seja válido e parseável
-3. Siga o schema EXATAMENTE
-4. Em caso de dúvida, prefira omitir campo opcional a inventar dados
-5. Valide soma de questões e reporte divergências em "avisos"
+1. Return ONLY the JSON, without additional text, without markdown, without explanations
+2. Ensure the JSON is valid and parseable
+3. Follow the schema EXACTLY
+4. When in doubt, prefer to omit optional field rather than invent data
+5. Validate question sum and report discrepancies in "avisos"
+6. **REMEMBER: Extract SUBJECTS, not BLOCKS/GROUPS**
 
-**Proceda com a extração agora.**`;
+**Proceed with extraction now.**`;
 
     let responseText = '';
 
@@ -714,7 +1510,7 @@ ${chunkInfo}
         messages: [
           {
             role: 'user',
-            content: `Extraia os dados deste edital seguindo o schema JSON especificado:\n\n${content}`,
+            content: `Extract all data from this Brazilian public exam edital following the specified JSON schema. Pay special attention to distinguish between organizational blocks/groups and actual subjects:\n\n${content}`,
           },
         ],
       });

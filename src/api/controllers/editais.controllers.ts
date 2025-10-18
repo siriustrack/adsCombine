@@ -8,6 +8,10 @@ const EditalProcessBodySchema = z.object({
   user_id: z.string().uuid(),
   schedule_plan_id: z.string().uuid(),
   url: z.string().url(),
+  edital_bucket_path: z.string().min(1), // NOT NULL no banco
+  file_name: z.string().optional(), // Opcional
+  file_size: z.number().int().positive().optional(), // Opcional
+  mime_type: z.string().optional(), // Opcional
 });
 
 export type EditalProcessBody = z.infer<typeof EditalProcessBodySchema>;
@@ -40,6 +44,10 @@ export class EditaisController {
       schedule_plan_id: body.schedule_plan_id,
       url: body.url,
       urlDomain: new URL(body.url).hostname,
+      edital_bucket_path: body.edital_bucket_path,
+      file_name: body.file_name,
+      file_size: body.file_size,
+      mime_type: body.mime_type,
     });
 
     try {

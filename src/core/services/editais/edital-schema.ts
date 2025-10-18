@@ -48,6 +48,37 @@ export const FaseConcursoSchema = z.object({
 
 export type FaseConcurso = z.infer<typeof FaseConcursoSchema>;
 
+// Schema de Disciplina Básica (sem matérias - usado no Pass 1)
+export const DisciplinaBasicaSchema = z.object({
+  nome: z.string().min(1, 'Nome da disciplina é obrigatório'),
+  numeroQuestoes: z.number().int().nonnegative(),
+  peso: z.number().positive().default(1.0),
+  observacoes: z.string().optional().nullable(),
+});
+
+export type DisciplinaBasica = z.infer<typeof DisciplinaBasicaSchema>;
+
+// Schema de Estrutura (Pass 1 - sem matérias detalhadas)
+export const EditalStructureSchema = z.object({
+  metadata: z.object({
+    examName: z.string().min(1),
+    examOrg: z.string().min(1),
+    cargo: z.string().optional().nullable(),
+    area: z.string().optional().nullable(),
+    startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
+    examTurn: z.enum(['manha', 'tarde', 'noite', 'integral', 'nao_especificado']),
+    totalQuestions: z.number().int().min(1),
+    notaMinimaAprovacao: z.number().optional().nullable(),
+    notaMinimaEliminatoria: z.number().optional().nullable(),
+    criteriosEliminatorios: z.array(z.string()).default([]),
+    notes: z.string().optional().nullable(),
+  }),
+  fases: z.array(FaseConcursoSchema).min(1, 'Deve haver ao menos uma fase'),
+  disciplinas: z.array(DisciplinaBasicaSchema).min(1, 'Deve haver ao menos 1 disciplina'),
+});
+
+export type EditalStructure = z.infer<typeof EditalStructureSchema>;
+
 // Schema de Metadata do Concurso
 export const MetadataConcursoSchema = z.object({
   examName: z.string().min(1, 'Nome do concurso é obrigatório'),
@@ -99,6 +130,15 @@ export const EditalProcessadoSchema = z.object({
     versaoSchema: z.string().default('1.0'),
     tempoProcessamento: z.number().optional(),
     modeloIA: z.string(),
+    strategy: z.enum([
+      'full-extraction-single-call',
+      'hierarchical-chunking',
+    ]).optional(),
+    chunking: z.object({
+      totalPasses: z.number(),
+      disciplinasExtracted: z.number(),
+      processingTime: z.number(),
+    }).optional(),
   }),
 });
 

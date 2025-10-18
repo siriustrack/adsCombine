@@ -1,4 +1,25 @@
-# 🧪 Guia Completo: Teste E2E do Edital Process
+# ## 🎯 Objetivo
+
+Este documento fornece instruções completas para fazer o teste e2e do **edital-process** funcionar do início ao fim, usando **Agentes IA Orquestrados** para inserção inteligente de dados no Supabase via MCP.
+
+## 🔑 Dados de Teste
+
+```typescript
+user_id: "98d8b11a-8a32-4f6b-9dae-6e42efa23116"
+url: "https://kqhrhafgnoxbgjtvkomx.supabase.co/storage/v1/object/public/editals/98d8b11a-8a32-4f6b-9dae-6e42efa23116/51955178-d788-491d-8dae-3537417d7553.txt"
+```
+
+## � Nova Abordagem: Agentes IA com MCP
+
+**Mudança importante:** Ao invés de código rígido com validações de schema, agora usamos **Agentes IA Inteligentes** que:
+- ✅ Interpretam JSONs semanticamente (sem regex rígidos)
+- ✅ Adaptam-se a mudanças na estrutura do JSON
+- ✅ Usam MCP Supabase para inserção direta
+- ✅ Orquestram inserções sequenciais respeitando dependências
+
+📚 **Documentação completa:** Ver `AI-ORCHESTRATOR-EDITAL-TO-DB.md`
+
+---leto: Teste E2E do Edital Process
 
 ## 📋 Objetivo
 
@@ -61,25 +82,29 @@ url: "https://kqhrhafgnoxbgjtvkomx.supabase.co/storage/v1/object/public/editals/
         ├─ Salva JSON final no mesmo arquivo
         └─ Logging completo: stats, tempo, resultado
 
-4️⃣  **[FALTA IMPLEMENTAR]** INSERÇÃO NO SUPABASE
+4️⃣  **INSERÇÃO NO SUPABASE via Agentes IA**
     │
-    ├─ 📤 Preparação dos Dados
-    │   ├─ Normaliza estrutura para tabelas do DB
-    │   ├─ Cria relacionamentos: user → schedule_plan → edital
-    │   └─ Valida foreign keys e constraints
+    ├─ 🤖 Orchestrator Agent
+    │   ├─ Coordena 5 sub-agentes especializados
+    │   ├─ Mantém contexto compartilhado
+    │   └─ Gerencia dependências e ordem de execução
     │
-    ├─ 💽 Inserção nas Tabelas
-    │   ├─ INSERT: schedule_plans (se não existir)
-    │   ├─ INSERT: editals (vinculado ao schedule_plan)
-    │   ├─ INSERT: exams (concursos extraídos)
-    │   ├─ INSERT: disciplines (disciplinas por exam)
-    │   ├─ INSERT: subjects (matérias por discipline)
-    │   └─ INSERT: legislations (legislações por subject)
+    ├─ 1️⃣ EditalFileAgent
+    │   └─ INSERT em edital_file (armazena JSON completo + URLs)
     │
-    └─ ✅ Confirmação
-        ├─ Retorna IDs criados no DB
-        ├─ Atualiza status do edital (processing → completed)
-        └─ Log de sucesso com métricas de inserção
+    ├─ 2️⃣ StudyPlanAgent
+    │   └─ INSERT em study_plans (vinculado ao edital_file)
+    │
+    ├─ 3️⃣ ExamsAgent
+    │   └─ INSERT em exams (fases/provas do concurso)
+    │
+    ├─ 4️⃣ DisciplinesAgent
+    │   ├─ INSERT em disciplines
+    │   └─ Retorna mapeamento nome → ID
+    │
+    └─ 5️⃣ TopicsAgent
+        ├─ INSERT em topics (matérias de cada disciplina)
+        └─ Usa mapeamento do agente anterior
 
 5️⃣  FINALIZAÇÃO
     ├─ Logs completos de todo o processo
