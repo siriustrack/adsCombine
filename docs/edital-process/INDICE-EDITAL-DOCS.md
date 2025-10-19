@@ -1,103 +1,101 @@
 # 📖 Índice: Documentação Edital Process
 
-> **Última limpeza:** 18 de outubro de 2025  
-> **9 documentos removidos, 3 essenciais criados**
+> **Última atualização:** 19 de outubro de 2025  
+> **Documento canônico criado - demais arquivos obsoletos removidos**
 
 ---
 
-## ✅ DOCUMENTOS ESSENCIAIS (LEIA ESTES)
+## 🎯 DOCUMENTO PRINCIPAL (ÚNICO NECESSÁRIO)
 
-### 1. 📚 **README-EDITAL-PROCESS.md** (6.5KB)
-**Você está aqui? Comece por este documento.**
+### **FLUXO-DEFINITIVO-E2E.md** ✨
+**O ÚNICO documento que você precisa ler.**
 
-- Visão geral do problema
-- Links para os 2 documentos principais
-- Cronograma de implementação
-- Checklist de testes
-- **LEIA PRIMEIRO**
-
----
-
-### 2. 📊 **FLUXO-COMPLETO-EDITAL.md** (19KB)
-**Entenda o pipeline end-to-end.**
-
-**Conteúdo:**
-- Etapa 1: Frontend upload
-- Etapa 2: Edge function (Supabase)
-- Etapa 3: Backend Node.js
-- Etapa 4: Orchestrator
-- Etapa 5: Frontend polling
-- Diagrama consolidado
-- Timeline (17-52s)
-- Validação via MCP
+**Conteúdo completo:**
+- ✅ Visão geral do sistema
+- ✅ Arquitetura completa (diagrama)
+- ✅ Fluxo passo a passo (7 fases)
+- ✅ Estrutura de dados (EditalProcessado, StudyPlanData)
+- ✅ Database schema (todas as tabelas)
+- ✅ Dependências e integrações
+- ✅ Checklist de validação
+- ✅ Logs esperados
+- ✅ Troubleshooting
 
 **Use para:**
-- ✅ Entender o que acontece quando usuario faz upload
-- ✅ Debugar onde pipeline quebrou
-- ✅ Onboarding novos devs
-- ✅ Explicar para cliente/PM
+- ✅ Entender o fluxo completo end-to-end
+- ✅ Debugar problemas
+- ✅ Onboarding de desenvolvedores
+- ✅ Implementar mudanças
+- ✅ Validar funcionamento
+
+**Tamanho:** 22KB  
+**Status:** ✅ Atualizado e completo
 
 ---
 
-### 3. 🔧 **IMPLEMENTACAO-BACKEND-FINAL.md** (21KB)
-**Código completo para corrigir backend Node.js.**
+## 📂 Documentos de Suporte (Referência Opcional)
 
-**Conteúdo:**
-- Situação atual (✅ funciona / ❌ quebrado)
-- Problema 1: Nome do parâmetro errado
-- Problema 2: Backend não atualiza banco
-- 6 passos de implementação com código completo
-- Checklist de implementação
-- Validação via MCP
-- Estimativa: 2h (75min código + 45min teste)
+### Implementação
+- **IMPLEMENTACAO-BACKEND-FINAL.md** - Detalhes da implementação final
+- **IMPLEMENTACAO-ESTRATEGIA-ADAPTATIVA.md** - Estratégia adaptativa do Claude
+- **IMPLEMENTACAO-CONCLUIDA.md** - Resumo da implementação
 
-**Use para:**
-- ✅ Implementar as 6 mudanças no código
-- ✅ Copiar/colar código durante implementação
-- ✅ Validar com MCP após deploy
-- ✅ Garantir que nada foi esquecido
+### API & Frontend
+- **EDITAL-PROCESS-API.md** - Especificação da API REST
+- **README-EDITAL-PROCESS.md** - README original do módulo
+- **REVISAO-EDGE-FUNCTION-V26.md** - Revisão da edge function v26
+
+### Logs & Debug
+- **EDITAL-PROCESS-LOGS.md** - Estrutura de logs do sistema
+- **ESTRUTURA-EDITAIS.md** - Estrutura de dados dos editais
 
 ---
 
-## 📂 Documentos de Suporte (Referência)
+## ❌ Documentos Removidos (Obsoletos)
 
-### Testes E2E
-- **E2E-EDITAL-PROCESS-GUIDE.md** (26KB) - Guia completo de testes E2E
+Estes documentos foram **deletados** em 19/10/2025 porque continham informações duplicadas ou incorretas:
 
-### Debug/Troubleshooting
-- **DEBUG-PRODUCAO-EDITAL-PROCESS.md** (21KB) - Logs de produção
-- **EDITAL-PROCESS-LOGS.md** (6.4KB) - Estrutura de logs
+1. ❌ FLUXO-COMPLETO-EXPLICADO.md (844 linhas) - Substituído por FLUXO-DEFINITIVO-E2E.md
+2. ❌ FLUXO-COMPLETO-EDITAL.md (710 linhas) - Informações duplicadas
+3. ❌ E2E-EDITAL-PROCESS-GUIDE.md (794 linhas) - Guia desatualizado
+4. ❌ ANALISE-FLUXO-COMPLETO.md - Análise intermediária
+5. ❌ AI-ORCHESTRATOR-EDITAL-TO-DB.md - Abordagem antiga
+6. ❌ AJUSTES-ROTA-EDITAL-PROCESS.md - Ajustes já implementados
 
-### Contexto Histórico
-- **AI-ORCHESTRATOR-EDITAL-TO-DB.md** (23KB) - Documentação original do orchestrator
-- **AJUSTES-ROTA-EDITAL-PROCESS.md** (9.2KB) - Ajustes anteriores
-- **IMPLEMENTACAO-ESTRATEGIA-ADAPTATIVA.md** (11KB) - Estratégia do Claude
-
-### Frontend
-- **FRONTEND-EDITAL-CLIENT.ts** (12KB) - Cliente TypeScript do frontend
-
-### API
-- **EDITAL-PROCESS-API.md** (3.0KB) - Spec da API
+**Motivo:** Todo conteúdo relevante foi consolidado em **FLUXO-DEFINITIVO-E2E.md**
 
 ---
 
-## ❌ Documentos Removidos (Consolidados)
+## 🚀 Como Usar Esta Documentação
 
-Estes documentos foram **deletados** porque foram consolidados nos 3 essenciais acima:
+### Se você é novo no projeto:
+1. Leia **FLUXO-DEFINITIVO-E2E.md** completo
+2. Execute o checklist de validação
+3. Pronto! Você entende o sistema completo
 
-1. ❌ ANALISE-CRITICA-FLUXO-REAL.md
-2. ❌ PLANO-ACAO-CORRECAO-EDITAL-PROCESS.md
-3. ❌ RESUMO-EXECUTIVO-VALIDACAO-FLUXO.md
-4. ❌ DIAGRAMAS-FLUXO-EDITAL.md
-5. ❌ DESCOBERTAS-VALIDACAO-EDITAL.md
-6. ❌ INDICE-ANALISE-EDITAL-PROCESS.md
-7. ❌ FLUXO-REAL-CORRETO.md
-8. ❌ IMPLEMENTACAO-RAPIDA-1-2H.md
-9. ❌ VALIDACAO-COMPLETA-MCP.md
+### Se precisa debugar um problema:
+1. Consulte a seção "Monitoramento de Logs" em **FLUXO-DEFINITIVO-E2E.md**
+2. Compare com os logs esperados
+3. Verifique a seção "Validação de Resultados"
 
-**Motivo:** Informações duplicadas, análises intermediárias, versões antigas.
+### Se precisa implementar mudanças:
+1. Consulte a seção "Dependências e Integrações"
+2. Verifique o schema de dados
+3. Execute o checklist pré-execução
 
 ---
+
+## 📌 Manutenção deste Índice
+
+- **Remover duplicatas**: Se um documento cobre o mesmo assunto, deletar e atualizar este índice
+- **Consolidar**: Preferir 1 documento grande e completo vs múltiplos pequenos
+- **Atualizar referências**: Sempre atualizar este índice quando criar/remover documentos
+
+---
+
+**Documento mantido por**: GitHub Copilot  
+**Última revisão**: 19 de Outubro de 2025
+
 
 ## 🎯 Guia Rápido de Uso
 

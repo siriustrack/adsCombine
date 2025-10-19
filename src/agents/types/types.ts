@@ -1,6 +1,53 @@
 export interface StudyPlanInput {
   userId: string;
-  content: string; // Conteúdo extraído do PDF
+  content: string | EditalProcessadoData; // Aceita texto OU JSON estruturado
+}
+
+// Tipo para JSON processado do edital-process
+export interface EditalProcessadoData {
+  concursos: Array<{
+    metadata: {
+      examName: string;
+      examOrg: string;
+      startDate: string | null;
+      examTurn?: string;
+      totalQuestions: number;
+      [key: string]: any;
+    };
+    fases: Array<{
+      tipoFase: string;
+      nomeProva: string;
+      tipoProva: string;
+      disciplinas: Array<{
+        nome: string;
+        materias: Array<{
+          nome: string;
+          ordem: number;
+          subtopicos?: string[];
+          legislacoes?: string[];
+        }>;
+        numeroQuestoes?: number;
+        peso?: number;
+      }>;
+    }>;
+    disciplinas: Array<{
+      nome: string;
+      materias: Array<{
+        nome: string;
+        ordem: number;
+        subtopicos?: string[];
+        legislacoes?: string[];
+      }>;
+      numeroQuestoes?: number;
+      peso?: number;
+    }>;
+  }>;
+  validacao: {
+    totalDisciplinas: number;
+    totalQuestoes: number;
+    totalMaterias: number;
+    integridadeOK: boolean;
+  };
 }
 
 export interface StudyPlanMetadata {

@@ -15,19 +15,29 @@ import {
   type EditalStructure,
 } from './edital-schema';
 import { EditalChunker, type ContentChunk } from './edital-chunker';
+import { createClient } from '@supabase/supabase-js';
+
+// Cliente Supabase para atualizar edital_file após processamento
+const supabaseUrl = process.env.SUPABASE_URL || '';
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const supabase = supabaseUrl && supabaseServiceKey 
+  ? createClient(supabaseUrl, supabaseServiceKey)
+  : null;
 
 export interface EditalProcessRequest {
   user_id: string;
-  schedule_plan_id: string;
+  edital_file_id: string; // ID do registro edital_file (renomeado de schedule_plan_id)
   url: string;
-  edital_bucket_path: string; // NOT NULL no banco
-  file_name?: string; // Opcional
-  file_size?: number; // Opcional
-  mime_type?: string; // Opcional
+  edital_bucket_path?: string; // Opcional
+  file_name?: string;
+  file_size?: number;
+  mime_type?: string;
   options?: {
     maxRetries?: number;
     chunkingEnabled?: boolean;
     validateSchema?: boolean;
+    saveJson?: boolean;
+    outputDir?: string;
   };
 }
 
@@ -64,59 +74,41 @@ export class EditalProcessService {
   }
 
   async execute(request: EditalProcessRequest): Promise<EditalProcessResponse> {
-    const { user_id, schedule_plan_id, url, edital_bucket_path, file_name, file_size, mime_type, options } = request;
+    const { user_id, edital_file_id, url, options } = request;
     const jobId = randomUUID();
 
     logger.info('[EDITAL-SERVICE] 🎯 Starting edital processing', { 
       jobId, 
       user_id, 
-      schedule_plan_id, 
+      edital_file_id, 
       url,
       urlDomain: new URL(url).hostname,
-      edital_bucket_path,
-      file_name,
-      file_size,
-      mime_type,
     });
 
-    // Generate random filename
-    const randomName = randomUUID();
-    const fileName = `${randomName}.json`; // Mudado para .json
+    // Generate output path
+    const outputDir = options?.outputDir || path.join(PUBLIC_DIR, 'texts', edital_file_id);
+    const fileName = `${jobId}.json`;
+    const filePath = path.join(outputDir, fileName);
 
-    // Create directory path: /userid/schedule_plan_id/
-    const userDir = path.join(PUBLIC_DIR, user_id);
-    const scheduleDir = path.join(userDir, schedule_plan_id);
-    const filePath = path.join(scheduleDir, fileName);
-
-    logger.info('[EDITAL-SERVICE] 📁 Creating directories', { 
+    logger.info('[EDITAL-SERVICE] 📁 Creating directory', { 
       jobId,
-      userDir, 
-      scheduleDir,
+      outputDir,
       fileName,
     });
 
-    // Ensure directories exist
-    if (!fs.existsSync(userDir)) {
-      fs.mkdirSync(userDir, { recursive: true });
-      logger.info('[EDITAL-SERVICE] ✅ Created user directory', { jobId, userDir });
-    }
-    if (!fs.existsSync(scheduleDir)) {
-      fs.mkdirSync(scheduleDir, { recursive: true });
-      logger.info('[EDITAL-SERVICE] ✅ Created schedule directory', { jobId, scheduleDir });
-    }
+    // Ensure directory exists
+    fs.mkdirSync(outputDir, { recursive: true });
 
-    // Fetch content to calculate estimation (quick pre-fetch)
+    // Fetch content to calculate estimation
     logger.info('[EDITAL-SERVICE] 📊 Pre-fetching content for estimation', { jobId, url });
     let estimatedChars = 0;
     let estimatedTimeMs = 0;
     
     try {
-      // Quick fetch to get content size (with timeout)
       const contentSample = await this.fetchContentWithRetry(url, 1);
       estimatedChars = contentSample.length;
       
-      // Calculate estimated processing time based on test results
-      // Average: 2.55ms per character + 5s overhead
+      // Calculate estimated processing time
       const MS_PER_CHAR = 2.55;
       const OVERHEAD_MS = 5000;
       estimatedTimeMs = Math.floor((estimatedChars * MS_PER_CHAR) + OVERHEAD_MS);
@@ -130,11 +122,12 @@ export class EditalProcessService {
         estimatedTimeMinutes: Math.floor(estimatedTimeMs / 60000),
       });
       
-      // Create processing status file with estimation
+      // Create processing status file
       const processingStatus = {
         status: 'processing',
         jobId,
         user_id,
+        edital_file_id,
         startedAt: new Date().toISOString(),
         estimation: {
           totalCharacters: estimatedChars,
@@ -146,22 +139,18 @@ export class EditalProcessService {
       };
       fs.writeFileSync(filePath, JSON.stringify(processingStatus, null, 2), 'utf8');
       
-      logger.info('[EDITAL-SERVICE] 📝 Created processing status file with estimation', { 
-        jobId, 
-        filePath,
-      });
+      logger.info('[EDITAL-SERVICE] 📝 Created processing status file', { jobId, filePath });
 
-      // Process in background (content already fetched, will reuse)
-      this.processInBackground(url, filePath, jobId, options, contentSample);
+      // Process in background
+      this.processInBackground(url, filePath, jobId, edital_file_id, user_id, options, contentSample);
 
     } catch (estimationError) {
-      // If estimation fails, proceed anyway with default values
       logger.warn('[EDITAL-SERVICE] ⚠️  Failed to calculate estimation, using defaults', {
         jobId,
         error: estimationError instanceof Error ? estimationError.message : 'Unknown',
       });
       
-      // Default estimation: 150KB = 6.5min
+      // Default estimation
       estimatedChars = 150000;
       estimatedTimeMs = 390000;
       
@@ -169,6 +158,7 @@ export class EditalProcessService {
         status: 'processing',
         jobId,
         user_id,
+        edital_file_id,
         startedAt: new Date().toISOString(),
         estimation: {
           totalCharacters: estimatedChars,
@@ -176,17 +166,16 @@ export class EditalProcessService {
           estimatedTimeMs,
           estimatedTimeSeconds: 390,
           estimatedCompletionAt: new Date(Date.now() + estimatedTimeMs).toISOString(),
-          note: 'Default estimation used (actual content fetch failed)',
+          note: 'Default estimation used',
         },
       };
       fs.writeFileSync(filePath, JSON.stringify(processingStatus, null, 2), 'utf8');
       
-      // Process in background (will fetch again)
-      this.processInBackground(url, filePath, jobId, options);
+      this.processInBackground(url, filePath, jobId, edital_file_id, user_id, options);
     }
 
-    // Return response immediately with estimation
-    const publicPath = `/files/${user_id}/${schedule_plan_id}/${fileName}`;
+    // Return response immediately
+    const publicPath = path.relative(PUBLIC_DIR, filePath);
 
     logger.info('[EDITAL-SERVICE] ⚡ Returning immediate response with estimation', { 
       jobId, 
@@ -216,6 +205,8 @@ export class EditalProcessService {
     url: string, 
     outputPath: string,
     jobId: string,
+    editalFileId: string, // schedule_plan_id na verdade é edital_file_id
+    userId: string,
     options?: EditalProcessRequest['options'],
     preloadedContent?: string
   ) {
@@ -320,6 +311,70 @@ export class EditalProcessService {
       };
 
       fs.writeFileSync(outputPath, JSON.stringify(finalOutput, null, 2), 'utf8');
+
+      // Atualizar edital_file no Supabase com resultado
+      if (supabase) {
+        // ✅ Upload do JSON para o bucket do Supabase
+        const jsonFileName = `${userId}/${path.basename(outputPath)}`;
+        const jsonBuffer = Buffer.from(JSON.stringify(finalOutput, null, 2), 'utf8');
+        
+        logger.info('[EDITAL-BG] ☁️  Uploading JSON to Supabase storage', {
+          bucket: 'editals',
+          path: jsonFileName,
+          size: jsonBuffer.length,
+          jobId
+        });
+
+        const { error: uploadError } = await supabase.storage
+          .from('editals')
+          .upload(jsonFileName, jsonBuffer, {
+            contentType: 'application/json',
+            upsert: true, // Sobrescrever se já existir
+          });
+
+        if (uploadError) {
+          logger.error('[EDITAL-BG] ⚠️  Failed to upload JSON to Supabase storage', {
+            error: uploadError,
+            path: jsonFileName,
+            jobId
+          });
+        } else {
+          logger.info('[EDITAL-BG] ✅ JSON uploaded to Supabase storage', {
+            path: jsonFileName,
+            jobId
+          });
+        }
+
+        const jsonPublicUrl = `${process.env.SUPABASE_URL}/storage/v1/object/public/editals/${jsonFileName}`;
+        
+        const { error: updateError } = await supabase
+          .from('edital_file')
+          .update({ 
+            processing_result: finalOutput,
+            json_url: jsonPublicUrl,
+            edital_status: 'ready'
+          })
+          .eq('id', editalFileId);
+
+        if (updateError) {
+          logger.error('[EDITAL-BG] ⚠️  Failed to update edital_file in database', {
+            error: updateError,
+            editalFileId,
+            jobId
+          });
+        } else {
+          logger.info('[EDITAL-BG] ✅ Database updated successfully', {
+            editalFileId,
+            jsonUrl: jsonPublicUrl,
+            jobId
+          });
+        }
+
+        // Disparar orquestrador para criar study_plans
+        await this.triggerOrchestrator(userId, finalOutput, editalFileId);
+      } else {
+        logger.warn('[EDITAL-BG] ⚠️  Supabase client not configured - skipping database update and orchestrator');
+      }
 
       const totalTime = Math.floor((Date.now() - startTime) / 1000);
       logger.info('[EDITAL-BG] 🎉 Edital processing completed successfully', { 
@@ -1638,6 +1693,80 @@ ${chunkInfo}
           modeloIA: anthropicConfig.model,
         },
       };
+    }
+  }
+
+  /**
+   * Dispara o orquestrador para criar study_plans a partir do edital processado
+   * IMPORTANTE: Recebe JSON já processado (não reprocessa o texto)
+   */
+  private async triggerOrchestrator(
+    userId: string, 
+    editalData: EditalProcessado,
+    editalFileId: string
+  ): Promise<void> {
+    try {
+      // Importar o orquestrador dinamicamente
+      const { createStudyPlan } = await import('../../../agents/index');
+      
+      if (!supabase) {
+        logger.error('[EDITAL-BG] ⚠️  Supabase client not configured, cannot trigger orchestrator');
+        return;
+      }
+
+      logger.info('[EDITAL-BG] 🚀 Triggering orchestrator with processed JSON', {
+        userId,
+        editalFileId,
+        concursosCount: editalData.concursos.length,
+        disciplinasCount: editalData.validacao.totalDisciplinas
+      });
+
+      // ✅ Passar JSON estruturado (NÃO reprocessar o texto!)
+      const result = await createStudyPlan({
+        userId,
+        content: editalData as any, // JSON já processado
+      });
+
+      if (result.success && result.data) {
+        logger.info('[EDITAL-BG] ✅ Orchestrator completed successfully', {
+          userId,
+          editalFileId,
+          studyPlanId: result.data
+        });
+
+        // Vincular study_plans.edital_id ao edital_file_id
+        const { error: linkError } = await supabase
+          .from('study_plans')
+          .update({ edital_id: editalFileId })
+          .eq('id', result.data);
+
+        if (linkError) {
+          logger.error('[EDITAL-BG] ⚠️  Failed to link study_plan to edital_file', {
+            error: linkError,
+            studyPlanId: result.data,
+            editalFileId
+          });
+        } else {
+          logger.info('[EDITAL-BG] 🔗 Study plan linked to edital_file', {
+            studyPlanId: result.data,
+            editalFileId
+          });
+        }
+      } else {
+        logger.error('[EDITAL-BG] ❌ Orchestrator failed', {
+          error: result.error,
+          userId,
+          editalFileId
+        });
+      }
+    } catch (error) {
+      logger.error('[EDITAL-BG] ❌ Orchestrator execution failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined,
+        userId,
+        editalFileId
+      });
+      // Não propagar erro - processamento do edital já foi concluído
     }
   }
 }

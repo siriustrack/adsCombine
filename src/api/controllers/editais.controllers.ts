@@ -4,14 +4,19 @@ import type { Request, Response } from 'express';
 import { type ZodError, z } from 'zod';
 import logger from '../../lib/logger';
 
+// Schema simplificado - Edge function v26 envia APENAS edital_file_id
 const EditalProcessBodySchema = z.object({
   user_id: z.string().uuid(),
-  schedule_plan_id: z.string().uuid(),
+  edital_file_id: z.string().uuid(), // ID do registro edital_file
   url: z.string().url(),
-  edital_bucket_path: z.string().min(1), // NOT NULL no banco
-  file_name: z.string().optional(), // Opcional
-  file_size: z.number().int().positive().optional(), // Opcional
-  mime_type: z.string().optional(), // Opcional
+  edital_bucket_path: z.string().min(1).optional(), // Opcional agora
+  file_name: z.string().optional(),
+  file_size: z.number().int().positive().optional(),
+  mime_type: z.string().optional(),
+  options: z.object({
+    saveJson: z.boolean().optional(),
+    outputDir: z.string().optional(),
+  }).optional(),
 });
 
 export type EditalProcessBody = z.infer<typeof EditalProcessBodySchema>;
@@ -41,13 +46,9 @@ export class EditaisController {
     logger.info('[EDITAL-PROCESS] ✅ Validation passed', {
       requestId,
       user_id: body.user_id,
-      schedule_plan_id: body.schedule_plan_id,
+      edital_file_id: body.edital_file_id,
       url: body.url,
       urlDomain: new URL(body.url).hostname,
-      edital_bucket_path: body.edital_bucket_path,
-      file_name: body.file_name,
-      file_size: body.file_size,
-      mime_type: body.mime_type,
     });
 
     try {
@@ -69,7 +70,7 @@ export class EditaisController {
         error: error instanceof Error ? error.message : 'Unknown error',
         stack: error instanceof Error ? error.stack : undefined,
         user_id: body.user_id,
-        schedule_plan_id: body.schedule_plan_id,
+        edital_file_id: body.edital_file_id,
         url: body.url,
       });
       return res.status(500).json({ error: 'Internal server error' });
