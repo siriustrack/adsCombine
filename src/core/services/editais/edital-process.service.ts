@@ -769,7 +769,7 @@ Return minimal JSON:
   },
   "fases": [
     {
-      "tipo": "objetiva|discursiva|pratica|oral|titulos|aptidao_fisica",
+      "tipo": "objetiva|discursiva|prática|oral|titulos|aptidao_fisica",
       "data": "YYYY-MM-DD or null",
       "turno": "manha|tarde|noite|integral|nao_especificado",
       "totalQuestoes": number (optional),
@@ -1329,7 +1329,7 @@ Your response MUST be EXCLUSIVELY a valid JSON following EXACTLY this schema:
       },
       "fases": [
         {
-          "tipo": "objetiva|discursiva|pratica|oral|titulos|aptidao_fisica",
+          "tipo": "objetiva|discursiva|prática|oral|titulos|aptidao_fisica",
           "data": "YYYY-MM-DD ou 'a_divulgar'",
           "turno": "manha|tarde|noite|integral|nao_especificado",
           "totalQuestoes": number (opcional),
@@ -1751,6 +1751,37 @@ ${chunkInfo}
             studyPlanId: result.data,
             editalFileId
           });
+        }
+
+        // Fase opcional: Corrigir contagem de questões
+        if (process.env.ENABLE_QUESTION_FIXER === 'true') {
+          try {
+            const { questionCounterFixerService } = await import('./question-counter-fixer.service');
+            logger.info('[EDITAL-BG] 🔧 Triggering question counter fixer', {
+              studyPlanId: result.data,
+              userId
+            });
+
+            const fixed = await questionCounterFixerService.fix(result.data, userId);
+
+            if (fixed) {
+              logger.info('[EDITAL-BG] ✅ Question counts fixed successfully', {
+                studyPlanId: result.data,
+                disciplinesFixed: fixed.disciplinesUpdated,
+                examCorrected: fixed.examCorrected
+              });
+            } else {
+              logger.warn('[EDITAL-BG] ⚠️  Question fixer returned no result', {
+                studyPlanId: result.data
+              });
+            }
+          } catch (fixerError) {
+            logger.error('[EDITAL-BG] ⚠️  Question fixer failed (non-critical)', {
+              error: fixerError instanceof Error ? fixerError.message : 'Unknown error',
+              studyPlanId: result.data
+            });
+            // Não propagar erro - feature opcional
+          }
         }
       } else {
         logger.error('[EDITAL-BG] ❌ Orchestrator failed', {

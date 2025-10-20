@@ -36,7 +36,7 @@ export type Disciplina = z.infer<typeof DisciplinaSchema>;
 
 // Schema de Fase do Concurso
 export const FaseConcursoSchema = z.object({
-  tipo: z.enum(['objetiva', 'discursiva', 'pratica', 'oral', 'titulos', 'aptidao_fisica']),
+  tipo: z.enum(['objetiva', 'discursiva', 'prática', 'oral', 'titulos', 'aptidao_fisica']),
   data: z.string().regex(/^\d{4}-\d{2}-\d{2}$|^a_divulgar$/, 'Data deve estar no formato YYYY-MM-DD ou "a_divulgar"').nullable(),
   turno: z.enum(['manha', 'tarde', 'noite', 'integral', 'nao_especificado']),
   totalQuestoes: z.number().int().nonnegative().optional().nullable(),
