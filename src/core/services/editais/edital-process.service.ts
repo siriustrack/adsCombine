@@ -1789,6 +1789,12 @@ ${chunkInfo}
           userId,
           editalFileId
         });
+        
+        // Atualizar status do edital_file para 'error'
+        await supabase
+          .from('edital_file')
+          .update({ edital_status: 'error' })
+          .eq('id', editalFileId);
       }
     } catch (error) {
       logger.error('[EDITAL-BG] ❌ Orchestrator execution failed', {
@@ -1797,6 +1803,14 @@ ${chunkInfo}
         userId,
         editalFileId
       });
+      
+      // Atualizar status do edital_file para 'error'
+      if (supabase) {
+        await supabase
+          .from('edital_file')
+          .update({ edital_status: 'error' })
+          .eq('id', editalFileId);
+      }
       // Não propagar erro - processamento do edital já foi concluído
     }
   }

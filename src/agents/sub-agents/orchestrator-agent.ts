@@ -29,14 +29,37 @@ export async function orchestratePlanCreation(userId: string, planData: StudyPla
     const planId = studyPlan.id;
     logInfo('orchestrator-agent', userId, 'Study plan criado', { planId });
 
-    // 2. Criar exams
-    const examsData = planData.exams.map(exam => ({
-      plan_id: planId,
-      exam_type: exam.examType,
-      exam_date: exam.examDate,
-      exam_turn: exam.examTurn,
-      total_questions: exam.totalQuestions,
-    }));
+    // 2. Criar exams - Normalizar e filtrar tipos inválidos
+    const VALID_TYPES = ['objetiva', 'discursiva', 'prática', 'oral'];
+    const TIPO_OUTROS = 'outros'; // Para tipos não catalogados (ex: títulos, análise curricular)
+    
+    const examsData = planData.exams
+      .map(exam => {
+        const tipo = exam.examType?.toLowerCase().trim() || '';
+        
+        // Normalizar variações conhecidas
+        let examType = tipo;
+        if (tipo.includes('pratica')) examType = 'prática';
+        else if (tipo.includes('escrita') || tipo.includes('redacao')) examType = 'discursiva';
+        else if (tipo.includes('oral') || tipo.includes('entrevista')) examType = 'oral';
+        
+        // Se não está nos válidos, usar 'outros' (NUNCA objetiva como default)
+        if (!VALID_TYPES.includes(examType)) {
+          logInfo('orchestrator-agent', userId, 'Tipo de exame não catalogado, usando "outros"', {
+            original: exam.examType,
+            normalizado: TIPO_OUTROS
+          });
+          examType = TIPO_OUTROS;
+        }
+        
+        return {
+          plan_id: planId,
+          exam_type: examType,
+          exam_date: exam.examDate,
+          exam_turn: exam.examTurn,
+          total_questions: exam.totalQuestions,
+        };
+      });
 
     await SupabaseService.insertExams(examsData, userId);
     logInfo('orchestrator-agent', userId, 'Exams criados', { count: planData.exams.length });
