@@ -4,6 +4,7 @@ import { verifyAndFinalize } from './sub-agents/verifier-agent';
 import type { StudyPlanInput, AgentResponse } from './types/types';
 import { withRetry } from './utils/retry';
 import { logError, logInfo } from './utils/logger';
+import { retryWithFallback } from './utils/fallback-agent';
 
 export async function createStudyPlan(input: StudyPlanInput): Promise<AgentResponse<string>> {
   logInfo('main-orchestrator', input.userId, 'Iniciando criação de plano de estudo');
@@ -30,19 +31,31 @@ export async function createStudyPlan(input: StudyPlanInput): Promise<AgentRespo
     const planData = plans[0];
     logInfo('main-orchestrator', input.userId, 'Plano identificado', { examName: planData.metadata.examName });
 
-    // Passo 2: Criação no banco com retry
-    const creationResult = await withRetry(
-      () => orchestratePlanCreation(input.userId, planData),
-      { maxAttempts: 3, baseDelay: 2000, agentId: 'orchestrator-agent', userId: input.userId }
+    // Passo 2: Criação no banco com retry e fallback automático
+    const fallbackResult = await retryWithFallback(
+      async (data) => {
+        const result = await withRetry(
+          () => orchestratePlanCreation(input.userId, data),
+          { maxAttempts: 3, baseDelay: 2000, agentId: 'orchestrator-agent', userId: input.userId }
+        );
+        if (!result.success) throw new Error(result.error);
+        return result.data!;
+      },
+      planData,
+      { userId: input.userId, operation: 'create' }
     );
 
-    if (!creationResult.success) {
-      logError('main-orchestrator', input.userId, new Error(creationResult.error), { step: 'creation', planData });
-      return creationResult;
+    if (!fallbackResult.success) {
+      logError('main-orchestrator', input.userId, new Error(fallbackResult.error || 'Erro desconhecido'), { step: 'creation', planData });
+      return { success: false, error: fallbackResult.error };
     }
 
-    const planId = creationResult.data!;
-    logInfo('main-orchestrator', input.userId, 'Plano criado no banco', { planId });
+    const planId = fallbackResult.data as string;
+    if (fallbackResult.fallbackApplied) {
+      logInfo('main-orchestrator', input.userId, 'Plano criado com correção automática', { planId });
+    } else {
+      logInfo('main-orchestrator', input.userId, 'Plano criado no banco', { planId });
+    }
 
     // Passo 3: Verificação e finalização com retry
     const verifyResult = await withRetry(
