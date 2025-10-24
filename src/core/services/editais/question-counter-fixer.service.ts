@@ -515,17 +515,116 @@ Analyze the edital, verify your math, and return the JSON now.`;
     }
 
     if (assignedTotal !== expectedTotal) {
-      logger.error('[QUESTION-FIXER] ❌ Sum validation failed', {
+      logger.warn('[QUESTION-FIXER] ⚠️  Sum mismatch detected, attempting algorithmic redistribution', {
         assigned: assignedTotal,
         expected: expectedTotal,
         difference: assignedTotal - expectedTotal,
         breakdown,
       });
-      return false;
+      
+      // Redistribuir algoritmicamente
+      this.redistributeQuestions(result, expectedTotal);
+      
+      // Revalidar após redistribuição
+      const newTotal = result.disciplines.reduce((sum, d) => sum + d.questions, 0);
+      if (newTotal !== expectedTotal) {
+        logger.error('[QUESTION-FIXER] ❌ Redistribution failed', {
+          assigned: newTotal,
+          expected: expectedTotal,
+        });
+        return false;
+      }
+      
+      logger.info('[QUESTION-FIXER] ✅ Redistribution successful', {
+        from: assignedTotal,
+        to: newTotal,
+      });
     }
 
     logger.info('[QUESTION-FIXER] ✅ Validation passed');
     return true;
+  }
+
+  /**
+   * Redistribuir questões algoritmicamente
+   * - Se diferença ≤ 10%: ajusta nas disciplinas com menos/mais tópicos
+   * - Se diferença > 10%: redistribui igualitariamente entre todas
+   */
+  private redistributeQuestions(result: ClaudeResponse, expectedTotal: number): void {
+    const assignedTotal = result.disciplines.reduce((sum, d) => sum + d.questions, 0);
+    const difference = assignedTotal - expectedTotal;
+    const percentDiff = Math.abs(difference / expectedTotal);
+
+    logger.info('[QUESTION-FIXER] 🔄 Redistributing questions', {
+      assignedTotal,
+      expectedTotal,
+      difference,
+      percentDiff: `${(percentDiff * 100).toFixed(1)}%`,
+    });
+
+    if (percentDiff > 0.10) {
+      // Diferença > 10%: redistribuir igualitariamente
+      logger.info('[QUESTION-FIXER] 📊 Large difference (>10%), equal redistribution');
+      
+      const base = Math.floor(expectedTotal / result.disciplines.length);
+      const remainder = expectedTotal - (base * result.disciplines.length);
+      
+      // Ordenar por número de tópicos (do maior pro menor)
+      const sorted = [...result.disciplines].sort((a, b) => {
+        const topicsA = parseInt(a.reasoning.match(/\d+/)?.[0] || '0');
+        const topicsB = parseInt(b.reasoning.match(/\d+/)?.[0] || '0');
+        return topicsB - topicsA;
+      });
+      
+      // Distribuir: Top N recebem base+1, outros recebem base
+      sorted.forEach((disc, idx) => {
+        const original = result.disciplines.find(d => d.id === disc.id)!;
+        original.questions = idx < remainder ? base + 1 : base;
+        original.reasoning = `[AUTO-ADJUSTED] ${original.reasoning}`;
+      });
+      
+    } else if (difference > 0) {
+      // Excesso ≤ 10%: reduzir das disciplinas com MENOS tópicos
+      logger.info('[QUESTION-FIXER] ➖ Reducing from disciplines with fewer topics');
+      
+      const sorted = [...result.disciplines]
+        .filter(d => d.questions > 0)
+        .sort((a, b) => {
+          const topicsA = parseInt(a.reasoning.match(/\d+/)?.[0] || '0');
+          const topicsB = parseInt(b.reasoning.match(/\d+/)?.[0] || '0');
+          return topicsA - topicsB; // Menor pro maior
+        });
+      
+      let remaining = difference;
+      for (const disc of sorted) {
+        if (remaining === 0) break;
+        const original = result.disciplines.find(d => d.id === disc.id)!;
+        if (original.questions > 1) {
+          original.questions--;
+          original.reasoning = `[AUTO-REDUCED] ${original.reasoning}`;
+          remaining--;
+        }
+      }
+      
+    } else if (difference < 0) {
+      // Falta ≤ 10%: adicionar nas disciplinas com MAIS tópicos
+      logger.info('[QUESTION-FIXER] ➕ Adding to disciplines with more topics');
+      
+      const sorted = [...result.disciplines].sort((a, b) => {
+        const topicsA = parseInt(a.reasoning.match(/\d+/)?.[0] || '0');
+        const topicsB = parseInt(b.reasoning.match(/\d+/)?.[0] || '0');
+        return topicsB - topicsA; // Maior pro menor
+      });
+      
+      let remaining = Math.abs(difference);
+      for (const disc of sorted) {
+        if (remaining === 0) break;
+        const original = result.disciplines.find(d => d.id === disc.id)!;
+        original.questions++;
+        original.reasoning = `[AUTO-INCREASED] ${original.reasoning}`;
+        remaining--;
+      }
+    }
   }
 
   /**
