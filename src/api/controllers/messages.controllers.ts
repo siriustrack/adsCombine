@@ -15,8 +15,6 @@ const FileInfoSchema = z
 export type FileInfo = z.infer<typeof FileInfoSchema>;
 
 const BodySchema = z.object({
-  userId: z.string().optional(),
-  content: z.string().optional(),
   files: z.array(FileInfoSchema).optional(),
 });
 
