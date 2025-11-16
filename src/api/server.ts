@@ -13,7 +13,15 @@ ffmpeg.setFfprobePath(ffprobeInstaller.path);
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
 const app = express();
-app.use(cors()); // Allow all origins
+
+// CORS must be BEFORE auth middleware to handle OPTIONS preflight
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
+
 app.use(express.json({ limit: '50mb' }));
 app.use(
   morgan('combined', { stream: { write: (message: string) => logger.info(message.trim()) } })
