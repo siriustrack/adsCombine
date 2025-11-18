@@ -45,8 +45,8 @@ export class FileDownloadService {
     }
 
     const buffer = Buffer.from(response.data);
-    const contentLength = response.headers['content-length'] 
-      ? parseInt(response.headers['content-length'], 10) 
+    const contentLength = response.headers['content-length']
+      ? parseInt(response.headers['content-length'], 10)
       : buffer.length;
 
     return okResult({
