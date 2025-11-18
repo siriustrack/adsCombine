@@ -49,27 +49,11 @@ function generatePngPages(pdfPath, workDir, resolution, rasterFrom, rasterTo) {
     .map((f) => path.join(workDir, f));
 }
 
-function preprocessImage(imagePath) {
-  const tempPath = `${imagePath}.processed.png`;
-  try {
-    // Converte para escala de cinza, aprimora contraste e binariza a imagem
-    sh(
-      `convert "${imagePath}" -colorspace gray -normalize -negate -threshold 60% -negate "${tempPath}"`
-    );
-    return tempPath;
-  } catch (error) {
-    console.warn(
-      `[Worker ${process.pid}] Image preprocessing failed for ${imagePath}: ${error.message}. Skipping.`
-    );
-    return imagePath; // Retorna o caminho original se o processamento falhar
-  }
-}
-
 function performOcrOnPages(pngs, env) {
   const texts = [];
   for (const png of pngs) {
-    const processedPng = preprocessImage(png);
-    const args = `"${processedPng}" stdout -l por --oem 1 --psm 4`;
+    // No preprocessing needed as we generate gray images directly
+    const args = `"${png}" stdout -l por --oem 1 --psm 4`;
     try {
       const singleText = sh(`tesseract ${args}`, { env });
       if (singleText?.trim()) {
@@ -77,10 +61,6 @@ function performOcrOnPages(pngs, env) {
       }
     } catch (error) {
       console.warn(`[Worker ${process.pid}] Failed to OCR ${png}: ${error.message}`);
-    } finally {
-      if (processedPng !== png && fs.existsSync(processedPng)) {
-        fs.unlinkSync(processedPng); // Limpa a imagem processada
-      }
     }
   }
 
@@ -110,7 +90,8 @@ function logError(fileId, pageRange, totalDuration, error) {
 }
 
 function rasterizePng({ pdfPath, outPrefix, resolution, from, to }) {
-  const base = `pdftoppm -png -r ${resolution} -aa no -aaVector no`;
+  // Added -gray to generate grayscale images directly
+  const base = `pdftoppm -gray -png -r ${resolution} -aa no -aaVector no`;
   if (from && to) {
     sh(`${base} -f ${from} -l ${to} "${pdfPath}" "${outPrefix}"`);
   } else {
@@ -124,7 +105,7 @@ module.exports = async function worker(payload) {
 
   const tempDir = tmp.dirSync({ unsafeCleanup: true });
   const workDir = tempDir.name;
-  const resolution = 200;
+  const resolution = 250; // Adjusted to 250 as a balance between speed and quality
 
   try {
     const { from: rasterFrom, to: rasterTo } = { from: pageRange.first, to: pageRange.last };
@@ -153,7 +134,7 @@ module.exports = async function worker(payload) {
     logProgress(fileId, pageRange, pngs, resolution, t2 - t1, t2 - t0);
 
     const cleaned = text?.trim();
-    return cleaned
+    return cleaned;
   } catch (error) {
     const dt = Date.now() - t0;
     logError(fileId, pageRange, dt, error);
