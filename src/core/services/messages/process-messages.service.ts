@@ -9,11 +9,12 @@ import { TEXTS_DIR } from 'config/dirs';
 import { openaiConfig } from 'config/openai';
 import mammoth from 'mammoth';
 import { OpenAI } from 'openai';
+import pLimit from 'p-limit';
 import { sanitize } from 'utils/sanitize';
 import { sanitizeText } from 'utils/textSanitizer';
+import WordExtractor from 'word-extractor';
 import { ProcessPdfService } from './pdf-utils/process-pdf.service';
 import { processXLSXFile, xlsxToText } from './xlsx/xlsx-processor';
-import WordExtractor from 'word-extractor';
 
 export interface FileInput {
   fileId: string;
@@ -44,8 +45,9 @@ export class ProcessMessagesService {
       const { files } = body;
 
       if (files && files.length > 0) {
+        const limit = pLimit(5); // Limit to 5 concurrent file processings
         const promises = files.map((file) =>
-          this.processAndHandleFile(file, extractedTexts)
+          limit(() => this.processAndHandleFile(file, extractedTexts))
         );
         const results = await Promise.all(promises);
 
@@ -100,7 +102,7 @@ export class ProcessMessagesService {
       jpg: () => this.processImage(file),
       png: () => this.processImage(file),
       'vnd.openxmlformats-officedocument.wordprocessingml.document': () => this.processDocx(file),
-      'msword': () => this.processDoc(file), // .doc files are not supported
+      msword: () => this.processDoc(file), // .doc files are not supported
       'vnd.openxmlformats-officedocument.spreadsheetml.sheet': () => this.processXlsx(file),
       'vnd.ms-excel': () => this.processXlsx(file), // Added support for .xls files
     };
@@ -124,10 +126,12 @@ export class ProcessMessagesService {
     fileId: string,
     fileType: string
   ): Promise<Result<T, Error>> {
-    const timeoutError = `${fileType.toUpperCase()} processing timed out after ${timeout / 1000
-      } seconds`;
-    const userErrorMessage = `O processamento deste arquivo ${fileType.toUpperCase()} excedeu o tempo limite de ${timeout / 1000
-      } segundos.`;
+    const timeoutError = `${fileType.toUpperCase()} processing timed out after ${
+      timeout / 1000
+    } seconds`;
+    const userErrorMessage = `O processamento deste arquivo ${fileType.toUpperCase()} excedeu o tempo limite de ${
+      timeout / 1000
+    } segundos.`;
 
     const { value, error } = await wrapPromiseResult<T, Error>(
       Promise.race([
@@ -247,7 +251,7 @@ export class ProcessMessagesService {
         const response = await axios.get(url, { responseType: 'arraybuffer' });
         const buffer = Buffer.from(response.data);
         const result = await mammoth.extractRawText({ buffer });
-        return sanitize(result.value)
+        return sanitize(result.value);
       },
       PROCESSING_TIMEOUTS.DOCX,
       fileId,
@@ -263,7 +267,7 @@ export class ProcessMessagesService {
         const response = await axios.get(url, { responseType: 'arraybuffer' });
         const buffer = Buffer.from(response.data);
         const doc = await this.wordExtractor.extract(buffer);
-        return sanitize(doc.getBody())
+        return sanitize(doc.getBody());
       },
       PROCESSING_TIMEOUTS.DOCX, // Reusing DOCX timeout for now
       fileId,
