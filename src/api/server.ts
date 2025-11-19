@@ -1,6 +1,7 @@
 import { env } from '@config/env';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import ffprobeInstaller from '@ffprobe-installer/ffprobe';
+import cors from 'cors';
 import express from 'express';
 import ffmpeg from 'fluent-ffmpeg';
 import logger from 'lib/logger';
@@ -12,6 +13,17 @@ ffmpeg.setFfprobePath(ffprobeInstaller.path);
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
 const app = express();
+
+// CORS must be BEFORE auth middleware to handle OPTIONS preflight
+app.use(
+  cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true,
+  })
+);
+
 app.use(express.json({ limit: '50mb' }));
 app.use(
   morgan('combined', { stream: { write: (message: string) => logger.info(message.trim()) } })

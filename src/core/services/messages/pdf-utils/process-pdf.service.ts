@@ -1,11 +1,11 @@
 import logger from '@lib/logger';
 import { errResult, okResult, type Result } from '@lib/result.types';
 import { sanitize } from 'utils/sanitize';
+import type { FileInput } from '../process-messages.service';
 import { FileDownloadService } from './file-download.service';
 import { OcrOrchestrator } from './ocr-orchestrator.service';
 import { PdfTextExtractorService } from './pdf-text-extractor.service';
 import { TextQualityAnalyzer } from './text-quality-analyzer.service';
-import type { FileInput } from '../process-messages.service';
 
 export class ProcessPdfService {
   private readonly fileDownloadService = new FileDownloadService();
@@ -19,17 +19,16 @@ export class ProcessPdfService {
     logger.info('Starting PDF processing', { fileId, url });
 
     // 1. Download do arquivo
-    const { value: downloadedFile, error: downloadError } = await this.fileDownloadService.downloadFile(url, fileId);
-    
+    const { value: downloadedFile, error: downloadError } =
+      await this.fileDownloadService.downloadFile(url, fileId);
+
     if (downloadError) {
       return errResult(downloadError);
     }
 
     // 2. Extração de texto direto
-    const { value: textData, error: extractionError } = await this.textExtractorService.extractTextFromPdf(
-      downloadedFile.buffer,
-      fileId
-    );
+    const { value: textData, error: extractionError } =
+      await this.textExtractorService.extractTextFromPdf(downloadedFile.buffer, fileId);
 
     if (extractionError) {
       logger.error('Error extracting text from PDF', {
@@ -86,11 +85,7 @@ export class ProcessPdfService {
     }
 
     // 6. Combinação dos resultados
-    const finalText = this.combineTextResults(
-      ocrResult.ocrText,
-      fileId,
-      ocrResult
-    );
+    const finalText = this.combineTextResults(ocrResult.ocrText, fileId, ocrResult);
 
     return okResult(finalText);
   }
