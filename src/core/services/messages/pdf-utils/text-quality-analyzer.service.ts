@@ -42,6 +42,19 @@ export class TextQualityAnalyzer {
     /Oficial Titular/i,
     /Telefone/i,
     /WhatsApp/i,
+    /OFÍCIO DE REGISTRO/i,
+    /Oficial Registradora/i,
+    /Fone:/i,
+    /Site:/i,
+    /Pedido n[°º]/i,
+    /Validade:/i,
+    /Solicite sua certidão/i,
+    /Documento assinado digitalmente/i,
+    /Valide este documento/i,
+    /assinador-web\.onr\.org\.br/i,
+    /registradores\.onr\.org\.br/i,
+    /Selo Digital de Fiscalização/i,
+    /Confira os dados do ato em/i,
   ];
 
   analyze(extractedText: string): TextQualityAnalysis {

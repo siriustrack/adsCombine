@@ -126,9 +126,7 @@ export class ProcessMessagesService {
     fileId: string,
     fileType: string
   ): Promise<Result<T, Error>> {
-    const timeoutError = `${fileType.toUpperCase()} processing timed out after ${
-      timeout / 1000
-    } seconds`;
+    const timeoutError = `${fileType.toUpperCase()} processing timed out after ${timeout / 1000} seconds`;
     const userErrorMessage = `O processamento deste arquivo ${fileType.toUpperCase()} excedeu o tempo limite de ${
       timeout / 1000
     } segundos.`;
