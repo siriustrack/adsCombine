@@ -17,7 +17,7 @@ export class TextQualityAnalyzer {
     MAX_REPETITION_RATIO: 0.6,
     MAX_HEADER_RATIO: 0.4,
     MIN_SUBSTANTIAL_CONTENT_INDICATORS: 3,
-    MIN_MEANINGFUL_SENTENCE_RATIO: 0.3,
+    MIN_MEANINGFUL_SENTENCE_RATIO: 0.3
   } as const;
 
   // Pré-compilar regex para melhor performance
@@ -30,7 +30,7 @@ export class TextQualityAnalyzer {
     /\d{1,2}\s+de\s+\w+\s+de\s+\d{4}/i,
     /\d{2}\/\d{2}\/\d{4}/,
     /certifico\s+(que|e\s+dou\s+fé)/i,
-    /brasileiro\w*,?\s+\w+/i,
+    /brasileiro\w*,?\s+\w+/i
   ];
 
   private readonly HEADER_PATTERNS = [
@@ -42,6 +42,19 @@ export class TextQualityAnalyzer {
     /Oficial Titular/i,
     /Telefone/i,
     /WhatsApp/i,
+    /OFÍCIO DE REGISTRO/i,
+    /Oficial Registradora/i,
+    /Fone:/i,
+    /Site:/i,
+    /Pedido n[°º]/i,
+    /Validade:/i,
+    /Solicite sua certidão/i,
+    /Documento assinado digitalmente/i,
+    /Valide este documento/i,
+    /assinador-web\.onr\.org\.br/i,
+    /registradores\.onr\.org\.br/i,
+    /Selo Digital de Fiscalização/i,
+    /Confira os dados do ato em/i
   ];
 
   analyze(extractedText: string): TextQualityAnalysis {
@@ -52,7 +65,7 @@ export class TextQualityAnalyzer {
         isRepetitive: false,
         hasOcrIndicators: false,
         hasSubstantialContent: false,
-        qualityScore: 0,
+        qualityScore: 0
       };
     }
 
@@ -66,7 +79,7 @@ export class TextQualityAnalyzer {
         isRepetitive: false,
         hasOcrIndicators: true,
         hasSubstantialContent: false,
-        qualityScore: 10,
+        qualityScore: 10
       };
     }
 
@@ -83,8 +96,7 @@ export class TextQualityAnalyzer {
     } else if (textLength > this.QUALITY_THRESHOLDS.MAX_TEXT_FOR_OCR) {
       shouldSkipOcr = analysis.isHighQuality && analysis.hasSubstantialContent;
     } else {
-      shouldSkipOcr =
-        analysis.isHighQuality && analysis.hasSubstantialContent && !analysis.isRepetitive;
+      shouldSkipOcr = analysis.isHighQuality && analysis.hasSubstantialContent && !analysis.isRepetitive;
     }
 
     const qualityScore = this.calculateQualityScore(
@@ -101,7 +113,7 @@ export class TextQualityAnalyzer {
       isRepetitive: analysis.isRepetitive,
       hasOcrIndicators: analysis.hasOcrIndicators,
       hasSubstantialContent: analysis.hasSubstantialContent,
-      qualityScore,
+      qualityScore
     };
   }
 
@@ -114,7 +126,7 @@ export class TextQualityAnalyzer {
         isHighQuality: false,
         isRepetitive: false,
         hasOcrIndicators: true,
-        hasSubstantialContent: false,
+        hasSubstantialContent: false
       };
     }
 
@@ -128,15 +140,14 @@ export class TextQualityAnalyzer {
         isHighQuality: false,
         isRepetitive: false,
         hasOcrIndicators: true,
-        hasSubstantialContent: false,
+        hasSubstantialContent: false
       };
     }
 
     // Análise de repetitividade
     const uniqueLines = new Set(nonEmptyLines.map((line) => line.trim()));
     const isRepetitive =
-      (nonEmptyLines.length - uniqueLines.size) / nonEmptyLines.length >
-      this.QUALITY_THRESHOLDS.MAX_REPETITION_RATIO;
+      (nonEmptyLines.length - uniqueLines.size) / nonEmptyLines.length > this.QUALITY_THRESHOLDS.MAX_REPETITION_RATIO;
 
     // Análise de conteúdo e cabeçalhos
     const { contentMatches, headerMatches } = this.analyzeLineContent(nonEmptyLines);
@@ -169,7 +180,7 @@ export class TextQualityAnalyzer {
       isHighQuality,
       isRepetitive,
       hasOcrIndicators,
-      hasSubstantialContent,
+      hasSubstantialContent
     };
   }
 
@@ -217,7 +228,7 @@ export class TextQualityAnalyzer {
 
     return {
       fragmentedWords: fragmentedMatches ? fragmentedMatches.length : 0,
-      isolatedNumbers: isolatedNumberMatches ? isolatedNumberMatches.length : 0,
+      isolatedNumbers: isolatedNumberMatches ? isolatedNumberMatches.length : 0
     };
   }
 
