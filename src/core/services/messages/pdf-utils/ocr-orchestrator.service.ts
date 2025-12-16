@@ -28,7 +28,7 @@ export class OcrOrchestrator {
       return okResult({
         ocrText: '',
         chunksProcessed: 0,
-        processingTime: Date.now() - startTime,
+        processingTime: Date.now() - startTime
       });
     }
 
@@ -39,7 +39,7 @@ export class OcrOrchestrator {
       return okResult({
         ocrText: '',
         chunksProcessed: 0,
-        processingTime: Date.now() - startTime,
+        processingTime: Date.now() - startTime
       });
     }
 
@@ -70,13 +70,13 @@ export class OcrOrchestrator {
         totalPages,
         chunksProcessed: chunks.length,
         ocrTextLength: ocrText.length,
-        processingTime,
+        processingTime
       });
 
       return okResult({
         ocrText,
         chunksProcessed: chunks.length,
-        processingTime,
+        processingTime
       });
     } finally {
       // Limpar arquivo temporário
@@ -87,7 +87,7 @@ export class OcrOrchestrator {
           logger.warn('Failed to cleanup temporary PDF file', {
             fileId,
             tempFile: tempPdf.name,
-            error: (error as Error).message,
+            error: (error as Error).message
           });
         }
       }
@@ -111,7 +111,7 @@ export class OcrOrchestrator {
             pageRange: chunk,
             pdfPath,
             fileId,
-            totalPages,
+            totalPages
           });
 
           const chunkDuration = Date.now() - chunkStartTime;
@@ -120,7 +120,8 @@ export class OcrOrchestrator {
             chunkIndex: index,
             pageRange: `${chunk.first}-${chunk.last}`,
             chunkDuration,
-            resultLength: Array.isArray(result) ? result.join('').length : 0,
+            resultLength:
+              typeof result === 'string' ? result.length : Array.isArray(result) ? result.join('').length : 0
           });
 
           return result;
@@ -131,7 +132,7 @@ export class OcrOrchestrator {
             chunkIndex: index,
             pageRange: `${chunk.first}-${chunk.last}`,
             chunkDuration,
-            error: (error as Error).message,
+            error: (error as Error).message
           });
           throw error;
         }
@@ -146,7 +147,7 @@ export class OcrOrchestrator {
       logger.error('Error in OCR processing', {
         fileId,
         error: ocrError.message,
-        chunksCount: chunks.length,
+        chunksCount: chunks.length
       });
       return errResult(new Error(`Erro no processamento OCR: ${ocrError.message}`));
     }
@@ -157,10 +158,7 @@ export class OcrOrchestrator {
   private createTimeoutPromise(timeout: number): Promise<never> {
     return new Promise<never>((_, reject) => {
       const timeoutInMinutes = timeout / 60000;
-      setTimeout(
-        () => reject(new Error(`OCR processing timed out after ${timeoutInMinutes} minutes`)),
-        timeout
-      );
+      setTimeout(() => reject(new Error(`OCR processing timed out after ${timeoutInMinutes} minutes`)), timeout);
     });
   }
 }
