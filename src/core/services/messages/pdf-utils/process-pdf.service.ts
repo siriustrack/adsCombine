@@ -5,15 +5,18 @@ import type { FileInput } from '../process-messages.service';
 import { FileDownloadService } from './file-download.service';
 import { OcrOrchestrator } from './ocr-orchestrator.service';
 import { PdfTextExtractorService } from './pdf-text-extractor.service';
+import { SectionDetectorService } from './section-detector.service';
 import { TextQualityAnalyzer } from './text-quality-analyzer.service';
+import type { PageBreak, PdfMetadata, PdfProcessingResult } from './pdf-metadata.types';
 
 export class ProcessPdfService {
-  private readonly fileDownloadService = new FileDownloadService();
-  private readonly textExtractorService = new PdfTextExtractorService();
-  private readonly textQualityAnalyzer = new TextQualityAnalyzer();
-  private readonly ocrOrchestrator = new OcrOrchestrator();
+	private readonly fileDownloadService = new FileDownloadService();
+	private readonly textExtractorService = new PdfTextExtractorService();
+	private readonly textQualityAnalyzer = new TextQualityAnalyzer();
+	private readonly ocrOrchestrator = new OcrOrchestrator();
+	private readonly sectionDetector = new SectionDetectorService();
 
-  async execute(file: FileInput): Promise<Result<string, Error>> {
+	async execute(file: FileInput): Promise<Result<PdfProcessingResult, Error>> {
     const { fileId, url } = file;
 
     logger.info('Starting PDF processing', { fileId, url });
@@ -22,6 +25,15 @@ export class ProcessPdfService {
     const { value: downloadedFile, error: downloadError } = await this.fileDownloadService.downloadFile(url, fileId);
 
     if (downloadError) {
+      logger.error('Error processing files', {
+        context: 'OCR',
+        fileId,
+        url,
+        err: {
+          type: downloadError.constructor.name,
+          message: downloadError.message,
+        },
+      });
       return errResult(downloadError);
     }
 
@@ -66,7 +78,22 @@ export class ProcessPdfService {
         totalPages,
         charsPerPage: Math.round(charsPerPage)
       });
-      return okResult(sanitize(extractedText));
+
+      // Build metadata from direct extraction
+      const pageBreaks = this.buildPageBreaksFromTextData(textData);
+      const sections = this.sectionDetector.detectSections(extractedText, pageBreaks);
+
+      const metadata: PdfMetadata = {
+        totalPages,
+        pageBreaks,
+        sections,
+        processingSource: 'direct'
+      };
+
+      return okResult({
+        text: sanitize(extractedText),
+        metadata
+      });
     }
 
     if (qualityAnalysis.shouldSkipOcr && charsPerPage < minCharsPerPageToSkipOcr) {
@@ -82,7 +109,14 @@ export class ProcessPdfService {
 
     if (totalPages === 0) {
       logger.warn('No pages found in PDF', { fileId });
-      return okResult(sanitize(extractedText));
+      return okResult({
+        text: sanitize(extractedText),
+        metadata: {
+          totalPages: 0,
+          pageBreaks: [],
+          processingSource: 'direct'
+        }
+      });
     }
 
     // 5. Processamento OCR
@@ -105,22 +139,34 @@ export class ProcessPdfService {
     }
 
     // 6. Combinação dos resultados
-    const finalText = this.combineTextResults(ocrResult.ocrText, fileId, ocrResult);
+    const result = this.combineTextResults(ocrResult, fileId, totalPages);
 
-    return okResult(finalText);
+    return okResult(result);
   }
 
   private combineTextResults(
-    ocrText: string,
+    ocrResult: { ocrText: string; pageBreaks: PageBreak[]; chunksProcessed: number; processingTime: number },
     fileId: string,
-    ocrResult: { chunksProcessed: number; processingTime: number }
-  ): string {
-    const finalText = sanitize(ocrText);
+    totalPages: number
+  ): PdfProcessingResult {
+    const finalText = sanitize(ocrResult.ocrText);
+
+    // Detect sections from OCR text
+    const sections = this.sectionDetector.detectSections(finalText, ocrResult.pageBreaks);
+
+    const metadata: PdfMetadata = {
+      totalPages,
+      pageBreaks: ocrResult.pageBreaks,
+      sections,
+      processingSource: 'ocr'
+    };
 
     logger.info('PDF processing completed', {
       fileId,
       finalTextLength: finalText.length,
-      ocrTextLength: ocrText ? ocrText.length : 0,
+      ocrTextLength: ocrResult.ocrText ? ocrResult.ocrText.length : 0,
+      pageBreaksDetected: metadata.pageBreaks.length,
+      sectionsDetected: metadata.sections?.length ?? 0,
       chunksProcessed: ocrResult.chunksProcessed,
       processingTime: ocrResult.processingTime
     });
@@ -129,10 +175,24 @@ export class ProcessPdfService {
       logger.warn('Very little text extracted from PDF', {
         fileId,
         finalTextLength: finalText.length,
-        ocrTextLength: ocrText ? ocrText.length : 0
+        ocrTextLength: ocrResult.ocrText ? ocrResult.ocrText.length : 0
       });
     }
 
-    return finalText;
+    return { text: finalText, metadata };
+  }
+
+  /**
+   * Convert pageInfo from PdfTextExtractor to PageBreak array
+   */
+  private buildPageBreaksFromTextData(textData: { pageInfo?: Array<{ pageNumber: number; estimatedCharStart: number }> }): PageBreak[] {
+    if (!textData.pageInfo) {
+      return [];
+    }
+
+    return textData.pageInfo.map(info => ({
+      pageNumber: info.pageNumber,
+      charIndex: info.estimatedCharStart
+    }));
   }
 }

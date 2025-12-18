@@ -13,6 +13,7 @@ import pLimit from 'p-limit';
 import { sanitize } from 'utils/sanitize';
 import { sanitizeText } from 'utils/textSanitizer';
 import WordExtractor from 'word-extractor';
+import type { PdfMetadata, PdfProcessingResult } from './pdf-utils/pdf-metadata.types';
 import { ProcessPdfService } from './pdf-utils/process-pdf.service';
 import { processXLSXFile, xlsxToText } from './xlsx/xlsx-processor';
 
@@ -39,6 +40,7 @@ export class ProcessMessagesService {
     const processedFiles: string[] = [];
     const failedFiles: { fileId: string; error: string }[] = [];
     const extractedTexts: string[] = [];
+    const fileMetadata: Record<string, PdfMetadata> = {}; // NEW: collect metadata
 
     for (const message of messages) {
       const { body } = message;
@@ -54,6 +56,10 @@ export class ProcessMessagesService {
         results.forEach((result) => {
           if (result.success) {
             processedFiles.push(result.fileId);
+            // NEW: Store metadata if present
+            if (result.metadata) {
+              fileMetadata[result.fileId] = result.metadata;
+            }
           } else {
             failedFiles.push({ fileId: result.fileId, error: result.error || 'Unknown error' });
           }
@@ -67,14 +73,15 @@ export class ProcessMessagesService {
       protocol,
       host,
       processedFiles,
-      failedFiles
+      failedFiles,
+      fileMetadata // NEW: Pass metadata
     );
   }
 
   private async processAndHandleFile(
     file: FileInfo,
     extractedTexts: string[]
-  ): Promise<{ success: boolean; fileId: string; error?: string }> {
+  ): Promise<{ success: boolean; fileId: string; error?: string; metadata?: PdfMetadata }> {
     const result = await this.processFile(file);
 
     if (result.error) {
@@ -87,17 +94,31 @@ export class ProcessMessagesService {
 
     const fileName = path.basename(new URL(file.url).pathname);
     const header = `## Transcricao do arquivo: ${fileName}:\n\n`;
-    extractedTexts.push(header + result.value);
 
-    return { success: true, fileId: file.fileId };
+    // Handle both string (legacy) and PdfProcessingResult (enhanced)
+    let text: string;
+    let metadata: PdfMetadata | undefined;
+
+    if (typeof result.value === 'string') {
+      // Legacy path: images, docx, xlsx, etc.
+      text = result.value;
+    } else {
+      // Enhanced path: PDFs with metadata
+      text = result.value.text;
+      metadata = result.value.metadata;
+    }
+
+    extractedTexts.push(header + text);
+
+    return { success: true, fileId: file.fileId, metadata };
   }
 
-  private async processFile(file: FileInput): Promise<Result<string, Error>> {
+  private async processFile(file: FileInput): Promise<Result<string | PdfProcessingResult, Error>> {
     const fileType = file.mimeType.split('/')[1];
 
-    const fileTypeMap: Record<string, () => Promise<Result<string, Error>>> = {
+    const fileTypeMap: Record<string, () => Promise<Result<string | PdfProcessingResult, Error>>> = {
       plain: () => this.processTxt(file),
-      pdf: () => this.processPdfService.execute(file),
+      pdf: () => this.processPdfService.execute(file), // Returns PdfProcessingResult
       jpeg: () => this.processImage(file),
       jpg: () => this.processImage(file),
       png: () => this.processImage(file),
@@ -161,7 +182,8 @@ export class ProcessMessagesService {
     protocol: string,
     host: string,
     processedFiles: string[],
-    failedFiles: { fileId: string; error: string }[]
+    failedFiles: { fileId: string; error: string }[],
+    fileMetadata: Record<string, PdfMetadata> // NEW parameter
   ) {
     const filename = `${conversationId}-${Date.now()}.txt`;
 
@@ -186,6 +208,7 @@ export class ProcessMessagesService {
       failedFiles,
       filename,
       downloadUrl,
+      metadata: Object.keys(fileMetadata).length > 0 ? fileMetadata : undefined, // NEW: include metadata if present
     };
   }
 
