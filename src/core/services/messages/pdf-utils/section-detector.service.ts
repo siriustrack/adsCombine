@@ -59,27 +59,33 @@ export class SectionDetectorService {
 		let currentCharIndex = 0;
 
 		for (let i = 0; i < lines.length; i++) {
-			const line = lines[i].trim();
+			const originalLine = lines[i];
+			const line = originalLine.trim();
 
-			// Check if line matches any section pattern
-			const match = this.matchesSectionPattern(line);
+			// Skip indented lines (sections should start at line beginning)
+			const hasLeadingWhitespace = originalLine.length > 0 && originalLine[0] !== line[0];
+			
+			if (!hasLeadingWhitespace) {
+				// Check if line matches any section pattern
+				const match = this.matchesSectionPattern(line);
 
-			if (match) {
-				const pageNumber = this.findPageForCharIndex(
-					currentCharIndex,
-					pageBreaks,
-				);
+				if (match) {
+					const pageNumber = this.findPageForCharIndex(
+						currentCharIndex,
+						pageBreaks,
+					);
 
-				sections.push({
-					title: line,
-					startPage: pageNumber,
-					startChar: currentCharIndex,
-					level: match.level,
-				});
+					sections.push({
+						title: line,
+						startPage: pageNumber,
+						startChar: currentCharIndex,
+						level: match.level,
+					});
+				}
 			}
 
 			// Move index forward by line length + newline character
-			currentCharIndex += lines[i].length + 1;
+			currentCharIndex += originalLine.length + 1;
 		}
 
 		// Calculate endPage for each section
@@ -115,12 +121,6 @@ export class SectionDetectorService {
 			line.length < this.MIN_LINE_LENGTH ||
 			line.length > this.MAX_LINE_LENGTH
 		) {
-			return null;
-		}
-
-		// Must not be indented (sections start at line beginning)
-		const originalLine = line;
-		if (originalLine !== originalLine.trim()) {
 			return null;
 		}
 
@@ -167,7 +167,15 @@ export class SectionDetectorService {
 		for (let i = 0; i < sections.length; i++) {
 			if (i < sections.length - 1) {
 				// End page is one before next section starts
-				sections[i].endPage = sections[i + 1].startPage - 1;
+				const nextStartPage = sections[i + 1].startPage;
+				let endPage = nextStartPage - 1;
+
+				// Ensure endPage is not before the section's startPage
+				if (endPage < sections[i].startPage) {
+					endPage = sections[i].startPage;
+				}
+
+				sections[i].endPage = endPage;
 			} else {
 				// Last section goes to end of document
 				sections[i].endPage = lastPage;

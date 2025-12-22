@@ -206,9 +206,13 @@ export class OcrOrchestrator {
         });
       }
 
-      // Move character index forward
-      // Account for chunk text + newline separator between chunks
-      currentCharIndex += chunkLength + (chunkIndex < chunks.length - 1 ? 1 : 0);
+      // Move character index forward by chunk length
+      currentCharIndex += chunkLength;
+      
+      // Add newline separator if not the last chunk
+      if (chunkIndex < chunks.length - 1) {
+        currentCharIndex += 1;
+      }
     }
 
     // Sort by page number to ensure correct order

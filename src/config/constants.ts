@@ -6,4 +6,5 @@ export const PROCESSING_TIMEOUTS = {
   PDF_GLOBAL: 600000, // 10 minutos
   OPENAI: 30000, // 30 segundos,
   XLSX: 20000, // 20 segundos
+  FILE_DOWNLOAD: 30000, // 30 segundos
 } as const;

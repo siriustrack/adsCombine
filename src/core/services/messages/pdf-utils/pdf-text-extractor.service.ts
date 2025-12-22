@@ -61,15 +61,15 @@ export class PdfTextExtractorService {
     }
 
     // Check if we found enough form feeds (within reasonable margin)
-    const formFeedsFound = pageInfo.length - 1; // Subtract page 1
-    const expectedPages = totalPages - 1;
+    const additionalPagesFound = pageInfo.length - 1; // Subtract page 1
+    const expectedFormFeeds = totalPages - 1;
 
-    if (formFeedsFound >= expectedPages * 0.8) {
+    if (additionalPagesFound >= expectedFormFeeds * 0.8) {
       // Found at least 80% of expected page breaks - use this data
       logger.debug('Page breaks detected using form feeds', {
         fileId,
         totalPages,
-        formFeedsFound,
+        formFeedsFound: additionalPagesFound,
         accuracy: 'high'
       });
       return pageInfo;

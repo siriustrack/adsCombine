@@ -93,7 +93,7 @@ export class ProcessMessagesService {
     }
 
     const fileName = path.basename(new URL(file.url).pathname);
-    const header = `## Transcricao do arquivo: ${fileName}:\n\n`;
+    const header = `## Transcrição do arquivo: ${fileName}:\n\n`;
 
     // Handle both string (legacy) and PdfProcessingResult (enhanced)
     let text: string;
