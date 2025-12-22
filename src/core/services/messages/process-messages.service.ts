@@ -93,7 +93,7 @@ export class ProcessMessagesService {
     }
 
     const fileName = path.basename(new URL(file.url).pathname);
-    const header = `## Transcricao do arquivo: ${fileName}:\n\n`;
+    const header = `## Transcrição do arquivo: ${fileName}:\n\n`;
 
     // Handle both string (legacy) and PdfProcessingResult (enhanced)
     let text: string;
@@ -116,17 +116,18 @@ export class ProcessMessagesService {
   private async processFile(file: FileInput): Promise<Result<string | PdfProcessingResult, Error>> {
     const fileType = file.mimeType.split('/')[1];
 
-    const fileTypeMap: Record<string, () => Promise<Result<string | PdfProcessingResult, Error>>> = {
-      plain: () => this.processTxt(file),
-      pdf: () => this.processPdfService.execute(file), // Returns PdfProcessingResult
-      jpeg: () => this.processImage(file),
-      jpg: () => this.processImage(file),
-      png: () => this.processImage(file),
-      'vnd.openxmlformats-officedocument.wordprocessingml.document': () => this.processDocx(file),
-      msword: () => this.processDoc(file), // .doc files are not supported
-      'vnd.openxmlformats-officedocument.spreadsheetml.sheet': () => this.processXlsx(file),
-      'vnd.ms-excel': () => this.processXlsx(file), // Added support for .xls files
-    };
+    const fileTypeMap: Record<string, () => Promise<Result<string | PdfProcessingResult, Error>>> =
+      {
+        plain: () => this.processTxt(file),
+        pdf: () => this.processPdfService.execute(file), // Returns PdfProcessingResult
+        jpeg: () => this.processImage(file),
+        jpg: () => this.processImage(file),
+        png: () => this.processImage(file),
+        'vnd.openxmlformats-officedocument.wordprocessingml.document': () => this.processDocx(file),
+        msword: () => this.processDoc(file), // .doc files are not supported
+        'vnd.openxmlformats-officedocument.spreadsheetml.sheet': () => this.processXlsx(file),
+        'vnd.ms-excel': () => this.processXlsx(file), // Added support for .xls files
+      };
 
     const processor = fileTypeMap[fileType];
 

@@ -1,3 +1,4 @@
+import { PROCESSING_TIMEOUTS } from '@config/constants';
 import logger from '@lib/logger';
 import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types';
 import axios, { type AxiosResponse } from 'axios';
@@ -11,10 +12,10 @@ export class FileDownloadService {
   async downloadFile(url: string, fileId: string): Promise<Result<DownloadedFile, Error>> {
     try {
       const { value: response, error } = await wrapPromiseResult<AxiosResponse, Error>(
-        axios.get(url, { 
-          responseType: 'arraybuffer', 
+        axios.get(url, {
+          responseType: 'arraybuffer',
           validateStatus: (status) => status < 500,
-          timeout: 30000 // 30 segundos de timeout
+          timeout: PROCESSING_TIMEOUTS.FILE_DOWNLOAD,
         })
       );
 
@@ -41,10 +42,11 @@ export class FileDownloadService {
           fileId,
           url,
           status: response.status,
-          context: 'OCR',
         });
         return errResult(
-          new Error('OCR service returned status 404: Arquivo não encontrado. Verifique se o arquivo existe e a URL está correta.')
+          new Error(
+            'File download returned status 404: Arquivo não encontrado. Verifique se o arquivo existe e a URL está correta.'
+          )
         );
       }
 
@@ -54,9 +56,10 @@ export class FileDownloadService {
           url,
           status: response.status,
           statusText: response.statusText,
-          context: 'OCR',
         });
-        return errResult(new Error(`OCR service returned status ${response.status}: ${response.statusText}`));
+        return errResult(
+          new Error(`File download returned status ${response.status}: ${response.statusText}`)
+        );
       }
 
       if (!response.data) {
@@ -91,7 +94,6 @@ export class FileDownloadService {
         url,
         error: error.message,
         stack: error.stack,
-        context: 'OCR',
       });
       return errResult(new Error(`Unexpected error downloading file: ${error.message}`));
     }
