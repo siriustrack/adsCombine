@@ -3,12 +3,12 @@ import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result
 import pdf from 'pdf-parse';
 
 export interface PdfTextData {
-	text: string;
-	totalPages: number;
-	pageInfo?: Array<{
-		pageNumber: number;
-		estimatedCharStart: number;
-	}>;
+  text: string;
+  totalPages: number;
+  pageInfo?: Array<{
+    pageNumber: number;
+    estimatedCharStart: number;
+  }>;
 }
 
 export class PdfTextExtractorService {
@@ -70,7 +70,7 @@ export class PdfTextExtractorService {
         fileId,
         totalPages,
         formFeedsFound: additionalPagesFound,
-        accuracy: 'high'
+        accuracy: 'high',
       });
       return pageInfo;
     }
@@ -80,7 +80,7 @@ export class PdfTextExtractorService {
       fileId,
       totalPages,
       formFeedsFound,
-      accuracy: 'estimated'
+      accuracy: 'estimated',
     });
 
     // Reset and use uniform distribution

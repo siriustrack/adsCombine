@@ -4,25 +4,26 @@ import { sanitize } from 'utils/sanitize';
 import type { FileInput } from '../process-messages.service';
 import { FileDownloadService } from './file-download.service';
 import { OcrOrchestrator } from './ocr-orchestrator.service';
+import type { PageBreak, PdfMetadata, PdfProcessingResult } from './pdf-metadata.types';
 import { PdfTextExtractorService } from './pdf-text-extractor.service';
 import { SectionDetectorService } from './section-detector.service';
 import { TextQualityAnalyzer } from './text-quality-analyzer.service';
-import type { PageBreak, PdfMetadata, PdfProcessingResult } from './pdf-metadata.types';
 
 export class ProcessPdfService {
-	private readonly fileDownloadService = new FileDownloadService();
-	private readonly textExtractorService = new PdfTextExtractorService();
-	private readonly textQualityAnalyzer = new TextQualityAnalyzer();
-	private readonly ocrOrchestrator = new OcrOrchestrator();
-	private readonly sectionDetector = new SectionDetectorService();
+  private readonly fileDownloadService = new FileDownloadService();
+  private readonly textExtractorService = new PdfTextExtractorService();
+  private readonly textQualityAnalyzer = new TextQualityAnalyzer();
+  private readonly ocrOrchestrator = new OcrOrchestrator();
+  private readonly sectionDetector = new SectionDetectorService();
 
-	async execute(file: FileInput): Promise<Result<PdfProcessingResult, Error>> {
+  async execute(file: FileInput): Promise<Result<PdfProcessingResult, Error>> {
     const { fileId, url } = file;
 
     logger.info('Starting PDF processing', { fileId, url });
 
     // 1. Download do arquivo
-    const { value: downloadedFile, error: downloadError } = await this.fileDownloadService.downloadFile(url, fileId);
+    const { value: downloadedFile, error: downloadError } =
+      await this.fileDownloadService.downloadFile(url, fileId);
 
     if (downloadError) {
       logger.error('Error processing files', {
@@ -38,15 +39,13 @@ export class ProcessPdfService {
     }
 
     // 2. Extração de texto direto
-    const { value: textData, error: extractionError } = await this.textExtractorService.extractTextFromPdf(
-      downloadedFile.buffer,
-      fileId
-    );
+    const { value: textData, error: extractionError } =
+      await this.textExtractorService.extractTextFromPdf(downloadedFile.buffer, fileId);
 
     if (extractionError) {
       logger.error('Error extracting text from PDF', {
         fileId,
-        error: extractionError.message
+        error: extractionError.message,
       });
       return errResult(new Error(`Erro ao extrair texto do PDF: ${extractionError.message}`));
     }
@@ -60,7 +59,7 @@ export class ProcessPdfService {
       fileId,
       textLength: extractedText.length,
       totalPages,
-      qualityAnalysis
+      qualityAnalysis,
     });
 
     // 4. Decisão sobre OCR
@@ -76,7 +75,7 @@ export class ProcessPdfService {
         qualityScore: qualityAnalysis.qualityScore,
         textLength: extractedText.length,
         totalPages,
-        charsPerPage: Math.round(charsPerPage)
+        charsPerPage: Math.round(charsPerPage),
       });
 
       // Build metadata from direct extraction
@@ -87,12 +86,12 @@ export class ProcessPdfService {
         totalPages,
         pageBreaks,
         sections,
-        processingSource: 'direct'
+        processingSource: 'direct',
       };
 
       return okResult({
         text: sanitize(extractedText),
-        metadata
+        metadata,
       });
     }
 
@@ -103,7 +102,7 @@ export class ProcessPdfService {
         textLength: extractedText.length,
         totalPages,
         charsPerPage: Math.round(charsPerPage),
-        minCharsPerPageToSkipOcr
+        minCharsPerPageToSkipOcr,
       });
     }
 
@@ -115,8 +114,8 @@ export class ProcessPdfService {
           totalPages: 0,
           pageBreaks: [],
           sections: [],
-          processingSource: 'direct'
-        }
+          processingSource: 'direct',
+        },
       });
     }
 
@@ -125,7 +124,7 @@ export class ProcessPdfService {
       fileId,
       totalPages,
       qualityScore: qualityAnalysis.qualityScore,
-      extractedTextLength: extractedText.length
+      extractedTextLength: extractedText.length,
     });
 
     const { value: ocrResult, error: ocrError } = await this.ocrOrchestrator.processWithOcr(
@@ -146,7 +145,12 @@ export class ProcessPdfService {
   }
 
   private combineTextResults(
-    ocrResult: { ocrText: string; pageBreaks: PageBreak[]; chunksProcessed: number; processingTime: number },
+    ocrResult: {
+      ocrText: string;
+      pageBreaks: PageBreak[];
+      chunksProcessed: number;
+      processingTime: number;
+    },
     fileId: string,
     totalPages: number
   ): PdfProcessingResult {
@@ -159,7 +163,7 @@ export class ProcessPdfService {
       totalPages,
       pageBreaks: ocrResult.pageBreaks,
       sections,
-      processingSource: 'ocr'
+      processingSource: 'ocr',
     };
 
     logger.info('PDF processing completed', {
@@ -169,14 +173,14 @@ export class ProcessPdfService {
       pageBreaksDetected: metadata.pageBreaks.length,
       sectionsDetected: metadata.sections?.length ?? 0,
       chunksProcessed: ocrResult.chunksProcessed,
-      processingTime: ocrResult.processingTime
+      processingTime: ocrResult.processingTime,
     });
 
     if (finalText.trim().length < 50) {
       logger.warn('Very little text extracted from PDF', {
         fileId,
         finalTextLength: finalText.length,
-        ocrTextLength: ocrResult.ocrText ? ocrResult.ocrText.length : 0
+        ocrTextLength: ocrResult.ocrText ? ocrResult.ocrText.length : 0,
       });
     }
 
@@ -186,14 +190,16 @@ export class ProcessPdfService {
   /**
    * Convert pageInfo from PdfTextExtractor to PageBreak array
    */
-  private buildPageBreaksFromTextData(textData: { pageInfo?: Array<{ pageNumber: number; estimatedCharStart: number }> }): PageBreak[] {
+  private buildPageBreaksFromTextData(textData: {
+    pageInfo?: Array<{ pageNumber: number; estimatedCharStart: number }>;
+  }): PageBreak[] {
     if (!textData.pageInfo) {
       return [];
     }
 
-    return textData.pageInfo.map(info => ({
+    return textData.pageInfo.map((info) => ({
       pageNumber: info.pageNumber,
-      charIndex: info.estimatedCharStart
+      charIndex: info.estimatedCharStart,
     }));
   }
 }

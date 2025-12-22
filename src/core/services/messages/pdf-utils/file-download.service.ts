@@ -1,7 +1,7 @@
+import { PROCESSING_TIMEOUTS } from '@config/constants';
 import logger from '@lib/logger';
 import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types';
 import axios, { type AxiosResponse } from 'axios';
-import { PROCESSING_TIMEOUTS } from '@config/constants';
 
 export interface DownloadedFile {
   buffer: Buffer;
@@ -12,10 +12,10 @@ export class FileDownloadService {
   async downloadFile(url: string, fileId: string): Promise<Result<DownloadedFile, Error>> {
     try {
       const { value: response, error } = await wrapPromiseResult<AxiosResponse, Error>(
-        axios.get(url, { 
-          responseType: 'arraybuffer', 
+        axios.get(url, {
+          responseType: 'arraybuffer',
           validateStatus: (status) => status < 500,
-          timeout: PROCESSING_TIMEOUTS.FILE_DOWNLOAD
+          timeout: PROCESSING_TIMEOUTS.FILE_DOWNLOAD,
         })
       );
 
@@ -44,7 +44,9 @@ export class FileDownloadService {
           status: response.status,
         });
         return errResult(
-          new Error('File download returned status 404: Arquivo não encontrado. Verifique se o arquivo existe e a URL está correta.')
+          new Error(
+            'File download returned status 404: Arquivo não encontrado. Verifique se o arquivo existe e a URL está correta.'
+          )
         );
       }
 
@@ -55,7 +57,9 @@ export class FileDownloadService {
           status: response.status,
           statusText: response.statusText,
         });
-        return errResult(new Error(`File download returned status ${response.status}: ${response.statusText}`));
+        return errResult(
+          new Error(`File download returned status ${response.status}: ${response.statusText}`)
+        );
       }
 
       if (!response.data) {

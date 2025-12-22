@@ -9,10 +9,10 @@ import { OcrChunkManager } from './ocr-chunk-manager.service';
 import type { PageBreak } from './pdf-metadata.types';
 
 export interface OcrProcessingResult {
-	ocrText: string;
-	chunksProcessed: number;
-	processingTime: number;
-	pageBreaks: PageBreak[];
+  ocrText: string;
+  chunksProcessed: number;
+  processingTime: number;
+  pageBreaks: PageBreak[];
 }
 
 export class OcrOrchestrator {
@@ -31,7 +31,7 @@ export class OcrOrchestrator {
         ocrText: '',
         chunksProcessed: 0,
         processingTime: Date.now() - startTime,
-        pageBreaks: []
+        pageBreaks: [],
       });
     }
 
@@ -43,7 +43,7 @@ export class OcrOrchestrator {
         ocrText: '',
         chunksProcessed: 0,
         processingTime: Date.now() - startTime,
-        pageBreaks: []
+        pageBreaks: [],
       });
     }
 
@@ -75,14 +75,14 @@ export class OcrOrchestrator {
         chunksProcessed: chunks.length,
         ocrTextLength: ocrText.length,
         pageBreaksDetected: chunkResults.pageBreaks.length,
-        processingTime
+        processingTime,
       });
 
       return okResult({
         ocrText,
         chunksProcessed: chunks.length,
         processingTime,
-        pageBreaks: chunkResults.pageBreaks
+        pageBreaks: chunkResults.pageBreaks,
       });
     } finally {
       // Limpar arquivo temporário
@@ -93,7 +93,7 @@ export class OcrOrchestrator {
           logger.warn('Failed to cleanup temporary PDF file', {
             fileId,
             tempFile: tempPdf.name,
-            error: (error as Error).message
+            error: (error as Error).message,
           });
         }
       }
@@ -117,7 +117,7 @@ export class OcrOrchestrator {
             pageRange: chunk,
             pdfPath,
             fileId,
-            totalPages
+            totalPages,
           });
 
           const chunkDuration = Date.now() - chunkStartTime;
@@ -127,7 +127,11 @@ export class OcrOrchestrator {
             pageRange: `${chunk.first}-${chunk.last}`,
             chunkDuration,
             resultLength:
-              typeof result === 'string' ? result.length : Array.isArray(result) ? result.join('').length : 0
+              typeof result === 'string'
+                ? result.length
+                : Array.isArray(result)
+                  ? result.join('').length
+                  : 0,
           });
 
           return result;
@@ -138,7 +142,7 @@ export class OcrOrchestrator {
             chunkIndex: index,
             pageRange: `${chunk.first}-${chunk.last}`,
             chunkDuration,
-            error: (error as Error).message
+            error: (error as Error).message,
           });
           throw error;
         }
@@ -153,7 +157,7 @@ export class OcrOrchestrator {
       logger.error('Error in OCR processing', {
         fileId,
         error: ocrError.message,
-        chunksCount: chunks.length
+        chunksCount: chunks.length,
       });
       return errResult(new Error(`Erro no processamento OCR: ${ocrError.message}`));
     }
@@ -188,7 +192,7 @@ export class OcrOrchestrator {
       // Create page breaks for each page in this chunk
       for (let pageNum = chunk.first; pageNum <= chunk.last; pageNum++) {
         // Skip if this page was already added (shouldn't happen but safety check)
-        if (pageBreaks.some(pb => pb.pageNumber === pageNum)) {
+        if (pageBreaks.some((pb) => pb.pageNumber === pageNum)) {
           continue;
         }
 
@@ -202,13 +206,13 @@ export class OcrOrchestrator {
         pageBreaks.push({
           pageNumber: pageNum,
           charIndex: currentCharIndex + estimatedOffsetInChunk,
-          estimatedWords
+          estimatedWords,
         });
       }
 
       // Move character index forward by chunk length
       currentCharIndex += chunkLength;
-      
+
       // Add newline separator if not the last chunk
       if (chunkIndex < chunks.length - 1) {
         currentCharIndex += 1;
@@ -222,10 +226,10 @@ export class OcrOrchestrator {
       fileId,
       totalPages: pageBreaks.length,
       chunks: chunks.length,
-      sampleBreaks: pageBreaks.slice(0, 3).map(pb => ({
+      sampleBreaks: pageBreaks.slice(0, 3).map((pb) => ({
         page: pb.pageNumber,
-        charIndex: pb.charIndex
-      }))
+        charIndex: pb.charIndex,
+      })),
     });
 
     return pageBreaks;
@@ -234,7 +238,10 @@ export class OcrOrchestrator {
   private createTimeoutPromise(timeout: number): Promise<never> {
     return new Promise<never>((_, reject) => {
       const timeoutInMinutes = timeout / 60000;
-      setTimeout(() => reject(new Error(`OCR processing timed out after ${timeoutInMinutes} minutes`)), timeout);
+      setTimeout(
+        () => reject(new Error(`OCR processing timed out after ${timeoutInMinutes} minutes`)),
+        timeout
+      );
     });
   }
 }
