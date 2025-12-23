@@ -114,6 +114,7 @@ export class ProcessPdfService {
           totalPages: 0,
           pageBreaks: [],
           sections: [],
+          sections: [],
           processingSource: 'direct',
         },
       });
