@@ -80,8 +80,8 @@ function magickHelp() {
 }
 
 const MAGICK_HELP = HAS_MAGICK ? String(magickHelp()) : '';
-const HAS_MAGICK_ADAPTIVE_THRESHOLD = /\-adaptive-threshold\b/i.test(MAGICK_HELP);
-const HAS_MAGICK_LAT = /\-lat\b/i.test(MAGICK_HELP);
+const HAS_MAGICK_ADAPTIVE_THRESHOLD = /-adaptive-threshold\b/i.test(MAGICK_HELP);
+const HAS_MAGICK_LAT = /-lat\b/i.test(MAGICK_HELP);
 
 // -----------------------------------------------------------------------------
 // Tesseract language selection
@@ -199,10 +199,10 @@ function preprocessWithMagick(inputPng, outputPng, { scalePercent, threshold }) 
   const sharpen = getEnvStr('PDF_OCR_SHARPEN', '0x1.0');
   const thresholdArgs = threshold
     ? {
-      adaptive: getEnvStr('PDF_OCR_ADAPTIVE_THRESHOLD', '35x35+10%'),
-      lat: getEnvStr('PDF_OCR_LAT', '20x20+10%'),
-      hard: getEnvStr('PDF_OCR_THRESHOLD', '55%'),
-    }
+        adaptive: getEnvStr('PDF_OCR_ADAPTIVE_THRESHOLD', '35x35+10%'),
+        lat: getEnvStr('PDF_OCR_LAT', '20x20+10%'),
+        hard: getEnvStr('PDF_OCR_THRESHOLD', '55%'),
+      }
     : null;
 
   const parts = [
@@ -313,9 +313,9 @@ function performOcrOnPages(pngs, env) {
       try {
         prepReady = preprocessWithMagick(png, pre1, { scalePercent, threshold: false });
       } catch (error) {
+        const errorDetails = error.stderr ? `\nSTDERR: ${error.stderr.toString()}` : '';
         console.warn(
-          `[Worker ${process.pid}] Preprocess failed for page ${pageIndex + 1}: ${(error || {})
-            .message || String(error)}`
+          `[Worker ${process.pid}] Preprocess failed for page ${pageIndex + 1}: ${(error || {}).message || String(error)}${errorDetails}`
         );
         prepReady = false;
       }
@@ -327,9 +327,9 @@ function performOcrOnPages(pngs, env) {
       try {
         prepThrReady = preprocessWithMagick(png, pre2, { scalePercent, threshold: true });
       } catch (error) {
+        const errorDetails = error.stderr ? `\nSTDERR: ${error.stderr.toString()}` : '';
         console.warn(
-          `[Worker ${process.pid}] Threshold preprocess failed for page ${pageIndex + 1}: ${(error || {})
-            .message || String(error)}`
+          `[Worker ${process.pid}] Threshold preprocess failed for page ${pageIndex + 1}: ${(error || {}).message || String(error)}${errorDetails}`
         );
         prepThrReady = false;
       }
@@ -402,7 +402,8 @@ function performOcrOnPages(pngs, env) {
       } catch (error) {
         // Keep trying other candidates
         console.warn(
-          `[Worker ${process.pid}] OCR attempt failed (${attempt.label}, psm=${attempt.psm}) on page ${pageIndex + 1
+          `[Worker ${process.pid}] OCR attempt failed (${attempt.label}, psm=${attempt.psm}) on page ${
+            pageIndex + 1
           }: ${error.message}`
         );
       }
