@@ -48,7 +48,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr tesseract-ocr-por \
     imagemagick \
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    # Adjust ImageMagick policy permissions and resources
+    # Relaxando limites agressivamente para máquina com 32GB RAM
+    && sed -i 's/domain="resource" name="disk" value="1GiB"/domain="resource" name="disk" value="16GiB"/g' /etc/ImageMagick-6/policy.xml \
+    && sed -i 's/domain="resource" name="memory" value="256MiB"/domain="resource" name="memory" value="8GiB"/g' /etc/ImageMagick-6/policy.xml \
+    && sed -i 's/domain="resource" name="map" value="512MiB"/domain="resource" name="map" value="8GiB"/g' /etc/ImageMagick-6/policy.xml \
+    && sed -i 's/domain="resource" name="area" value="128MB"/domain="resource" name="area" value="2GB"/g' /etc/ImageMagick-6/policy.xml
 
 # Evitar que o ImageMagick bloqueie operações simples por policy (não vamos ler PDF com IM)
 # (normalmente não precisa mexer no policy.xml; usando poppler pra PDF)
