@@ -8,7 +8,7 @@ const router = express.Router();
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 50 * 1024 * 1024, // 50MB max file size
+    fileSize: 50 * 1024 * 1024 // 50MB max file size
   },
   fileFilter: (_req, file, cb) => {
     // Accept audio files
@@ -19,7 +19,7 @@ const upload = multer({
       'audio/wav',
       'audio/ogg',
       'audio/m4a',
-      'audio/mp4',
+      'audio/mp4'
     ];
 
     if (allowedMimeTypes.includes(file.mimetype)) {
@@ -27,38 +27,36 @@ const upload = multer({
     } else {
       cb(new Error(`Formato de áudio não suportado: ${file.mimetype}`));
     }
-  },
+  }
 });
 
 // POST /transcribe - Transcribe audio to text
-router.post('/transcribe', upload.single('audio'), (req, res) =>
-  transcribeController.transcribe(req, res)
-);
+router.post('/transcribe', upload.single('audio'), (req, res) => transcribeController.transcribe(req, res));
 
 // Error handler for multer errors
-router.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+router.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
       res.status(413).json({
         error: 'Arquivo muito grande',
         code: 'FILE_TOO_LARGE',
         details: {
-          maxSize: '50MB',
-        },
+          maxSize: '50MB'
+        }
       });
       return;
     }
     res.status(400).json({
       error: err.message,
-      code: 'UPLOAD_ERROR',
+      code: 'UPLOAD_ERROR'
     });
     return;
   }
 
-  if (err) {
+  if (err instanceof Error) {
     res.status(400).json({
       error: err.message,
-      code: 'VALIDATION_ERROR',
+      code: 'VALIDATION_ERROR'
     });
     return;
   }

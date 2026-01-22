@@ -14,12 +14,14 @@ app.use(
     origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
-    credentials: true
+    credentials: true,
   })
 );
 
 app.use(express.json({ limit: '50mb' }));
-app.use(morgan('combined', { stream: { write: (message: string) => logger.info(message.trim()) } }));
+app.use(
+  morgan('combined', { stream: { write: (message: string) => logger.info(message.trim()) } })
+);
 
 app.use(handleGlobalRequestExceptions);
 app.use(handleAuthMiddleware);
@@ -30,7 +32,7 @@ function serializeError(reason: unknown) {
     return {
       name: reason.name,
       message: reason.message,
-      stack: reason.stack
+      stack: reason.stack,
     };
   }
   if (typeof reason === 'object' && reason !== null) {
@@ -46,7 +48,7 @@ function serializeError(reason: unknown) {
 process.on('unhandledRejection', (reason, promise) => {
   logger.error('Unhandled Rejection at:', {
     reason: serializeError(reason),
-    promise: String(promise)
+    promise: String(promise),
   });
 });
 process.on('uncaughtException', (err) => {
