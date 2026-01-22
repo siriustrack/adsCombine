@@ -404,11 +404,11 @@ export class CreateVideoService {
     const outputPath = path.join(PUBLIC_DIR, `${fileName}${extension}`);
 
     const highestAudioBitrate = videoDimensions.filter(Boolean).reduce((max, video) => {
-      const bitNum = parseInt(video.audioBitrate);
+      const bitNum = parseInt(video.audioBitrate, 10);
       return Number.isNaN(bitNum) ? max : Math.max(max, bitNum);
     }, 192000);
 
-    const audioBitrate = Math.max(parseInt(bitrate) || 320000, highestAudioBitrate).toString();
+    const audioBitrate = Math.max(parseInt(bitrate, 10) || 320000, highestAudioBitrate).toString();
     logger.info(
       `[${fileName}] Starting concatenation of ${standardizedVideos.length} videos with audio bitrate ${audioBitrate}`
     );
@@ -421,7 +421,7 @@ export class CreateVideoService {
           .outputOptions([
             `-c:v ${codec}`,
             `-c:a aac`,
-            `-b:a ${Math.max(320000, parseInt(audioBitrate) || 320000)}`,
+            `-b:a ${Math.max(320000, parseInt(audioBitrate, 10) || 320000)}`,
             `-ar 48000`,
             `-ac 2`,
             `-crf 18`,

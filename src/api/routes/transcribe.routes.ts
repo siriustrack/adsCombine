@@ -36,7 +36,7 @@ router.post('/transcribe', upload.single('audio'), (req, res) =>
 );
 
 // Error handler for multer errors
-router.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+router.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
       res.status(413).json({

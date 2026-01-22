@@ -144,7 +144,7 @@ function parseTsvToTextAndConfidence(tsv) {
 
     const key = `${pageNum}.${blockNum}.${parNum}.${lineNum}`;
     if (lastKey && key !== lastKey) {
-      out = out.trimEnd() + '\n';
+      out = `${out.trimEnd()}\n`;
     } else if (out && !out.endsWith('\n')) {
       out += ' ';
     }
@@ -315,7 +315,7 @@ function performOcrOnPages(pngs, env) {
       } catch (error) {
         const errorDetails = error.stderr ? `\nSTDERR: ${error.stderr.toString()}` : '';
         console.warn(
-          `[Worker ${process.pid}] Preprocess failed for page ${pageIndex + 1}: ${(error || {}).message || String(error)}${errorDetails}`
+          `[Worker ${process.pid}] Preprocess failed for page ${pageIndex + 1}: ${error?.message || String(error)}${errorDetails}`
         );
         prepReady = false;
       }
@@ -329,7 +329,7 @@ function performOcrOnPages(pngs, env) {
       } catch (error) {
         const errorDetails = error.stderr ? `\nSTDERR: ${error.stderr.toString()}` : '';
         console.warn(
-          `[Worker ${process.pid}] Threshold preprocess failed for page ${pageIndex + 1}: ${(error || {}).message || String(error)}${errorDetails}`
+          `[Worker ${process.pid}] Threshold preprocess failed for page ${pageIndex + 1}: ${error?.message || String(error)}${errorDetails}`
         );
         prepThrReady = false;
       }

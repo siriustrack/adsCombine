@@ -19,22 +19,21 @@ export class ProcessPdfService {
     logger.info('Starting PDF processing', { fileId, url });
 
     // 1. Download do arquivo
-    const { value: downloadedFile, error: downloadError } = await this.fileDownloadService.downloadFile(url, fileId);
+    const { value: downloadedFile, error: downloadError } =
+      await this.fileDownloadService.downloadFile(url, fileId);
 
     if (downloadError) {
       return errResult(downloadError);
     }
 
     // 2. Extração de texto direto
-    const { value: textData, error: extractionError } = await this.textExtractorService.extractTextFromPdf(
-      downloadedFile.buffer,
-      fileId
-    );
+    const { value: textData, error: extractionError } =
+      await this.textExtractorService.extractTextFromPdf(downloadedFile.buffer, fileId);
 
     if (extractionError) {
       logger.error('Error extracting text from PDF', {
         fileId,
-        error: extractionError.message
+        error: extractionError.message,
       });
       return errResult(new Error(`Erro ao extrair texto do PDF: ${extractionError.message}`));
     }
@@ -48,7 +47,7 @@ export class ProcessPdfService {
       fileId,
       textLength: extractedText.length,
       totalPages,
-      qualityAnalysis
+      qualityAnalysis,
     });
 
     // 4. Decisão sobre OCR
@@ -64,7 +63,7 @@ export class ProcessPdfService {
         qualityScore: qualityAnalysis.qualityScore,
         textLength: extractedText.length,
         totalPages,
-        charsPerPage: Math.round(charsPerPage)
+        charsPerPage: Math.round(charsPerPage),
       });
       return okResult(sanitize(extractedText));
     }
@@ -76,7 +75,7 @@ export class ProcessPdfService {
         textLength: extractedText.length,
         totalPages,
         charsPerPage: Math.round(charsPerPage),
-        minCharsPerPageToSkipOcr
+        minCharsPerPageToSkipOcr,
       });
     }
 
@@ -90,7 +89,7 @@ export class ProcessPdfService {
       fileId,
       totalPages,
       qualityScore: qualityAnalysis.qualityScore,
-      extractedTextLength: extractedText.length
+      extractedTextLength: extractedText.length,
     });
 
     const { value: ocrResult, error: ocrError } = await this.ocrOrchestrator.processWithOcr(
@@ -122,14 +121,14 @@ export class ProcessPdfService {
       finalTextLength: finalText.length,
       ocrTextLength: ocrText ? ocrText.length : 0,
       chunksProcessed: ocrResult.chunksProcessed,
-      processingTime: ocrResult.processingTime
+      processingTime: ocrResult.processingTime,
     });
 
     if (finalText.trim().length < 50) {
       logger.warn('Very little text extracted from PDF', {
         fileId,
         finalTextLength: finalText.length,
-        ocrTextLength: ocrText ? ocrText.length : 0
+        ocrTextLength: ocrText ? ocrText.length : 0,
       });
     }
 

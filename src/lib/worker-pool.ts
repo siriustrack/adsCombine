@@ -21,8 +21,11 @@ function getOptimalWorkerCount(): { maxWorkers: number; minWorkers: number } {
         fs.existsSync('/sys/fs/cgroup/cpu/cpu.cfs_quota_us') &&
         fs.existsSync('/sys/fs/cgroup/cpu/cpu.cfs_period_us')
       ) {
-        const quota = parseInt(fs.readFileSync('/sys/fs/cgroup/cpu/cpu.cfs_quota_us', 'utf8'));
-        const period = parseInt(fs.readFileSync('/sys/fs/cgroup/cpu/cpu.cfs_period_us', 'utf8'));
+        const quota = parseInt(fs.readFileSync('/sys/fs/cgroup/cpu/cpu.cfs_quota_us', 'utf8'), 10);
+        const period = parseInt(
+          fs.readFileSync('/sys/fs/cgroup/cpu/cpu.cfs_period_us', 'utf8'),
+          10
+        );
         if (quota > 0 && period > 0) {
           const cpuLimit = quota / period;
           maxWorkers = Math.max(1, Math.floor(cpuLimit / 2));
@@ -37,7 +40,7 @@ function getOptimalWorkerCount(): { maxWorkers: number; minWorkers: number } {
   }
 
   if (process.env.PDF_MAX_WORKERS) {
-    const envMaxWorkers = parseInt(process.env.PDF_MAX_WORKERS);
+    const envMaxWorkers = parseInt(process.env.PDF_MAX_WORKERS, 10);
     if (envMaxWorkers > 0) {
       maxWorkers = envMaxWorkers;
       minWorkers = maxWorkers;
