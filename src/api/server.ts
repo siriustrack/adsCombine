@@ -1,16 +1,10 @@
 import { env } from '@config/env';
-import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
-import ffprobeInstaller from '@ffprobe-installer/ffprobe';
 import cors from 'cors';
 import express from 'express';
-import ffmpeg from 'fluent-ffmpeg';
 import logger from 'lib/logger';
 import morgan from 'morgan';
 import { handleAuthMiddleware, handleGlobalRequestExceptions } from './middlewares';
 import router from './routes';
-
-ffmpeg.setFfprobePath(ffprobeInstaller.path);
-ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
 const app = express();
 
