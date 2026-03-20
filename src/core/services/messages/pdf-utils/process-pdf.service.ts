@@ -13,6 +13,69 @@ export class ProcessPdfService {
   private readonly textQualityAnalyzer = new TextQualityAnalyzer();
   private readonly ocrOrchestrator = new OcrOrchestrator();
 
+  private shouldBypassOcr({
+    extractedText,
+    totalPages,
+    qualityAnalysis,
+  }: {
+    extractedText: string;
+    totalPages: number;
+    qualityAnalysis: ReturnType<TextQualityAnalyzer['analyze']>;
+  }) {
+    const pages = Math.max(1, totalPages || 0);
+    const charsPerPage = extractedText.length / pages;
+    const minCharsPerPageToSkipOcr = pages <= 1 ? 300 : pages === 2 ? 650 : 900;
+    const hasStrongDirectText =
+      qualityAnalysis.isHighQuality &&
+      qualityAnalysis.hasSubstantialContent &&
+      !qualityAnalysis.isRepetitive &&
+      charsPerPage >= minCharsPerPageToSkipOcr &&
+      extractedText.length >= 8000;
+
+    return {
+      pages,
+      charsPerPage,
+      minCharsPerPageToSkipOcr,
+      hasStrongDirectText,
+      shouldSkipOcr:
+        hasStrongDirectText ||
+        (qualityAnalysis.shouldSkipOcr && charsPerPage >= minCharsPerPageToSkipOcr),
+    };
+  }
+
+  private logOcrDecision({
+    fileId,
+    extractedText,
+    totalPages,
+    qualityAnalysis,
+    charsPerPage,
+    minCharsPerPageToSkipOcr,
+    hasStrongDirectText,
+  }: {
+    fileId: string;
+    extractedText: string;
+    totalPages: number;
+    qualityAnalysis: ReturnType<TextQualityAnalyzer['analyze']>;
+    charsPerPage: number;
+    minCharsPerPageToSkipOcr: number;
+    hasStrongDirectText: boolean;
+  }) {
+    logger.info('PDF OCR decision evaluated', {
+      fileId,
+      totalPages,
+      textLength: extractedText.length,
+      charsPerPage: Math.round(charsPerPage),
+      minCharsPerPageToSkipOcr,
+      hasStrongDirectText,
+      shouldSkipOcr: qualityAnalysis.shouldSkipOcr,
+      isHighQuality: qualityAnalysis.isHighQuality,
+      isRepetitive: qualityAnalysis.isRepetitive,
+      hasOcrIndicators: qualityAnalysis.hasOcrIndicators,
+      hasSubstantialContent: qualityAnalysis.hasSubstantialContent,
+      qualityScore: qualityAnalysis.qualityScore,
+    });
+  }
+
   async execute(file: FileInput): Promise<Result<string, Error>> {
     const { fileId, url } = file;
 
@@ -51,19 +114,31 @@ export class ProcessPdfService {
     });
 
     // 4. Decisão sobre OCR
-    const pages = Math.max(1, totalPages || 0);
-    const charsPerPage = extractedText.length / pages;
-    // Heurística extra: PDFs escaneados frequentemente têm um "text layer" parcial (cabeçalhos/rodapés)
-    // que engana a análise de qualidade. Se o texto por página for baixo, fazemos OCR mesmo assim.
-    const minCharsPerPageToSkipOcr = pages <= 1 ? 300 : pages === 2 ? 650 : 900;
+    const { charsPerPage, minCharsPerPageToSkipOcr, hasStrongDirectText, shouldSkipOcr } =
+      this.shouldBypassOcr({
+        extractedText,
+        totalPages,
+        qualityAnalysis,
+      });
 
-    if (qualityAnalysis.shouldSkipOcr && charsPerPage >= minCharsPerPageToSkipOcr) {
+    this.logOcrDecision({
+      fileId,
+      extractedText,
+      totalPages,
+      qualityAnalysis,
+      charsPerPage,
+      minCharsPerPageToSkipOcr,
+      hasStrongDirectText,
+    });
+
+    if (shouldSkipOcr) {
       logger.info('Skipping OCR - text quality is sufficient', {
         fileId,
         qualityScore: qualityAnalysis.qualityScore,
         textLength: extractedText.length,
         totalPages,
         charsPerPage: Math.round(charsPerPage),
+        reason: hasStrongDirectText ? 'strong-direct-text' : 'quality-analysis',
       });
       return okResult(sanitize(extractedText));
     }
