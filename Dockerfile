@@ -35,39 +35,29 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 # ======== OCR & PDF tools (runtime only) ========
-# poppler-utils -> pdftoppm/pdfinfo | tesseract + por | imagemagick (mogrify)
+# poppler-utils -> pdftoppm/pdfinfo | tesseract 5.x + por + eng | imagemagick
 RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
-    tesseract-ocr tesseract-ocr-por \
+    tesseract-ocr tesseract-ocr-por tesseract-ocr-eng \
     imagemagick \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-        # Adjust ImageMagick policy permissions and resources
-        # Relaxando limites agressivamente para máquina com 32GB RAM
-        && if [ -f /etc/ImageMagick-6/policy.xml ]; then \
-            sed -i 's/domain="resource" name="disk" value="1GiB"/domain="resource" name="disk" value="16GiB"/g' /etc/ImageMagick-6/policy.xml; \
-            sed -i 's/domain="resource" name="memory" value="256MiB"/domain="resource" name="memory" value="8GiB"/g' /etc/ImageMagick-6/policy.xml; \
-            sed -i 's/domain="resource" name="map" value="512MiB"/domain="resource" name="map" value="8GiB"/g' /etc/ImageMagick-6/policy.xml; \
-            sed -i 's/domain="resource" name="area" value="128MB"/domain="resource" name="area" value="2GB"/g' /etc/ImageMagick-6/policy.xml; \
-        fi \
-        && if [ -f /etc/ImageMagick-7/policy.xml ]; then \
-            sed -i 's/domain="resource" name="disk" value="1GiB"/domain="resource" name="disk" value="16GiB"/g' /etc/ImageMagick-7/policy.xml; \
-            sed -i 's/domain="resource" name="memory" value="256MiB"/domain="resource" name="memory" value="8GiB"/g' /etc/ImageMagick-7/policy.xml; \
-            sed -i 's/domain="resource" name="map" value="512MiB"/domain="resource" name="map" value="8GiB"/g' /etc/ImageMagick-7/policy.xml; \
-            sed -i 's/domain="resource" name="area" value="128MB"/domain="resource" name="area" value="2GB"/g' /etc/ImageMagick-7/policy.xml; \
-        fi
-
-# Evitar que o ImageMagick bloqueie operações simples por policy (não vamos ler PDF com IM)
-# (normalmente não precisa mexer no policy.xml; usando poppler pra PDF)
-# Caso precise fazer convert/mogrify em TIFF/PNG apenas, está ok.
+        && for policy in /etc/ImageMagick-*/policy.xml; do \
+            [ -f "$policy" ] || continue; \
+            sed -i \
+                -e 's/name="disk" value="[^"]*"/name="disk" value="4GiB"/g' \
+                -e 's/name="memory" value="[^"]*"/name="memory" value="2GiB"/g' \
+                -e 's/name="map" value="[^"]*"/name="map" value="2GiB"/g' \
+                -e 's/name="area" value="[^"]*"/name="area" value="1GB"/g' \
+                "$policy"; \
+        done
 
 # ======== ENV de performance/estabilidade ========
-# Limita threads internas do Tesseract/OpenMP (cada worker = 1 thread de OCR)
 ENV OMP_NUM_THREADS=1 \
     OMP_THREAD_LIMIT=1 \
     TESSERACT_NUM_THREADS=1
-# Caminho do tessdata (ajuda a evitar lookup extra)
-ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/4.00/tessdata
+# Tesseract 5.x on trixie uses /usr/share/tesseract-ocr/5/tessdata
+ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 # (Opcional) Ajustar timezone e mem:
 # ENV TZ=America/Sao_Paulo
 # ENV NODE_OPTIONS=--max-old-space-size=1024
