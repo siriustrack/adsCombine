@@ -47,7 +47,7 @@ export class OcrOrchestrator {
     const tempPdf = tmp.fileSync({ postfix: '.pdf' });
 
     try {
-      fs.writeFileSync(tempPdf.name, buffer);
+      await fs.promises.writeFile(tempPdf.name, buffer);
 
       // Processar chunks em paralelo
       const { value: ocrResults, error: ocrError } = await this.processChunksInParallel(
@@ -100,7 +100,9 @@ export class OcrOrchestrator {
     fileId: string,
     totalPages: number
   ): Promise<Result<string[], Error>> {
-    const timeoutPromise = this.createTimeoutPromise(PROCESSING_TIMEOUTS.PDF_GLOBAL);
+    const { promise: timeoutPromise, timer } = this.createTimeoutPromise(
+      PROCESSING_TIMEOUTS.PDF_GLOBAL
+    );
 
     const ocrPromise = Promise.all(
       chunks.map(async (chunk, index) => {
@@ -144,7 +146,7 @@ export class OcrOrchestrator {
     );
 
     const { value: ocrResults, error: ocrError } = await wrapPromiseResult<string[], Error>(
-      Promise.race([ocrPromise, timeoutPromise])
+      Promise.race([ocrPromise, timeoutPromise]).finally(() => clearTimeout(timer))
     );
 
     if (ocrError) {
@@ -159,13 +161,20 @@ export class OcrOrchestrator {
     return okResult(ocrResults);
   }
 
-  private createTimeoutPromise(timeout: number): Promise<never> {
-    return new Promise<never>((_, reject) => {
-      const timeoutInMinutes = timeout / 60000;
-      setTimeout(
+  private createTimeoutPromise(timeout: number): {
+    promise: Promise<never>;
+    timer: ReturnType<typeof setTimeout>;
+  } {
+    const timeoutInMinutes = timeout / 60000;
+    let timer!: ReturnType<typeof setTimeout>;
+
+    const promise = new Promise<never>((_, reject) => {
+      timer = setTimeout(
         () => reject(new Error(`OCR processing timed out after ${timeoutInMinutes} minutes`)),
         timeout
       );
     });
+
+    return { promise, timer };
   }
 }

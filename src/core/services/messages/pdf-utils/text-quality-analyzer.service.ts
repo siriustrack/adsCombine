@@ -221,9 +221,20 @@ export class TextQualityAnalyzer {
     let alphanumericCount = 0;
 
     for (let i = 0; i < text.length; i++) {
-      const char = text[i];
-      if (char === ' ') spaceCount++;
-      if (/[a-zA-Z0-9À-ÿ]/.test(char)) alphanumericCount++;
+      const code = text.charCodeAt(i);
+
+      if (code === 32) {
+        spaceCount++;
+      }
+
+      if (
+        (code >= 97 && code <= 122) ||
+        (code >= 65 && code <= 90) ||
+        (code >= 48 && code <= 57) ||
+        (code >= 192 && code <= 255)
+      ) {
+        alphanumericCount++;
+      }
     }
 
     return { spaceCount, alphanumericCount };

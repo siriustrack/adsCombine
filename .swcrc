@@ -31,7 +31,7 @@
     "lazy": false,
     "noInterop": false
   },
-  "minify": false,
-  "sourceMaps": true,
-  "inlineSourcesContent": true
+  "minify": true,
+  "sourceMaps": false,
+  "inlineSourcesContent": false
 }

@@ -27,6 +27,22 @@ if (!process.env.TESSDATA_PREFIX) {
 
 process.env.LC_ALL = 'C';
 
+const WORKER_LOGS_ENABLED = /^(1|true|yes|on)$/i.test(
+  String(process.env.PDF_WORKER_LOGS ?? 'false')
+);
+
+function logWorkerInfo(message, payload) {
+  if (WORKER_LOGS_ENABLED) {
+    console.log(message, payload);
+  }
+}
+
+function logWorkerWarn(message) {
+  if (WORKER_LOGS_ENABLED) {
+    console.warn(message);
+  }
+}
+
 function sh(cmd, opts = {}) {
   return execSync(cmd, { stdio: 'pipe', encoding: 'utf-8', ...opts });
 }
@@ -122,7 +138,7 @@ function parseTsvToTextAndConfidence(tsv) {
   let totalConf = 0;
   let confCount = 0;
   let wordCount = 0;
-  let out = '';
+  const fragments = [];
   let lastKey = '';
 
   for (let i = 1; i < lines.length; i++) {
@@ -144,12 +160,17 @@ function parseTsvToTextAndConfidence(tsv) {
 
     const key = `${pageNum}.${blockNum}.${parNum}.${lineNum}`;
     if (lastKey && key !== lastKey) {
-      out = `${out.trimEnd()}\n`;
-    } else if (out && !out.endsWith('\n')) {
-      out += ' ';
+      const lastFragment = fragments[fragments.length - 1];
+      if (lastFragment === ' ') {
+        fragments[fragments.length - 1] = '\n';
+      } else {
+        fragments.push('\n');
+      }
+    } else if (fragments.length > 0 && fragments[fragments.length - 1] !== '\n') {
+      fragments.push(' ');
     }
 
-    out += word;
+    fragments.push(word);
     lastKey = key;
 
     const conf = Number.parseFloat(confStr);
@@ -162,7 +183,7 @@ function parseTsvToTextAndConfidence(tsv) {
 
   const meanConfidence = confCount > 0 ? totalConf / confCount : 0;
   return {
-    text: out.trim(),
+    text: fragments.join('').trim(),
     meanConfidence,
     wordCount,
   };
@@ -314,7 +335,7 @@ function performOcrOnPages(pngs, env) {
         prepReady = preprocessWithMagick(png, pre1, { scalePercent, threshold: false });
       } catch (error) {
         const errorDetails = error.stderr ? `\nSTDERR: ${error.stderr.toString()}` : '';
-        console.warn(
+        logWorkerWarn(
           `[Worker ${process.pid}] Preprocess failed for page ${pageIndex + 1}: ${error?.message || String(error)}${errorDetails}`
         );
         prepReady = false;
@@ -328,7 +349,7 @@ function performOcrOnPages(pngs, env) {
         prepThrReady = preprocessWithMagick(png, pre2, { scalePercent, threshold: true });
       } catch (error) {
         const errorDetails = error.stderr ? `\nSTDERR: ${error.stderr.toString()}` : '';
-        console.warn(
+        logWorkerWarn(
           `[Worker ${process.pid}] Threshold preprocess failed for page ${pageIndex + 1}: ${error?.message || String(error)}${errorDetails}`
         );
         prepThrReady = false;
@@ -401,7 +422,7 @@ function performOcrOnPages(pngs, env) {
         }
       } catch (error) {
         // Keep trying other candidates
-        console.warn(
+        logWorkerWarn(
           `[Worker ${process.pid}] OCR attempt failed (${attempt.label}, psm=${attempt.psm}) on page ${
             pageIndex + 1
           }: ${error.message}`
@@ -410,7 +431,7 @@ function performOcrOnPages(pngs, env) {
     }
 
     if (best?.text?.trim()) {
-      console.log(`[Worker ${process.pid}] Best OCR selected`, {
+      logWorkerInfo(`[Worker ${process.pid}] Best OCR selected`, {
         pageIndex: pageIndex + 1,
         selected: bestMeta,
         meanConfidence: Number(best.meanConfidence?.toFixed?.(2) ?? best.meanConfidence),
@@ -425,7 +446,7 @@ function performOcrOnPages(pngs, env) {
 }
 
 function logProgress(fileId, pageRange, pngs, resolution, ocrMs, totalMs) {
-  console.log(`[Worker ${process.pid}] [Thread ${threadId}] Chunk OCR completed`, {
+  logWorkerInfo(`[Worker ${process.pid}] [Thread ${threadId}] Chunk OCR completed`, {
     fileId,
     pageRange,
     pages: pngs.length,
@@ -462,10 +483,14 @@ module.exports = async function worker(payload) {
     const pngs = generatePngPages(pdfPath, workDir, resolution, rasterFrom, rasterTo);
 
     if (!pngs || pngs.length === 0) {
-      console.warn(`[Worker ${process.pid}] [Thread ${threadId}] No PNG pages produced to OCR`, {
-        fileId,
-        pageRange,
-      });
+      logWorkerWarn(
+        `[Worker ${process.pid}] [Thread ${threadId}] No PNG pages produced to OCR ${JSON.stringify(
+          {
+            fileId,
+            pageRange,
+          }
+        )}`
+      );
       return [];
     }
 

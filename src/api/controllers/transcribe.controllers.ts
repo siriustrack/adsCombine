@@ -1,12 +1,7 @@
-import { openaiConfig } from '@config/openai';
+import { openaiClient } from '@config/openai';
 import type { Request, Response } from 'express';
 import logger from 'lib/logger';
-import OpenAI from 'openai';
 import type { Uploadable } from 'openai/uploads';
-
-const openai = new OpenAI({
-  apiKey: openaiConfig.apiKey,
-});
 
 export class TranscribeController {
   async transcribe(req: Request, res: Response): Promise<void> {
@@ -42,7 +37,7 @@ export class TranscribeController {
       }) as Uploadable;
 
       // Call OpenAI Whisper API
-      const transcription = await openai.audio.transcriptions.create({
+      const transcription = await openaiClient.audio.transcriptions.create({
         file: file,
         model: 'whisper-1',
         language: 'pt', // Portuguese
@@ -56,11 +51,14 @@ export class TranscribeController {
         textLength: transcription.text?.length || 0,
       });
 
+      const duration = 'duration' in transcription ? transcription.duration : undefined;
+      const language = 'language' in transcription ? transcription.language || 'pt' : 'pt';
+
       // Return formatted response
       res.status(200).json({
         text: transcription.text,
-        duration: (transcription as any).duration,
-        language: (transcription as any).language || 'pt',
+        duration,
+        language,
         confidence: 0.95, // OpenAI doesn't provide this, using default
         processingTime,
       });

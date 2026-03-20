@@ -1,6 +1,7 @@
+import { httpClient } from '@config/http';
 import logger from '@lib/logger';
 import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types';
-import axios, { type AxiosResponse } from 'axios';
+import type { AxiosResponse } from 'axios';
 
 export interface DownloadedFile {
   buffer: Buffer;
@@ -10,7 +11,10 @@ export interface DownloadedFile {
 export class FileDownloadService {
   async downloadFile(url: string, fileId: string): Promise<Result<DownloadedFile, Error>> {
     const { value: response, error } = await wrapPromiseResult<AxiosResponse, Error>(
-      axios.get(url, { responseType: 'arraybuffer', validateStatus: (status) => status < 500 })
+      httpClient.get(url, {
+        responseType: 'arraybuffer',
+        validateStatus: (status) => status < 500,
+      })
     );
 
     if (error) {
@@ -44,7 +48,7 @@ export class FileDownloadService {
       return errResult(new Error(`Erro HTTP ${response.status}: ${response.statusText}`));
     }
 
-    const buffer = Buffer.from(response.data);
+    const buffer = response.data as Buffer;
     const contentLength = response.headers['content-length']
       ? parseInt(response.headers['content-length'], 10)
       : buffer.length;

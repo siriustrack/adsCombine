@@ -1,14 +1,14 @@
 import fs from 'node:fs';
 import path, { join } from 'node:path';
 import { PROCESSING_TIMEOUTS } from '@config/constants';
+import { env } from '@config/env';
+import { httpClient } from '@config/http';
+import { openaiClient, openaiConfig } from '@config/openai';
 import logger from '@lib/logger';
 import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types';
 import type { FileInfo, ProcessMessage } from 'api/controllers/messages.controllers';
-import axios from 'axios';
 import { TEXTS_DIR } from 'config/dirs';
-import { openaiConfig } from 'config/openai';
 import mammoth from 'mammoth';
-import { OpenAI } from 'openai';
 import type { Uploadable } from 'openai/uploads';
 import pLimit from 'p-limit';
 import { sanitize } from 'utils/sanitize';
@@ -24,7 +24,6 @@ export interface FileInput {
 }
 
 export class ProcessMessagesService {
-  private readonly openai = new OpenAI({ apiKey: openaiConfig.apiKey });
   private readonly processPdfService = new ProcessPdfService();
   private readonly wordExtractor = new WordExtractor();
 
@@ -46,7 +45,7 @@ export class ProcessMessagesService {
       const { files } = body;
 
       if (files && files.length > 0) {
-        const limit = pLimit(5); // Limit to 5 concurrent file processings
+        const limit = pLimit(env.PROCESSING_CONCURRENCY);
         const promises = files.map((file) =>
           limit(() => this.processAndHandleFile(file, extractedTexts))
         );
@@ -135,12 +134,19 @@ export class ProcessMessagesService {
     const userErrorMessage = `O processamento deste arquivo ${fileType.toUpperCase()} excedeu o tempo limite de ${
       timeout / 1000
     } segundos.`;
+    let timer: ReturnType<typeof setTimeout> | undefined;
 
     const { value, error } = await wrapPromiseResult<T, Error>(
       Promise.race([
         processor(),
-        new Promise<T>((_, reject) => setTimeout(() => reject(new Error(timeoutError)), timeout)),
-      ])
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(timeoutError)), timeout);
+        }),
+      ]).finally(() => {
+        if (timer) {
+          clearTimeout(timer);
+        }
+      })
     );
 
     if (error) {
@@ -181,7 +187,7 @@ export class ProcessMessagesService {
 
     const filePath = path.join(TEXTS_DIR, conversationId, filename);
     const sanitizedText = sanitizeText(allExtractedText.trim());
-    fs.writeFileSync(filePath, sanitizedText);
+    await fs.promises.writeFile(filePath, sanitizedText);
 
     const downloadUrl = `${protocol}://${host}/texts/${conversationId}/${filename}`;
 
@@ -199,8 +205,8 @@ export class ProcessMessagesService {
 
     return this.processWithTimeout(
       async () => {
-        const response = await axios.get(url, { responseType: 'arraybuffer' });
-        const textContent = Buffer.from(response.data).toString('utf-8');
+        const response = await httpClient.get(url, { responseType: 'arraybuffer' });
+        const textContent = (response.data as Buffer).toString('utf-8');
         return sanitize(textContent);
       },
       PROCESSING_TIMEOUTS.TXT,
@@ -214,11 +220,11 @@ export class ProcessMessagesService {
 
     return this.processWithTimeout(
       async () => {
-        const response = await axios.get(url, { responseType: 'arraybuffer' });
-        const imageBuffer = Buffer.from(response.data);
+        const response = await httpClient.get(url, { responseType: 'arraybuffer' });
+        const imageBuffer = response.data as Buffer;
         const base64Image = imageBuffer.toString('base64');
 
-        const aiResponse = await this.openai.chat.completions.create(
+        const aiResponse = await openaiClient.chat.completions.create(
           {
             model: openaiConfig.models.vision,
             messages: [
@@ -251,8 +257,8 @@ export class ProcessMessagesService {
   private async processDocx({ fileId, url }: FileInput): Promise<Result<string, Error>> {
     return this.processWithTimeout(
       async () => {
-        const response = await axios.get(url, { responseType: 'arraybuffer' });
-        const buffer = Buffer.from(response.data);
+        const response = await httpClient.get(url, { responseType: 'arraybuffer' });
+        const buffer = response.data as Buffer;
         const result = await mammoth.extractRawText({ buffer });
         return sanitize(result.value);
       },
@@ -267,8 +273,8 @@ export class ProcessMessagesService {
 
     return this.processWithTimeout(
       async () => {
-        const response = await axios.get(url, { responseType: 'arraybuffer' });
-        const buffer = Buffer.from(response.data);
+        const response = await httpClient.get(url, { responseType: 'arraybuffer' });
+        const buffer = response.data as Buffer;
         const doc = await this.wordExtractor.extract(buffer);
         return sanitize(doc.getBody());
       },
@@ -283,9 +289,14 @@ export class ProcessMessagesService {
 
     return this.processWithTimeout(
       async () => {
-        const response = await axios.get(url, { responseType: 'arraybuffer' });
-        const buffer = Buffer.from(response.data);
-        const xlsxResult = processXLSXFile(buffer.buffer);
+        const response = await httpClient.get(url, { responseType: 'arraybuffer' });
+        const buffer = response.data as Buffer;
+        const xlsxResult = processXLSXFile(
+          buffer.buffer.slice(
+            buffer.byteOffset,
+            buffer.byteOffset + buffer.byteLength
+          ) as ArrayBuffer
+        );
         return xlsxToText(xlsxResult);
       },
       PROCESSING_TIMEOUTS.XLSX,
@@ -299,8 +310,8 @@ export class ProcessMessagesService {
 
     return this.processWithTimeout(
       async () => {
-        const response = await axios.get(url, { responseType: 'arraybuffer' });
-        const buffer = Buffer.from(response.data);
+        const response = await httpClient.get(url, { responseType: 'arraybuffer' });
+        const buffer = response.data as Buffer;
 
         const arrayBuffer = buffer.buffer.slice(
           buffer.byteOffset,
@@ -312,7 +323,7 @@ export class ProcessMessagesService {
           type: file.mimeType,
         }) as Uploadable;
 
-        const transcription = await this.openai.audio.transcriptions.create(
+        const transcription = await openaiClient.audio.transcriptions.create(
           {
             file: audioFile,
             model: openaiConfig.models.audio,
