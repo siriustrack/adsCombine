@@ -66,7 +66,7 @@ const workerFilePath = getWorkerFilePath();
 export const pdfWorkerPool = new Piscina({
   filename: workerFilePath,
   maxThreads: maxWorkers,
-  minThreads: maxWorkers,
+  minThreads: minWorkers,
   idleTimeout: 300000,
   maxQueue: 1000,
   concurrentTasksPerWorker: 1,
