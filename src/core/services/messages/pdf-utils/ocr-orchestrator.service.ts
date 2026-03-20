@@ -16,64 +16,6 @@ export interface OcrProcessingResult {
 export class OcrOrchestrator {
   private readonly chunkManager = new OcrChunkManager();
 
-  async sampleOcrPages(
-    buffer: Buffer,
-    totalPages: number,
-    fileId: string
-  ): Promise<{ pageSamples: { page: number; ocrTextLength: number }[] }> {
-    const pagesToSample = this.pickSamplePages(totalPages);
-
-    if (pagesToSample.length === 0) {
-      return { pageSamples: [] };
-    }
-
-    const tempPdf = tmp.fileSync({ postfix: '.pdf' });
-
-    try {
-      await fs.promises.writeFile(tempPdf.name, buffer);
-
-      const samples: { page: number; ocrTextLength: number }[] = [];
-
-      for (const page of pagesToSample) {
-        try {
-          const result = await pdfWorkerPool.run({
-            pageRange: { first: page, last: page },
-            pdfPath: tempPdf.name,
-            fileId,
-            totalPages,
-          });
-
-          const textLen = typeof result === 'string' ? result.trim().length : 0;
-          samples.push({ page, ocrTextLength: textLen });
-        } catch (error) {
-          logger.warn('OCR sample failed for page', {
-            fileId,
-            page,
-            error: (error as Error).message,
-          });
-          samples.push({ page, ocrTextLength: 0 });
-        }
-      }
-
-      return { pageSamples: samples };
-    } finally {
-      try {
-        tempPdf.removeCallback();
-      } catch {
-        // ignore
-      }
-    }
-  }
-
-  private pickSamplePages(totalPages: number): number[] {
-    if (totalPages <= 2) return [1];
-    if (totalPages <= 5) return [1, totalPages];
-
-    const mid = Math.ceil(totalPages / 2);
-    const lastThird = Math.ceil(totalPages * 0.75);
-    return [1, mid, lastThird];
-  }
-
   async processWithOcr(
     buffer: Buffer,
     totalPages: number,
