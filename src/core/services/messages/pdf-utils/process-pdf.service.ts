@@ -132,15 +132,41 @@ export class ProcessPdfService {
     });
 
     if (shouldSkipOcr) {
-      logger.info('Skipping OCR - text quality is sufficient', {
-        fileId,
-        qualityScore: qualityAnalysis.qualityScore,
-        textLength: extractedText.length,
-        totalPages,
-        charsPerPage: Math.round(charsPerPage),
-        reason: hasStrongDirectText ? 'strong-direct-text' : 'quality-analysis',
-      });
-      return okResult(sanitize(extractedText));
+      if (hasStrongDirectText && qualityAnalysis.hasOcrIndicators && totalPages >= 3) {
+        const needsOcr = await this.validateWithOcrSample(
+          downloadedFile.buffer,
+          totalPages,
+          charsPerPage,
+          fileId
+        );
+
+        if (needsOcr) {
+          logger.info('OCR sample detected image-heavy pages, proceeding with full OCR', {
+            fileId,
+            totalPages,
+          });
+        } else {
+          logger.info('Skipping OCR - sample confirmed text is sufficient', {
+            fileId,
+            qualityScore: qualityAnalysis.qualityScore,
+            textLength: extractedText.length,
+            totalPages,
+            charsPerPage: Math.round(charsPerPage),
+            reason: 'sample-validated',
+          });
+          return okResult(sanitize(extractedText));
+        }
+      } else {
+        logger.info('Skipping OCR - text quality is sufficient', {
+          fileId,
+          qualityScore: qualityAnalysis.qualityScore,
+          textLength: extractedText.length,
+          totalPages,
+          charsPerPage: Math.round(charsPerPage),
+          reason: hasStrongDirectText ? 'strong-direct-text' : 'quality-analysis',
+        });
+        return okResult(sanitize(extractedText));
+      }
     }
 
     if (qualityAnalysis.shouldSkipOcr && charsPerPage < minCharsPerPageToSkipOcr) {
@@ -182,6 +208,39 @@ export class ProcessPdfService {
     const finalText = this.combineTextResults(ocrResult.ocrText, fileId, ocrResult);
 
     return okResult(finalText);
+  }
+
+  private async validateWithOcrSample(
+    buffer: Buffer,
+    totalPages: number,
+    expectedCharsPerPage: number,
+    fileId: string
+  ): Promise<boolean> {
+    try {
+      const { pageSamples } = await this.ocrOrchestrator.sampleOcrPages(buffer, totalPages, fileId);
+
+      const threshold = expectedCharsPerPage * 0.4;
+
+      for (const sample of pageSamples) {
+        if (sample.ocrTextLength > threshold) {
+          logger.info('OCR sample page exceeds threshold', {
+            fileId,
+            page: sample.page,
+            ocrTextLength: sample.ocrTextLength,
+            threshold: Math.round(threshold),
+          });
+          return true;
+        }
+      }
+
+      return false;
+    } catch (error) {
+      logger.warn('OCR sample validation failed, defaulting to full OCR', {
+        fileId,
+        error: (error as Error).message,
+      });
+      return true;
+    }
   }
 
   private combineTextResults(
