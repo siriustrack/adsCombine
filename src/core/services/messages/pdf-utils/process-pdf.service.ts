@@ -142,7 +142,7 @@ export class ProcessPdfService {
     } else if (shouldSkipOcr) {
       if (hasStrongDirectText && qualityAnalysis.hasOcrIndicators) {
         const bytesPerPage = downloadedFile.buffer.byteLength / totalPages;
-        const fileSizeThresholdPerPage = 100_000;
+        const fileSizeThresholdPerPage = 50_000;
         const looksLikeScannedDoc = bytesPerPage > fileSizeThresholdPerPage;
 
         logger.info('PDF file-size heuristic', {
