@@ -1,7 +1,7 @@
 {
-  "name": "video-concat-service",
+  "name": "ocr-text-extraction-service",
   "version": "1.0.0",
-  "description": "Video concatenation service using Node.js and FFmpeg",
+  "description": "OCR and text extraction service for PDFs, documents, images, and audio",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsnd --env-file=.env --respawn --transpile-only --exit-child -r tsconfig-paths/register src/api/server.ts",
@@ -22,7 +22,6 @@
     "axios": "^1.11.0",
     "cors": "^2.8.6",
     "express": "^4.21.2",
-    "fluent-ffmpeg": "^2.1.3",
     "mammoth": "^1.9.1",
     "morgan": "^1.10.1",
     "multer": "^2.0.2",
@@ -30,7 +29,6 @@
     "p-limit": "^7.2.0",
     "pdf-parse": "^2.4.5",
     "piscina": "^5.1.3",
-    "serve-index": "^1.9.1",
     "tmp": "^0.2.3",
     "tsconfig-paths": "^4.2.0",
     "winston": "^3.19.0",
@@ -48,7 +46,6 @@
     "@types/morgan": "^1.9.10",
     "@types/node": "^20.19.9",
     "@types/pdf-parse": "^1.1.5",
-    "@types/serve-index": "^1.9.4",
     "@types/textract": "^2.4.5",
     "@types/tmp": "^0.2.6",
     "@types/word-extractor": "^1.0.6",

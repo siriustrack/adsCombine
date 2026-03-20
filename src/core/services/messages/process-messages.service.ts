@@ -9,11 +9,11 @@ import { TEXTS_DIR } from 'config/dirs';
 import { openaiConfig } from 'config/openai';
 import mammoth from 'mammoth';
 import { OpenAI } from 'openai';
+import type { Uploadable } from 'openai/uploads';
 import pLimit from 'p-limit';
 import { sanitize } from 'utils/sanitize';
 import { sanitizeText } from 'utils/textSanitizer';
 import WordExtractor from 'word-extractor';
-import type { Uploadable } from 'openai/uploads';
 import { ProcessPdfService } from './pdf-utils/process-pdf.service';
 import { processXLSXFile, xlsxToText } from './xlsx/xlsx-processor';
 
@@ -28,7 +28,15 @@ export class ProcessMessagesService {
   private readonly processPdfService = new ProcessPdfService();
   private readonly wordExtractor = new WordExtractor();
 
-  async execute({ messages, host, protocol }: { messages: ProcessMessage; protocol: string; host: string }) {
+  async execute({
+    messages,
+    host,
+    protocol,
+  }: {
+    messages: ProcessMessage;
+    protocol: string;
+    host: string;
+  }) {
     const processedFiles: string[] = [];
     const failedFiles: { fileId: string; error: string }[] = [];
     const extractedTexts: string[] = [];
@@ -39,7 +47,9 @@ export class ProcessMessagesService {
 
       if (files && files.length > 0) {
         const limit = pLimit(5); // Limit to 5 concurrent file processings
-        const promises = files.map((file) => limit(() => this.processAndHandleFile(file, extractedTexts)));
+        const promises = files.map((file) =>
+          limit(() => this.processAndHandleFile(file, extractedTexts))
+        );
         const results = await Promise.all(promises);
 
         results.forEach((result) => {
@@ -71,7 +81,7 @@ export class ProcessMessagesService {
     if (result.error) {
       logger.error('Failed to process file', {
         fileId: file.fileId,
-        error: result.error.message
+        error: result.error.message,
       });
       return { success: false, fileId: file.fileId, error: result.error.message };
     }
@@ -99,7 +109,7 @@ export class ProcessMessagesService {
       'vnd.openxmlformats-officedocument.wordprocessingml.document': () => this.processDocx(file),
       msword: () => this.processDoc(file), // .doc files are not supported
       'vnd.openxmlformats-officedocument.spreadsheetml.sheet': () => this.processXlsx(file),
-      'vnd.ms-excel': () => this.processXlsx(file) // Added support for .xls files
+      'vnd.ms-excel': () => this.processXlsx(file), // Added support for .xls files
     };
 
     const processor = fileTypeMap[fileType];
@@ -107,7 +117,7 @@ export class ProcessMessagesService {
     if (!processor) {
       logger.warn('Unsupported file type, skipping', {
         fileType,
-        fileId: file.fileId
+        fileId: file.fileId,
       });
       return errResult(new Error(`Unsupported file type: ${fileType}`));
     }
@@ -129,7 +139,7 @@ export class ProcessMessagesService {
     const { value, error } = await wrapPromiseResult<T, Error>(
       Promise.race([
         processor(),
-        new Promise<T>((_, reject) => setTimeout(() => reject(new Error(timeoutError)), timeout))
+        new Promise<T>((_, reject) => setTimeout(() => reject(new Error(timeoutError)), timeout)),
       ])
     );
 
@@ -137,7 +147,7 @@ export class ProcessMessagesService {
       logger.error(`Error processing ${fileType} file`, {
         fileId,
         error: error.message,
-        stack: error.stack
+        stack: error.stack,
       });
 
       if (error.message.includes('timed out')) {
@@ -180,7 +190,7 @@ export class ProcessMessagesService {
       processedFiles,
       failedFiles,
       filename,
-      downloadUrl
+      downloadUrl,
     };
   }
 
@@ -210,7 +220,7 @@ export class ProcessMessagesService {
 
         const aiResponse = await this.openai.chat.completions.create(
           {
-            model: openaiConfig.models.image,
+            model: openaiConfig.models.vision,
             messages: [
               {
                 role: 'user',
@@ -219,12 +229,12 @@ export class ProcessMessagesService {
                   {
                     type: 'image_url',
                     image_url: {
-                      url: `data:${file.mimeType};base64,${base64Image}`
-                    }
-                  }
-                ]
-              }
-            ]
+                      url: `data:${file.mimeType};base64,${base64Image}`,
+                    },
+                  },
+                ],
+              },
+            ],
           },
           { timeout: PROCESSING_TIMEOUTS.OPENAI }
         );
@@ -299,7 +309,7 @@ export class ProcessMessagesService {
 
         const fileName = path.basename(new URL(url).pathname) || 'audio';
         const audioFile = new File([arrayBuffer], fileName, {
-          type: file.mimeType
+          type: file.mimeType,
         }) as Uploadable;
 
         const transcription = await this.openai.audio.transcriptions.create(
@@ -307,7 +317,7 @@ export class ProcessMessagesService {
             file: audioFile,
             model: openaiConfig.models.audio,
             language: 'pt',
-            response_format: 'json'
+            response_format: 'json',
           },
           { timeout: PROCESSING_TIMEOUTS.OPENAI }
         );

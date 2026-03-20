@@ -68,8 +68,6 @@ ENV OMP_NUM_THREADS=1 \
     TESSERACT_NUM_THREADS=1
 # Caminho do tessdata (ajuda a evitar lookup extra)
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/4.00/tessdata
-# Desativa libvips global e usa a empacotada do sharp
-ENV SHARP_IGNORE_GLOBAL_LIBVIPS=1
 # (Opcional) Ajustar timezone e mem:
 # ENV TZ=America/Sao_Paulo
 # ENV NODE_OPTIONS=--max-old-space-size=1024
@@ -80,7 +78,6 @@ RUN groupadd -r appuser && useradd -r -g appuser appuser
 # Copia apenas o necessário
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/node_modules ./node_modules
-COPY assets-img/ ./assets-img/
 COPY --from=builder /app/dist ./dist
 
 # Pastas de trabalho
