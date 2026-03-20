@@ -1,3 +1,4 @@
+import { env } from '@config/env';
 import logger from '@lib/logger';
 import { errResult, okResult, type Result } from '@lib/result.types';
 import { sanitize } from 'utils/sanitize';
@@ -24,22 +25,19 @@ export class ProcessPdfService {
   }) {
     const pages = Math.max(1, totalPages || 0);
     const charsPerPage = extractedText.length / pages;
-    const minCharsPerPageToSkipOcr = pages <= 1 ? 300 : pages === 2 ? 650 : 900;
+    const minCharsPerPage = pages <= 1 ? 300 : pages === 2 ? 650 : 900;
     const hasStrongDirectText =
       qualityAnalysis.isHighQuality &&
       qualityAnalysis.hasSubstantialContent &&
       !qualityAnalysis.isRepetitive &&
-      charsPerPage >= minCharsPerPageToSkipOcr &&
+      charsPerPage >= minCharsPerPage &&
       extractedText.length >= 8000;
 
     return {
-      pages,
       charsPerPage,
-      minCharsPerPageToSkipOcr,
       hasStrongDirectText,
       shouldSkipOcr:
-        hasStrongDirectText ||
-        (qualityAnalysis.shouldSkipOcr && charsPerPage >= minCharsPerPageToSkipOcr),
+        hasStrongDirectText || (qualityAnalysis.shouldSkipOcr && charsPerPage >= minCharsPerPage),
     };
   }
 
@@ -49,23 +47,23 @@ export class ProcessPdfService {
     totalPages,
     qualityAnalysis,
     charsPerPage,
-    minCharsPerPageToSkipOcr,
     hasStrongDirectText,
+    ocrAlwaysThreshold,
   }: {
     fileId: string;
     extractedText: string;
     totalPages: number;
     qualityAnalysis: ReturnType<TextQualityAnalyzer['analyze']>;
     charsPerPage: number;
-    minCharsPerPageToSkipOcr: number;
     hasStrongDirectText: boolean;
+    ocrAlwaysThreshold: number;
   }) {
     logger.info('PDF OCR decision evaluated', {
       fileId,
       totalPages,
       textLength: extractedText.length,
       charsPerPage: Math.round(charsPerPage),
-      minCharsPerPageToSkipOcr,
+      ocrAlwaysThreshold,
       hasStrongDirectText,
       shouldSkipOcr: qualityAnalysis.shouldSkipOcr,
       isHighQuality: qualityAnalysis.isHighQuality,
@@ -113,13 +111,12 @@ export class ProcessPdfService {
       qualityAnalysis,
     });
 
-    // 4. Decisão sobre OCR
-    const { charsPerPage, minCharsPerPageToSkipOcr, hasStrongDirectText, shouldSkipOcr } =
-      this.shouldBypassOcr({
-        extractedText,
-        totalPages,
-        qualityAnalysis,
-      });
+    const ocrAlwaysThreshold = env.PDF_OCR_ALWAYS_THRESHOLD;
+    const { charsPerPage, hasStrongDirectText, shouldSkipOcr } = this.shouldBypassOcr({
+      extractedText,
+      totalPages,
+      qualityAnalysis,
+    });
 
     this.logOcrDecision({
       fileId,
@@ -127,39 +124,55 @@ export class ProcessPdfService {
       totalPages,
       qualityAnalysis,
       charsPerPage,
-      minCharsPerPageToSkipOcr,
       hasStrongDirectText,
+      ocrAlwaysThreshold,
     });
-
-    if (shouldSkipOcr) {
-      logger.info('Skipping OCR - text quality is sufficient', {
-        fileId,
-        qualityScore: qualityAnalysis.qualityScore,
-        textLength: extractedText.length,
-        totalPages,
-        charsPerPage: Math.round(charsPerPage),
-        reason: hasStrongDirectText ? 'strong-direct-text' : 'quality-analysis',
-      });
-      return okResult(sanitize(extractedText));
-    }
-
-    if (qualityAnalysis.shouldSkipOcr && charsPerPage < minCharsPerPageToSkipOcr) {
-      logger.info('Forcing OCR - extracted text too short per page', {
-        fileId,
-        qualityScore: qualityAnalysis.qualityScore,
-        textLength: extractedText.length,
-        totalPages,
-        charsPerPage: Math.round(charsPerPage),
-        minCharsPerPageToSkipOcr,
-      });
-    }
 
     if (totalPages === 0) {
       logger.warn('No pages found in PDF', { fileId });
       return okResult(sanitize(extractedText));
     }
 
-    // 5. Processamento OCR
+    if (totalPages <= ocrAlwaysThreshold) {
+      logger.info('Running OCR - document within always-OCR threshold', {
+        fileId,
+        totalPages,
+        ocrAlwaysThreshold,
+      });
+    } else if (shouldSkipOcr) {
+      if (hasStrongDirectText && qualityAnalysis.hasOcrIndicators) {
+        const needsOcr = await this.validateWithOcrSample(
+          downloadedFile.buffer,
+          totalPages,
+          charsPerPage,
+          fileId
+        );
+
+        if (!needsOcr) {
+          logger.info('Skipping OCR - sample confirmed text is sufficient', {
+            fileId,
+            totalPages,
+            charsPerPage: Math.round(charsPerPage),
+            reason: 'sample-validated',
+          });
+          return okResult(sanitize(extractedText));
+        }
+
+        logger.info('OCR sample detected image-heavy pages, proceeding with full OCR', {
+          fileId,
+          totalPages,
+        });
+      } else {
+        logger.info('Skipping OCR - text quality is sufficient', {
+          fileId,
+          totalPages,
+          charsPerPage: Math.round(charsPerPage),
+          reason: hasStrongDirectText ? 'strong-direct-text' : 'quality-analysis',
+        });
+        return okResult(sanitize(extractedText));
+      }
+    }
+
     logger.info('Starting OCR processing', {
       fileId,
       totalPages,
@@ -182,6 +195,39 @@ export class ProcessPdfService {
     const finalText = this.combineTextResults(ocrResult.ocrText, fileId, ocrResult);
 
     return okResult(finalText);
+  }
+
+  private async validateWithOcrSample(
+    buffer: Buffer,
+    totalPages: number,
+    expectedCharsPerPage: number,
+    fileId: string
+  ): Promise<boolean> {
+    try {
+      const { pageSamples } = await this.ocrOrchestrator.sampleOcrPages(buffer, totalPages, fileId);
+
+      const threshold = expectedCharsPerPage * 0.4;
+
+      for (const sample of pageSamples) {
+        if (sample.ocrTextLength > threshold) {
+          logger.info('OCR sample page exceeds threshold', {
+            fileId,
+            page: sample.page,
+            ocrTextLength: sample.ocrTextLength,
+            threshold: Math.round(threshold),
+          });
+          return true;
+        }
+      }
+
+      return false;
+    } catch (error) {
+      logger.warn('OCR sample validation failed, defaulting to full OCR', {
+        fileId,
+        error: (error as Error).message,
+      });
+      return true;
+    }
   }
 
   private combineTextResults(
