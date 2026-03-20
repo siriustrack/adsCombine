@@ -18,10 +18,16 @@ process.env.TESSERACT_NUM_THREADS = '1';
 
 // Detecta caminho correto do tessdata (dev vs produção)
 if (!process.env.TESSDATA_PREFIX) {
-  if (fs.existsSync('/usr/share/tesseract-ocr/4.00/tessdata')) {
-    process.env.TESSDATA_PREFIX = '/usr/share/tesseract-ocr/4.00/tessdata';
-  } else if (fs.existsSync('/usr/share/tessdata')) {
-    process.env.TESSDATA_PREFIX = '/usr/share/tessdata';
+  const candidates = [
+    '/usr/share/tesseract-ocr/5/tessdata',
+    '/usr/share/tesseract-ocr/4.00/tessdata',
+    '/usr/share/tessdata',
+  ];
+  for (const dir of candidates) {
+    if (fs.existsSync(dir)) {
+      process.env.TESSDATA_PREFIX = dir;
+      break;
+    }
   }
 }
 
@@ -216,8 +222,6 @@ function preprocessWithMagick(inputPng, outputPng, { scalePercent, threshold }) 
   // - optional adaptive threshold for washed-out scans
   const cmd = magickCmd();
   const deskew = getEnvFloat('PDF_OCR_DESKEW', 40);
-  const stretch = getEnvStr('PDF_OCR_CONTRAST_STRETCH', '0x12%');
-  const sharpen = getEnvStr('PDF_OCR_SHARPEN', '0x1.0');
   const thresholdArgs = threshold
     ? {
         adaptive: getEnvStr('PDF_OCR_ADAPTIVE_THRESHOLD', '35x35+10%'),
@@ -236,24 +240,18 @@ function preprocessWithMagick(inputPng, outputPng, { scalePercent, threshold }) 
     '-deskew',
     `${deskew}%`,
     '-normalize',
-    '-contrast-stretch',
-    stretch,
-    '-filter',
-    'Lanczos',
-    '-resize',
-    `${scalePercent}%`,
-    '-sharpen',
-    sharpen,
   ];
 
+  if (scalePercent !== 100) {
+    parts.push('-filter', 'Lanczos', '-resize', `${scalePercent}%`);
+  }
+
   if (thresholdArgs) {
-    // Some ImageMagick builds don't ship -adaptive-threshold; prefer -lat when available.
     if (HAS_MAGICK_ADAPTIVE_THRESHOLD) {
       parts.push('-adaptive-threshold', thresholdArgs.adaptive);
     } else if (HAS_MAGICK_LAT) {
       parts.push('-lat', thresholdArgs.lat);
     } else {
-      // Last-resort: global threshold
       parts.push('-threshold', thresholdArgs.hard);
     }
   }
@@ -304,22 +302,17 @@ function performOcrOnPages(pngs, env) {
   const lang = pickLanguage();
   const oem = getEnvInt('PDF_OCR_OEM', 1);
   const dpi = getEnvInt('PDF_OCR_DPI', 300);
-  // In practice, registry scans with margins/columns often work better with PSM 4.
-  // Keep a fallback to PSM 6 for more "single-block" pages.
   const preferredPsm = getEnvInt('PDF_OCR_PSM', 4);
   const fallbackPsm = getEnvInt('PDF_OCR_PSM_FALLBACK', 6);
-  const maxAttempts = getEnvInt('PDF_OCR_MAX_ATTEMPTS', 3);
-  const goodEnoughConfidence = getEnvInt('PDF_OCR_GOOD_CONF', 84);
-  const goodEnoughMinChars = getEnvInt('PDF_OCR_GOOD_MIN_CHARS', 350);
-  const goodEnoughMinWords = getEnvInt('PDF_OCR_GOOD_MIN_WORDS', 40);
+  const maxAttempts = getEnvInt('PDF_OCR_MAX_ATTEMPTS', 2);
+  const goodEnoughConfidence = getEnvInt('PDF_OCR_GOOD_CONF', 78);
+  const goodEnoughMinChars = getEnvInt('PDF_OCR_GOOD_MIN_CHARS', 300);
+  const goodEnoughMinWords = getEnvInt('PDF_OCR_GOOD_MIN_WORDS', 30);
 
   for (let pageIndex = 0; pageIndex < pngs.length; pageIndex++) {
     const png = pngs[pageIndex];
 
-    // Upscale a bit even after rasterization to help tiny fonts.
-    // Default tuned to be faster while still helping small fonts.
-    const defaultScale = dpi >= 320 ? 130 : 140;
-    const scalePercent = getEnvInt('PDF_OCR_SCALE', defaultScale);
+    const scalePercent = getEnvInt('PDF_OCR_SCALE', 100);
 
     // Lazy preprocessing (only if needed) to reduce time.
     const workDir = path.dirname(png);
