@@ -1,8 +1,10 @@
 import { env } from '@config/env';
+import { swaggerSpec } from '@config/swagger';
 import cors from 'cors';
 import express from 'express';
 import logger from 'lib/logger';
 import morgan from 'morgan';
+import swaggerUi from 'swagger-ui-express';
 import { handleAuthMiddleware, handleGlobalRequestExceptions } from './middlewares';
 import router from './routes';
 
@@ -25,6 +27,7 @@ app.use(
 
 app.use(handleGlobalRequestExceptions);
 app.use(handleAuthMiddleware);
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 app.use(router);
 
 function serializeError(reason: unknown) {
