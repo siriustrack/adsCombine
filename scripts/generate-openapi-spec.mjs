@@ -1,6 +1,10 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import swaggerJsdoc from 'swagger-jsdoc';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const rootDir = resolve(__dirname, '..');
 
 const definition = {
   openapi: '3.0.0',
@@ -10,12 +14,7 @@ const definition = {
     description:
       'OCR e serviço de extração de texto para PDFs, documentos, imagens e áudio. Processa mensagens com anexos de arquivos, transcreve áudio e gerencia textos extraídos.',
   },
-  servers: [
-    {
-      url: 'http://localhost:3000',
-      description: 'Servidor de desenvolvimento',
-    },
-  ],
+  servers: [{ url: 'http://localhost:3000', description: 'Servidor de desenvolvimento' }],
   components: {
     securitySchemes: {
       BearerAuth: {
@@ -44,15 +43,11 @@ const definition = {
       },
       Error401: {
         type: 'object',
-        properties: {
-          error: { type: 'string', example: 'Unauthorized' },
-        },
+        properties: { error: { type: 'string', example: 'Unauthorized' } },
       },
       Error403: {
         type: 'object',
-        properties: {
-          error: { type: 'string', example: 'Forbidden' },
-        },
+        properties: { error: { type: 'string', example: 'Forbidden' } },
       },
       Error413: {
         type: 'object',
@@ -78,19 +73,19 @@ const definition = {
       },
     },
   },
-} as const;
+};
 
-const staticSpecPath = resolve(__dirname, '../../openapi.json');
+const spec = swaggerJsdoc({
+  definition,
+  apis: [resolve(rootDir, 'src/api/routes/*.ts')],
+});
 
-function loadSwaggerSpec(): object {
-  if (existsSync(staticSpecPath)) {
-    return JSON.parse(readFileSync(staticSpecPath, 'utf-8'));
-  }
+const distDir = resolve(rootDir, 'dist');
+if (!existsSync(distDir)) mkdirSync(distDir, { recursive: true });
 
-  return swaggerJsdoc({
-    definition,
-    apis: ['./src/api/routes/*.ts'],
-  });
-}
+const outputPath = resolve(distDir, 'openapi.json');
+writeFileSync(outputPath, JSON.stringify(spec, null, 2));
 
-export const swaggerSpec = loadSwaggerSpec();
+const paths = Object.keys(spec.paths || {});
+console.log(`✓ OpenAPI spec generated → ${outputPath}`);
+console.log(`  Routes: ${paths.length > 0 ? paths.join(', ') : 'none'}`);
