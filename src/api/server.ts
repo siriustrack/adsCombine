@@ -5,6 +5,7 @@ import express from 'express';
 import logger from 'lib/logger';
 import morgan from 'morgan';
 import swaggerUi from 'swagger-ui-express';
+import { OcrOrchestrator } from '@core/services/messages/pdf-utils/ocr-orchestrator.service';
 import { handleAuthMiddleware, handleGlobalRequestExceptions } from './middlewares';
 import router from './routes';
 
@@ -58,6 +59,13 @@ process.on('uncaughtException', (err) => {
   logger.error('Uncaught Exception:', serializeError(err));
   process.exit(1);
 });
-app.listen(env.PORT, () => {
-  logger.info(`Server running on port ${env.PORT} `);
+app.listen(env.PORT, async () => {
+  logger.info(`Server running on port ${env.PORT}`);
+
+  const pdfinfo = await OcrOrchestrator.checkPdfinfo();
+  if (!pdfinfo.available) {
+    logger.warn('pdfinfo not found in PATH — PDF OCR will be skipped for all documents');
+  } else {
+    logger.info(`pdfinfo available (version ${pdfinfo.version})`);
+  }
 });

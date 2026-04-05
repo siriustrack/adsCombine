@@ -7,6 +7,7 @@ const envSchema = z.object({
   PORT: z.coerce.number().default(3000),
   PROCESSING_CONCURRENCY: z.coerce.number().default(5),
   PDF_OCR_ALWAYS_THRESHOLD: z.coerce.number().default(5),
+  PDF_BYTES_PER_PAGE_THRESHOLD: z.coerce.number().default(50_000),
   TOKEN: z.string().min(1),
   // Toggle to enable/disable request/route logs ("true"/"false")
   REQUEST_LOGS_ENABLED: z.coerce.boolean().default(false),

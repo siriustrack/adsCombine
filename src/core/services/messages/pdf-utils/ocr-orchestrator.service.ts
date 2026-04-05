@@ -1,4 +1,6 @@
+import { execFile as execFileCb } from 'node:child_process';
 import fs from 'node:fs';
+import { promisify } from 'node:util';
 import { PROCESSING_TIMEOUTS } from '@config/constants';
 import logger from '@lib/logger';
 import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types';
@@ -15,6 +17,38 @@ export interface OcrProcessingResult {
 
 export class OcrOrchestrator {
   private readonly chunkManager = new OcrChunkManager();
+  private readonly execFile = promisify(execFileCb);
+
+  static async checkPdfinfo(): Promise<{ available: boolean; version?: string }> {
+    try {
+      const execAsync = promisify(execFileCb);
+      const { stdout } = await execAsync('pdfinfo', ['-v'], { timeout: 5_000 });
+      const versionMatch = stdout.match(/(\d+\.\d+\.\d+)/);
+      return { available: true, version: versionMatch?.[1] };
+    } catch {
+      return { available: false };
+    }
+  }
+
+  private async validatePdfStructure(
+    pdfPath: string,
+    fileId: string
+  ): Promise<{ valid: boolean; pageCount: number }> {
+    try {
+      const { stdout } = await this.execFile('pdfinfo', [pdfPath], {
+        timeout: 10_000,
+      });
+      const pagesMatch = stdout.match(/Pages:\s+(\d+)/);
+      const pageCount = pagesMatch ? parseInt(pagesMatch[1], 10) : 0;
+      return { valid: pageCount > 0, pageCount };
+    } catch (error) {
+      logger.warn('PDF structure validation failed (pdfinfo)', {
+        fileId,
+        error: (error as Error).message,
+      });
+      return { valid: false, pageCount: 0 };
+    }
+  }
 
   async processWithOcr(
     buffer: Buffer,
@@ -32,29 +66,55 @@ export class OcrOrchestrator {
       });
     }
 
-    // Criar chunks de processamento
-    const chunks = this.chunkManager.createProcessingChunks(totalPages, fileId);
-
-    if (chunks.length === 0) {
-      return okResult({
-        ocrText: '',
-        chunksProcessed: 0,
-        processingTime: Date.now() - startTime,
-      });
-    }
-
-    // Criar arquivo temporário
+    // Criar arquivo temporário antes de validar
     const tempPdf = tmp.fileSync({ postfix: '.pdf' });
 
     try {
       await fs.promises.writeFile(tempPdf.name, buffer);
+
+      // Validar estrutura do PDF com poppler (mesmo engine do pdftoppm)
+      const validation = await this.validatePdfStructure(tempPdf.name, fileId);
+
+      if (!validation.valid) {
+        logger.warn('PDF failed poppler structure validation, skipping OCR', {
+          fileId,
+          declaredPages: totalPages,
+          popplerPages: validation.pageCount,
+        });
+        return okResult({
+          ocrText: '',
+          chunksProcessed: 0,
+          processingTime: Date.now() - startTime,
+        });
+      }
+
+      // Usar page count validado (poppler é autoritativo para pdftoppm)
+      const effectivePages = validation.pageCount;
+      if (effectivePages !== totalPages) {
+        logger.warn('Page count mismatch: pdf-parse vs pdfinfo', {
+          fileId,
+          pdfParsePages: totalPages,
+          pdfInfoPages: effectivePages,
+        });
+      }
+
+      // Criar chunks com page count validado
+      const chunks = this.chunkManager.createProcessingChunks(effectivePages, fileId);
+
+      if (chunks.length === 0) {
+        return okResult({
+          ocrText: '',
+          chunksProcessed: 0,
+          processingTime: Date.now() - startTime,
+        });
+      }
 
       // Processar chunks em paralelo
       const { value: ocrResults, error: ocrError } = await this.processChunksInParallel(
         chunks,
         tempPdf.name,
         fileId,
-        totalPages
+        effectivePages
       );
 
       if (ocrError) {
@@ -67,7 +127,7 @@ export class OcrOrchestrator {
 
       logger.info('OCR processing completed', {
         fileId,
-        totalPages,
+        totalPages: effectivePages,
         chunksProcessed: chunks.length,
         ocrTextLength: ocrText.length,
         processingTime,

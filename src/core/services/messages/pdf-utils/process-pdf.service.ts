@@ -142,15 +142,14 @@ export class ProcessPdfService {
     } else if (shouldSkipOcr) {
       if (hasStrongDirectText && qualityAnalysis.hasOcrIndicators) {
         const bytesPerPage = downloadedFile.buffer.byteLength / totalPages;
-        const fileSizeThresholdPerPage = 50_000;
-        const looksLikeScannedDoc = bytesPerPage > fileSizeThresholdPerPage;
+        const looksLikeScannedDoc = bytesPerPage > env.PDF_BYTES_PER_PAGE_THRESHOLD;
 
         logger.info('PDF file-size heuristic', {
           fileId,
           totalBytes: downloadedFile.buffer.byteLength,
           totalPages,
           bytesPerPage: Math.round(bytesPerPage),
-          fileSizeThresholdPerPage,
+          bytesPerPageThreshold: env.PDF_BYTES_PER_PAGE_THRESHOLD,
           looksLikeScannedDoc,
         });
 
@@ -187,21 +186,45 @@ export class ProcessPdfService {
       extractedTextLength: extractedText.length,
     });
 
+    return this.runOcrWithFallback(downloadedFile.buffer, totalPages, fileId, extractedText);
+  }
+
+  private async runOcrWithFallback(
+    buffer: Buffer,
+    totalPages: number,
+    fileId: string,
+    extractedText: string
+  ): Promise<Result<string, Error>> {
     const { value: ocrResult, error: ocrError } = await this.ocrOrchestrator.processWithOcr(
-      downloadedFile.buffer,
+      buffer,
       totalPages,
       fileId
     );
 
     if (ocrError) {
       logger.error('OCR processing failed', { fileId, error: ocrError.message });
+
+      if (extractedText.trim().length > 0) {
+        logger.info('OCR failed, falling back to direct text extraction', {
+          fileId,
+          extractedTextLength: extractedText.length,
+        });
+        return okResult(sanitize(extractedText));
+      }
+
       return errResult(ocrError);
     }
 
-    // 6. Combinação dos resultados
-    const finalText = this.combineTextResults(ocrResult.ocrText, fileId, ocrResult);
+    if (!ocrResult.ocrText.trim() && extractedText.trim().length > 0) {
+      logger.info('OCR produced no text, using direct extraction as fallback', {
+        fileId,
+        chunksProcessed: ocrResult.chunksProcessed,
+        extractedTextLength: extractedText.length,
+      });
+      return okResult(sanitize(extractedText));
+    }
 
-    return okResult(finalText);
+    return okResult(this.combineTextResults(ocrResult.ocrText, fileId, ocrResult));
   }
 
   private combineTextResults(
