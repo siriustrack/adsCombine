@@ -27,7 +27,13 @@ async function createService({
   ocrPages = [],
 }: {
   totalPages: number;
-  pages: Array<{ pageNumber: number; text: string }>;
+  pages: Array<{
+    pageNumber: number;
+    text: string;
+    embeddedImageCount?: number;
+    tableCount?: number;
+    hasVisualContent?: boolean;
+  }>;
   ocrPages?: Array<{ pageNumber: number; text: string }>;
 }) {
   const { ProcessPdfService } = await import(
@@ -46,7 +52,12 @@ async function createService({
         value: {
           text: pages.map((page) => page.text).join('\n\n'),
           totalPages,
-          pages,
+          pages: pages.map((page) => ({
+            embeddedImageCount: 0,
+            tableCount: 0,
+            hasVisualContent: false,
+            ...page,
+          })),
         },
         error: null,
       };
@@ -109,6 +120,29 @@ describe('ProcessPdfService mixed-page mode', () => {
     const text = result.value ?? '';
     expect(text.indexOf('PAGINA NATIVA 1')).toBeLessThan(text.indexOf('PAGINA OCR 2'));
     expect(text.indexOf('PAGINA OCR 2')).toBeLessThan(text.indexOf('PAGINA NATIVA 3'));
+  });
+
+  test('runs OCR on pages with visual content even when native text is strong', async () => {
+    const service = await createService({
+      totalPages: 1,
+      pages: [
+        {
+          pageNumber: 1,
+          text: `PAGINA COM TABELA VISUAL ${strongNativeText}`,
+          embeddedImageCount: 1,
+          hasVisualContent: true,
+        },
+      ],
+      ocrPages: [{ pageNumber: 1, text: 'VALORES EXTRAIDOS DA TABELA VISUAL' }],
+    });
+
+    const result = await service.execute(
+      { fileId: 'visual-table-pdf', url: 'https://example.com/visual.pdf', mimeType: 'application/pdf' },
+      { mode: 'mixed-page' }
+    );
+
+    expect(result.error).toBeNull();
+    expect(result.value).toContain('VALORES EXTRAIDOS DA TABELA VISUAL');
   });
 
   test('fails before OCR when PDF page limit is exceeded', async () => {

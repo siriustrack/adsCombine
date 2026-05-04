@@ -5,6 +5,7 @@ import { sanitize } from 'utils/sanitize';
 import type { FileInput } from '../process-messages.service';
 import { FileDownloadService } from './file-download.service';
 import { OcrOrchestrator } from './ocr-orchestrator.service';
+import type { PdfPageText } from './pdf-text-extractor.service';
 import { PdfTextExtractorService } from './pdf-text-extractor.service';
 import { TextQualityAnalyzer } from './text-quality-analyzer.service';
 
@@ -229,12 +230,12 @@ export class ProcessPdfService {
 
   private async processMixedPagePdf(
     buffer: Buffer,
-    textData: { text: string; totalPages: number; pages: Array<{ pageNumber: number; text: string }> },
+    textData: { text: string; totalPages: number; pages: PdfPageText[] },
     fileId: string,
     options: ProcessPdfOptions
   ): Promise<Result<string, Error>> {
     const pages = this.normalizePages(textData);
-    const pagesToOcr = pages.filter((page) => this.shouldOcrPage(page.text));
+    const pagesToOcr = pages.filter((page) => this.shouldOcrPage(page));
 
     if (options.maxOcrPagesPerPdf && pagesToOcr.length > options.maxOcrPagesPerPdf) {
       return errResult(
@@ -312,20 +313,32 @@ export class ProcessPdfService {
 
   private normalizePages(textData: {
     totalPages: number;
-    pages: Array<{ pageNumber: number; text: string }>;
-  }): Array<{ pageNumber: number; text: string }> {
-    const byPage = new Map(textData.pages.map((page) => [page.pageNumber, page.text]));
-    const pages: Array<{ pageNumber: number; text: string }> = [];
+    pages: PdfPageText[];
+  }): PdfPageText[] {
+    const byPage = new Map(textData.pages.map((page) => [page.pageNumber, page]));
+    const pages: PdfPageText[] = [];
 
     for (let pageNumber = 1; pageNumber <= textData.totalPages; pageNumber++) {
-      pages.push({ pageNumber, text: byPage.get(pageNumber) ?? '' });
+      pages.push(
+        byPage.get(pageNumber) ?? {
+          pageNumber,
+          text: '',
+          embeddedImageCount: 0,
+          tableCount: 0,
+          hasVisualContent: false,
+        }
+      );
     }
 
     return pages;
   }
 
-  private shouldOcrPage(pageText: string): boolean {
-    const analysis = this.textQualityAnalyzer.analyzePage(pageText);
+  private shouldOcrPage(page: PdfPageText): boolean {
+    if (page.hasVisualContent) {
+      return true;
+    }
+
+    const analysis = this.textQualityAnalyzer.analyzePage(page.text);
     return !analysis.shouldSkipOcr && (!analysis.isHighQuality || analysis.hasOcrIndicators);
   }
 
