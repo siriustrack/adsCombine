@@ -15,6 +15,17 @@ export interface OcrProcessingResult {
   processingTime: number;
 }
 
+export interface OcrPageResult {
+  pageNumber: number;
+  text: string;
+}
+
+export interface OcrPagesProcessingResult {
+  pages: OcrPageResult[];
+  chunksProcessed: number;
+  processingTime: number;
+}
+
 export class OcrOrchestrator {
   private readonly chunkManager = new OcrChunkManager();
   private readonly execFile = promisify(execFileCb);
@@ -154,6 +165,77 @@ export class OcrOrchestrator {
     }
   }
 
+  async processPagesWithOcr(
+    buffer: Buffer,
+    totalPages: number,
+    fileId: string,
+    pageNumbers: number[]
+  ): Promise<Result<OcrPagesProcessingResult, Error>> {
+    const startTime = Date.now();
+    const selectedPages = [...new Set(pageNumbers)].filter((page) => page >= 1).sort((a, b) => a - b);
+
+    if (selectedPages.length === 0) {
+      return okResult({ pages: [], chunksProcessed: 0, processingTime: Date.now() - startTime });
+    }
+
+    const tempPdf = tmp.fileSync({ postfix: '.pdf' });
+
+    try {
+      await fs.promises.writeFile(tempPdf.name, buffer);
+      const validation = await this.validatePdfStructure(tempPdf.name, fileId);
+
+      if (!validation.valid) {
+        logger.warn('PDF failed poppler structure validation, skipping selected-page OCR', {
+          fileId,
+          declaredPages: totalPages,
+          popplerPages: validation.pageCount,
+        });
+        return okResult({ pages: [], chunksProcessed: 0, processingTime: Date.now() - startTime });
+      }
+
+      const effectivePages = validation.pageCount;
+      const validSelectedPages = selectedPages.filter((page) => page <= effectivePages);
+      const chunks = this.chunkManager.createProcessingChunksForPages(validSelectedPages, fileId);
+
+      const { value: pages, error } = await this.processPageChunksInParallel(
+        chunks,
+        tempPdf.name,
+        fileId,
+        effectivePages
+      );
+
+      if (error) {
+        return errResult(error);
+      }
+
+      const processingTime = Date.now() - startTime;
+
+      logger.info('Selected-page OCR processing completed', {
+        fileId,
+        totalPages: effectivePages,
+        selectedPages: validSelectedPages.length,
+        chunksProcessed: chunks.length,
+        processingTime,
+      });
+
+      return okResult({
+        pages: pages.sort((a, b) => a.pageNumber - b.pageNumber),
+        chunksProcessed: chunks.length,
+        processingTime,
+      });
+    } finally {
+      try {
+        tempPdf.removeCallback();
+      } catch (error) {
+        logger.warn('Failed to cleanup temporary PDF file', {
+          fileId,
+          tempFile: tempPdf.name,
+          error: (error as Error).message,
+        });
+      }
+    }
+  }
+
   private async processChunksInParallel(
     chunks: PageChunk[],
     pdfPath: string,
@@ -219,6 +301,46 @@ export class OcrOrchestrator {
     }
 
     return okResult(ocrResults);
+  }
+
+  private async processPageChunksInParallel(
+    chunks: PageChunk[],
+    pdfPath: string,
+    fileId: string,
+    totalPages: number
+  ): Promise<Result<OcrPageResult[], Error>> {
+    const { promise: timeoutPromise, timer } = this.createTimeoutPromise(
+      PROCESSING_TIMEOUTS.PDF_GLOBAL
+    );
+
+    const ocrPromise = Promise.all(
+      chunks.map(async (chunk) => {
+        const result = await pdfWorkerPool.run({
+          pageRange: chunk,
+          pdfPath,
+          fileId,
+          totalPages,
+          structuredPages: true,
+        });
+
+        return Array.isArray(result?.pages) ? (result.pages as OcrPageResult[]) : [];
+      })
+    );
+
+    const { value: chunkResults, error } = await wrapPromiseResult<OcrPageResult[][], Error>(
+      Promise.race([ocrPromise, timeoutPromise]).finally(() => clearTimeout(timer))
+    );
+
+    if (error) {
+      logger.error('Error in selected-page OCR processing', {
+        fileId,
+        error: error.message,
+        chunksCount: chunks.length,
+      });
+      return errResult(new Error(`Erro no processamento OCR: ${error.message}`));
+    }
+
+    return okResult(chunkResults.flat());
   }
 
   private createTimeoutPromise(timeout: number): {

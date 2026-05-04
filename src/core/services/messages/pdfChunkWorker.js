@@ -204,6 +204,15 @@ function scoreOcrResult({ text, meanConfidence, wordCount }) {
   return confScore * 1.0 + lengthScore * 1.0 + wordsScore * 1.2;
 }
 
+function collectPageOcrResult({ structuredPages, pages, texts, pageNumber, text }) {
+  if (structuredPages) {
+    pages.push({ pageNumber, text });
+    return;
+  }
+
+  texts.push(text);
+}
+
 function runTesseractTsv(imagePath, { lang, oem, psm, dpi, env }) {
   // Use TSV output to get confidence; we also reconstruct text from the TSV.
   // Note: `--dpi` exists in tesseract 5.x and helps some scans.
@@ -297,8 +306,12 @@ function generatePngPages(pdfPath, workDir, resolution, rasterFrom, rasterTo) {
     .map((f) => path.join(workDir, f));
 }
 
-function performOcrOnPages(pngs, env) {
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: OCR attempts intentionally preserve the tuned fallback sequence while adding optional page metadata.
+function performOcrOnPages(pngs, env, options = {}) {
   const texts = [];
+  const pages = [];
+  const pageOffset = options.pageOffset || 1;
+  const structuredPages = options.structuredPages === true;
   const lang = pickLanguage();
   const oem = getEnvInt('PDF_OCR_OEM', 1);
   const dpi = getEnvInt('PDF_OCR_DPI', 300);
@@ -424,18 +437,25 @@ function performOcrOnPages(pngs, env) {
     }
 
     if (best?.text?.trim()) {
+      const pageNumber = pageOffset + pageIndex;
       logWorkerInfo(`[Worker ${process.pid}] Best OCR selected`, {
-        pageIndex: pageIndex + 1,
+        pageIndex: pageNumber,
         selected: bestMeta,
         meanConfidence: Number(best.meanConfidence?.toFixed?.(2) ?? best.meanConfidence),
         wordCount: best.wordCount,
         textLength: best.text.length,
       });
-      texts.push(best.text.trim());
+      collectPageOcrResult({
+        structuredPages,
+        pages,
+        texts,
+        pageNumber,
+        text: best.text.trim(),
+      });
     }
   }
 
-  return texts.join('\n\n');
+  return structuredPages ? pages : texts.join('\n\n');
 }
 
 function logProgress(fileId, pageRange, pngs, resolution, ocrMs, totalMs) {
@@ -465,7 +485,7 @@ function logError(fileId, pageRange, totalDuration, error) {
 // -----------------------------------------------------------------------------
 module.exports = async function worker(payload) {
   const t0 = Date.now();
-  const { pageRange, pdfPath, fileId } = payload;
+  const { pageRange, pdfPath, fileId, structuredPages } = payload;
 
   const tempDir = tmp.dirSync({ unsafeCleanup: true });
   const workDir = tempDir.name;
@@ -501,10 +521,17 @@ module.exports = async function worker(payload) {
     }
 
     const t1 = Date.now();
-    const text = performOcrOnPages(pngs, env);
+    const text = performOcrOnPages(pngs, env, {
+      pageOffset: pageRange.first,
+      structuredPages,
+    });
     const t2 = Date.now();
 
     logProgress(fileId, pageRange, pngs, resolution, t2 - t1, t2 - t0);
+
+    if (structuredPages) {
+      return { pages: Array.isArray(text) ? text : [] };
+    }
 
     const cleaned = text?.trim();
     return cleaned;

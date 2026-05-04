@@ -37,4 +37,39 @@ export class OcrChunkManager {
 
     return chunks;
   }
+
+  createProcessingChunksForPages(pageNumbers: number[], fileId: string): PageChunk[] {
+    const uniquePages = [...new Set(pageNumbers)].sort((a, b) => a - b);
+
+    if (uniquePages.length === 0) {
+      logger.warn('Nenhuma página selecionada para OCR', { fileId });
+      return [];
+    }
+
+    const chunks: PageChunk[] = [];
+    let first = uniquePages[0];
+    let last = uniquePages[0];
+
+    for (const page of uniquePages.slice(1)) {
+      if (page === last + 1) {
+        last = page;
+        continue;
+      }
+
+      chunks.push({ first, last });
+      first = page;
+      last = page;
+    }
+
+    chunks.push({ first, last });
+
+    logger.debug('Created selected-page processing chunks', {
+      fileId,
+      pagesCount: uniquePages.length,
+      chunksCount: chunks.length,
+      chunks: chunks.map((chunk) => `${chunk.first}-${chunk.last}`),
+    });
+
+    return chunks;
+  }
 }
