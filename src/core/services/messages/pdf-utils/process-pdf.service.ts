@@ -8,6 +8,24 @@ import { OcrOrchestrator } from './ocr-orchestrator.service';
 import { PdfTextExtractorService } from './pdf-text-extractor.service';
 import { TextQualityAnalyzer } from './text-quality-analyzer.service';
 
+type ProcessPdfOptions = {
+  maxFileBytes?: number;
+  mode?: 'legacy' | 'mixed-page';
+  maxPdfPages?: number;
+  maxOcrPagesPerPdf?: number;
+  ocrPageBudget?: {
+    reserve(pageCount: number): boolean;
+    remaining(): number;
+  };
+};
+
+class PdfLimitError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+    this.name = 'PdfLimitError';
+  }
+}
+
 export class ProcessPdfService {
   private readonly fileDownloadService = new FileDownloadService();
   private readonly textExtractorService = new PdfTextExtractorService();
@@ -76,7 +94,7 @@ export class ProcessPdfService {
 
   async execute(
     file: FileInput,
-    options: { maxFileBytes?: number } = {}
+    options: ProcessPdfOptions = {}
   ): Promise<Result<string, Error>> {
     const { fileId, url } = file;
 
@@ -104,7 +122,24 @@ export class ProcessPdfService {
 
     const { text: extractedText, totalPages } = textData;
 
-    // 3. Análise de qualidade do texto
+    const pageLimitError = this.validatePdfPageLimit(totalPages, options.maxPdfPages);
+    if (pageLimitError) {
+      return errResult(pageLimitError);
+    }
+
+    if (options.mode === 'mixed-page') {
+      return this.processMixedPagePdf(downloadedFile.buffer, textData, fileId, options);
+    }
+
+    return this.processLegacyPdf(downloadedFile.buffer, extractedText, totalPages, fileId);
+  }
+
+  private processLegacyPdf(
+    buffer: Buffer,
+    extractedText: string,
+    totalPages: number,
+    fileId: string
+  ): Promise<Result<string, Error>> | Result<string, Error> {
     const qualityAnalysis = this.textQualityAnalyzer.analyze(extractedText);
 
     logger.debug('Text quality analysis completed', {
@@ -144,12 +179,12 @@ export class ProcessPdfService {
       });
     } else if (shouldSkipOcr) {
       if (hasStrongDirectText && qualityAnalysis.hasOcrIndicators) {
-        const bytesPerPage = downloadedFile.buffer.byteLength / totalPages;
+        const bytesPerPage = buffer.byteLength / totalPages;
         const looksLikeScannedDoc = bytesPerPage > env.PDF_BYTES_PER_PAGE_THRESHOLD;
 
         logger.info('PDF file-size heuristic', {
           fileId,
-          totalBytes: downloadedFile.buffer.byteLength,
+          totalBytes: buffer.byteLength,
           totalPages,
           bytesPerPage: Math.round(bytesPerPage),
           bytesPerPageThreshold: env.PDF_BYTES_PER_PAGE_THRESHOLD,
@@ -189,7 +224,123 @@ export class ProcessPdfService {
       extractedTextLength: extractedText.length,
     });
 
-    return this.runOcrWithFallback(downloadedFile.buffer, totalPages, fileId, extractedText);
+    return this.runOcrWithFallback(buffer, totalPages, fileId, extractedText);
+  }
+
+  private async processMixedPagePdf(
+    buffer: Buffer,
+    textData: { text: string; totalPages: number; pages: Array<{ pageNumber: number; text: string }> },
+    fileId: string,
+    options: ProcessPdfOptions
+  ): Promise<Result<string, Error>> {
+    const pages = this.normalizePages(textData);
+    const pagesToOcr = pages.filter((page) => this.shouldOcrPage(page.text));
+
+    if (options.maxOcrPagesPerPdf && pagesToOcr.length > options.maxOcrPagesPerPdf) {
+      return errResult(
+        new PdfLimitError(
+          'OCR_PAGES_PER_PDF_LIMIT_EXCEEDED',
+          `PDF requer OCR em ${pagesToOcr.length} páginas, acima do limite configurado de ${options.maxOcrPagesPerPdf}.`
+        )
+      );
+    }
+
+    if (options.ocrPageBudget && !options.ocrPageBudget.reserve(pagesToOcr.length)) {
+      return errResult(
+        new PdfLimitError(
+          'OCR_PAGES_PER_JOB_LIMIT_EXCEEDED',
+          `PDF requer OCR em ${pagesToOcr.length} páginas, mas restam ${options.ocrPageBudget.remaining()} páginas de OCR no limite deste job.`
+        )
+      );
+    }
+
+    if (pagesToOcr.length === 0) {
+      logger.info('Skipping OCR - all pages have sufficient native text', {
+        fileId,
+        totalPages: textData.totalPages,
+      });
+      return okResult(sanitize(pages.map((page) => page.text).join('\n\n')));
+    }
+
+    const { value: ocrResult, error } = await this.ocrOrchestrator.processPagesWithOcr(
+      buffer,
+      textData.totalPages,
+      fileId,
+      pagesToOcr.map((page) => page.pageNumber)
+    );
+
+    if (error) {
+      const nativeText = textData.text.trim();
+      if (nativeText.length > 0) {
+        return okResult(sanitize(nativeText));
+      }
+
+      return errResult(error);
+    }
+
+    const ocrByPage = new Map(ocrResult.pages.map((page) => [page.pageNumber, page.text]));
+    const mergedText = pages
+      .map((page) => {
+        const ocrText = ocrByPage.get(page.pageNumber)?.trim();
+        return ocrText || page.text;
+      })
+      .filter((text) => text.trim().length > 0)
+      .join('\n\n');
+
+    logger.info('Mixed-page PDF processing completed', {
+      fileId,
+      totalPages: textData.totalPages,
+      nativePages: pages.length - pagesToOcr.length,
+      ocrPages: pagesToOcr.length,
+      chunksProcessed: ocrResult.chunksProcessed,
+      processingTime: ocrResult.processingTime,
+    });
+
+    return okResult(sanitize(mergedText));
+  }
+
+  private validatePdfPageLimit(totalPages: number, maxPdfPages?: number): Error | null {
+    if (!maxPdfPages || totalPages <= maxPdfPages) {
+      return null;
+    }
+
+    return new PdfLimitError(
+      'PDF_PAGE_LIMIT_EXCEEDED',
+      `PDF possui ${totalPages} páginas, acima do limite configurado de ${maxPdfPages}.`
+    );
+  }
+
+  private normalizePages(textData: {
+    totalPages: number;
+    pages: Array<{ pageNumber: number; text: string }>;
+  }): Array<{ pageNumber: number; text: string }> {
+    const byPage = new Map(textData.pages.map((page) => [page.pageNumber, page.text]));
+    const pages: Array<{ pageNumber: number; text: string }> = [];
+
+    for (let pageNumber = 1; pageNumber <= textData.totalPages; pageNumber++) {
+      pages.push({ pageNumber, text: byPage.get(pageNumber) ?? '' });
+    }
+
+    return pages;
+  }
+
+  private shouldOcrPage(pageText: string): boolean {
+    const text = pageText.trim();
+
+    if (text.length < 300) {
+      return true;
+    }
+
+    const words = text.split(/\s+/).filter(Boolean).length;
+    const alphanumericCount = text.replace(/[^a-zA-ZÀ-ÿ0-9]/g, '').length;
+    const alphanumericRatio = alphanumericCount / Math.max(1, text.length);
+
+    if (text.length >= 1200 && words >= 80 && alphanumericRatio >= 0.55 && !/[��]/.test(text)) {
+      return false;
+    }
+
+    const analysis = this.textQualityAnalyzer.analyze(text);
+    return !analysis.shouldSkipOcr && (!analysis.isHighQuality || analysis.hasOcrIndicators);
   }
 
   private async runOcrWithFallback(
