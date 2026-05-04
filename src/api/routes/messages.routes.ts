@@ -6,15 +6,23 @@ import logger from 'lib/logger';
 
 const router = express.Router();
 
-const summarizeProcessMessageBody = (body: any) => {
+type ProcessMessageBodySummaryInput = {
+  conversationId?: unknown;
+  body?: {
+    content?: unknown;
+    files?: Array<{ fileType?: unknown }>;
+  };
+};
+
+const summarizeProcessMessageBody = (body: unknown) => {
   try {
-    const arr = Array.isArray(body) ? body : [body];
+    const arr = (Array.isArray(body) ? body : [body]) as ProcessMessageBodySummaryInput[];
     const summary = arr.map((m) => ({
       conversationId: m?.conversationId,
       contentLength: m?.body?.content ? String(m.body.content).length : 0,
       filesCount: Array.isArray(m?.body?.files) ? m.body.files.length : 0,
       fileTypes: Array.isArray(m?.body?.files)
-        ? [...new Set(m.body.files.map((f: any) => f?.fileType))]
+        ? [...new Set(m.body.files.map((f) => f?.fileType))]
         : [],
     }));
     return { messageCount: arr.length, details: summary.slice(0, 5) };
