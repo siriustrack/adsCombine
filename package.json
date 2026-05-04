@@ -8,7 +8,7 @@
     "build": "swc src -d dist --copy-files && bun run scripts/generate-openapi-spec.mjs",
     "build:watch": "swc src -d dist --copy-files --watch",
     "start": "node dist/src/api/server.js",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "bun test",
     "lint": "biome lint src/",
     "lint:fix": "biome lint --write src/",
     "format": "biome format src/",

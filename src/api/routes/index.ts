@@ -1,12 +1,14 @@
 import { OcrOrchestrator } from '@core/services/messages/pdf-utils/ocr-orchestrator.service';
 import { TEXTS_DIR } from 'config/dirs';
 import express, { type Request, type Response } from 'express';
+import jobsRouter from './jobs.routes';
 import processRouter from './messages.routes';
 import transcribeRouter from './transcribe.routes';
 
 const router = express.Router();
 
 router.use('/texts', express.static(TEXTS_DIR));
+router.use('/api/jobs', jobsRouter);
 router.use('/api', processRouter);
 router.use('/api', transcribeRouter);
 /**

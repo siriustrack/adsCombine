@@ -25,7 +25,7 @@ const MessageSchema = z
   })
   .loose();
 
-const ProcessMessageSchema = z.array(MessageSchema);
+export const ProcessMessageSchema = z.array(MessageSchema);
 export type ProcessMessage = z.infer<typeof ProcessMessageSchema>;
 
 const DeleteTextsBodySchema = z
