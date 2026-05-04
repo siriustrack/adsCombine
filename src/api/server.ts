@@ -11,7 +11,8 @@ import router from './routes';
 
 const app = express();
 
-// CORS must be BEFORE auth middleware to handle OPTIONS preflight
+app.set('trust proxy', 1);
+
 app.use(
   cors({
     origin: '*',
