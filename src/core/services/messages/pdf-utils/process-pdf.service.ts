@@ -325,21 +325,7 @@ export class ProcessPdfService {
   }
 
   private shouldOcrPage(pageText: string): boolean {
-    const text = pageText.trim();
-
-    if (text.length < 300) {
-      return true;
-    }
-
-    const words = text.split(/\s+/).filter(Boolean).length;
-    const alphanumericCount = text.replace(/[^a-zA-ZÀ-ÿ0-9]/g, '').length;
-    const alphanumericRatio = alphanumericCount / Math.max(1, text.length);
-
-    if (text.length >= 1200 && words >= 80 && alphanumericRatio >= 0.55 && !/[��]/.test(text)) {
-      return false;
-    }
-
-    const analysis = this.textQualityAnalyzer.analyze(text);
+    const analysis = this.textQualityAnalyzer.analyzePage(pageText);
     return !analysis.shouldSkipOcr && (!analysis.isHighQuality || analysis.hasOcrIndicators);
   }
 

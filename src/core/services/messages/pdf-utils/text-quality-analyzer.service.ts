@@ -20,6 +20,17 @@ export class TextQualityAnalyzer {
     MIN_MEANINGFUL_SENTENCE_RATIO: 0.3,
   } as const;
 
+  private readonly PAGE_THRESHOLDS = {
+    MIN_TEXT_LENGTH: 300,
+    MIN_USABLE_TEXT_LENGTH: 500,
+    STRONG_TEXT_LENGTH: 1200,
+    MIN_WORDS: 40,
+    STRONG_WORDS: 80,
+    MIN_ALPHANUMERIC_RATIO: 0.55,
+    MAX_SPACE_DENSITY: 0.45,
+    MAX_REPETITION_RATIO: 0.65,
+  } as const;
+
   // Pré-compilar regex para melhor performance
   private readonly CONTENT_INDICATORS = [
     /\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/, // CPF
@@ -121,6 +132,50 @@ export class TextQualityAnalyzer {
       hasSubstantialContent: analysis.hasSubstantialContent,
       qualityScore,
     };
+  }
+
+  analyzePage(pageText: string): TextQualityAnalysis {
+    const text = pageText.trim();
+
+    if (text.length === 0) {
+      return this.createQualityAnalysis({ qualityScore: 0 });
+    }
+
+    if (text.length < this.PAGE_THRESHOLDS.MIN_TEXT_LENGTH || /[��]/.test(text)) {
+      return this.createQualityAnalysis({ hasOcrIndicators: true, qualityScore: 10 });
+    }
+
+    const metrics = this.calculatePageMetrics(text);
+    const isRepetitive = metrics.repetitionRatio > this.PAGE_THRESHOLDS.MAX_REPETITION_RATIO;
+    const hasOcrIndicators = metrics.spaceDensity > this.PAGE_THRESHOLDS.MAX_SPACE_DENSITY;
+    const isHighQuality =
+      metrics.alphanumericRatio >= this.PAGE_THRESHOLDS.MIN_ALPHANUMERIC_RATIO &&
+      metrics.wordCount >= this.PAGE_THRESHOLDS.MIN_WORDS &&
+      !hasOcrIndicators;
+    const hasSubstantialContent =
+      text.length >= this.PAGE_THRESHOLDS.MIN_USABLE_TEXT_LENGTH &&
+      metrics.wordCount >= this.PAGE_THRESHOLDS.MIN_WORDS;
+    const hasStrongNativeText =
+      text.length >= this.PAGE_THRESHOLDS.STRONG_TEXT_LENGTH &&
+      metrics.wordCount >= this.PAGE_THRESHOLDS.STRONG_WORDS &&
+      isHighQuality &&
+      !isRepetitive;
+    const shouldSkipOcr = hasStrongNativeText || (isHighQuality && hasSubstantialContent && !isRepetitive);
+
+    return this.createQualityAnalysis({
+      shouldSkipOcr,
+      isHighQuality,
+      isRepetitive,
+      hasOcrIndicators,
+      hasSubstantialContent,
+      qualityScore: this.calculateQualityScore(
+        text.length,
+        isHighQuality,
+        isRepetitive,
+        hasOcrIndicators,
+        hasSubstantialContent
+      ),
+    });
   }
 
   private performSinglePassAnalysis(text: string) {
@@ -270,5 +325,32 @@ export class TextQualityAnalyzer {
     }
 
     return Math.min(100, score);
+  }
+
+  private calculatePageMetrics(text: string) {
+    const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+    const uniqueLines = new Set(lines);
+    const { spaceCount, alphanumericCount } = this.analyzeCharacters(text);
+
+    return {
+      wordCount: text.split(/\s+/).filter(Boolean).length,
+      alphanumericRatio: alphanumericCount / Math.max(1, text.length),
+      spaceDensity: spaceCount / Math.max(1, text.length),
+      repetitionRatio: lines.length > 0 ? (lines.length - uniqueLines.size) / lines.length : 0,
+    };
+  }
+
+  private createQualityAnalysis(
+    overrides: Partial<TextQualityAnalysis> = {}
+  ): TextQualityAnalysis {
+    return {
+      shouldSkipOcr: false,
+      isHighQuality: false,
+      isRepetitive: false,
+      hasOcrIndicators: false,
+      hasSubstantialContent: false,
+      qualityScore: 0,
+      ...overrides,
+    };
   }
 }
