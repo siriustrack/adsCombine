@@ -85,9 +85,13 @@ export class ProcessMessageJobService {
         },
         {
           includeReadableErrorBlocks: true,
+          pdfMode: 'mixed-page',
           limits: {
             maxFileBytes: env.EXTRACTION_MAX_FILE_BYTES,
             maxFiles: env.MAX_FILES_PER_JOB,
+            maxPdfPages: env.MAX_PDF_PAGES,
+            maxOcrPagesPerPdf: env.MAX_OCR_PAGES_PER_PDF,
+            maxTotalOcrPagesPerJob: env.MAX_TOTAL_OCR_PAGES_PER_JOB,
           },
         }
       );

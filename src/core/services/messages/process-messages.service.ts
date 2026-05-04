@@ -26,11 +26,34 @@ export interface FileInput {
 
 type ProcessMessagesOptions = {
   includeReadableErrorBlocks?: boolean;
+  pdfMode?: 'legacy' | 'mixed-page';
   limits?: {
     maxFileBytes?: number;
     maxFiles?: number;
+    maxPdfPages?: number;
+    maxOcrPagesPerPdf?: number;
+    maxTotalOcrPagesPerJob?: number;
   };
 };
+
+export class OcrPageBudget {
+  private usedPages = 0;
+
+  constructor(private readonly maxPages: number) {}
+
+  reserve(pageCount: number): boolean {
+    if (this.usedPages + pageCount > this.maxPages) {
+      return false;
+    }
+
+    this.usedPages += pageCount;
+    return true;
+  }
+
+  remaining(): number {
+    return Math.max(0, this.maxPages - this.usedPages);
+  }
+}
 
 export type ProcessMessagesResponse = {
   conversationId: string;
@@ -56,6 +79,9 @@ export class ProcessMessagesService {
     const processedFiles: string[] = [];
     const failedFiles: { fileId: string; error: string }[] = [];
     const extractedTexts: string[] = [];
+    const ocrPageBudget = options.limits?.maxTotalOcrPagesPerJob
+      ? new OcrPageBudget(options.limits.maxTotalOcrPagesPerJob)
+      : undefined;
 
     for (const message of messages) {
       const { body } = message;
@@ -77,7 +103,7 @@ export class ProcessMessagesService {
 
         const limit = pLimit(env.PROCESSING_CONCURRENCY);
         const promises = files.map((file) =>
-          limit(() => this.processAndHandleFile(file, extractedTexts, options))
+          limit(() => this.processAndHandleFile(file, extractedTexts, options, ocrPageBudget))
         );
         const results = await Promise.all(promises);
 
@@ -104,9 +130,10 @@ export class ProcessMessagesService {
   private async processAndHandleFile(
     file: FileInfo,
     extractedTexts: string[],
-    options: ProcessMessagesOptions
+    options: ProcessMessagesOptions,
+    ocrPageBudget?: OcrPageBudget
   ): Promise<{ success: boolean; fileId: string; error?: string }> {
-    const result = await this.processFile(file, options);
+    const result = await this.processFile(file, options, ocrPageBudget);
 
     if (result.error) {
       logger.error('Failed to process file', {
@@ -132,7 +159,8 @@ export class ProcessMessagesService {
 
   private async processFile(
     file: FileInput,
-    options: ProcessMessagesOptions = {}
+    options: ProcessMessagesOptions = {},
+    ocrPageBudget?: OcrPageBudget
   ): Promise<Result<string, Error>> {
     const fileType = file.mimeType.split('/')[1];
 
@@ -142,7 +170,14 @@ export class ProcessMessagesService {
 
     const fileTypeMap: Record<string, () => Promise<Result<string, Error>>> = {
       plain: () => this.processTxt(file),
-      pdf: () => this.processPdfService.execute(file, { maxFileBytes: options.limits?.maxFileBytes }),
+      pdf: () =>
+        this.processPdfService.execute(file, {
+          maxFileBytes: options.limits?.maxFileBytes,
+          mode: options.pdfMode,
+          maxPdfPages: options.limits?.maxPdfPages,
+          maxOcrPagesPerPdf: options.limits?.maxOcrPagesPerPdf,
+          ocrPageBudget,
+        }),
       jpeg: () => this.processImage(file),
       jpg: () => this.processImage(file),
       png: () => this.processImage(file),
