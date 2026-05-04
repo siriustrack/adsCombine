@@ -14,6 +14,7 @@ import pLimit from 'p-limit';
 import { sanitize } from 'utils/sanitize';
 import { sanitizeText } from 'utils/textSanitizer';
 import WordExtractor from 'word-extractor';
+import { FileSizeLimitError } from './pdf-utils/file-download.service';
 import { ProcessPdfService } from './pdf-utils/process-pdf.service';
 import { processXLSXFile, xlsxToText } from './xlsx/xlsx-processor';
 
@@ -22,6 +23,22 @@ export interface FileInput {
   url: string;
   mimeType: string;
 }
+
+type ProcessMessagesOptions = {
+  includeReadableErrorBlocks?: boolean;
+  limits?: {
+    maxFileBytes?: number;
+    maxFiles?: number;
+  };
+};
+
+export type ProcessMessagesResponse = {
+  conversationId: string;
+  processedFiles: string[];
+  failedFiles: { fileId: string; error: string }[];
+  filename: string;
+  downloadUrl: string;
+};
 
 export class ProcessMessagesService {
   private readonly processPdfService = new ProcessPdfService();
@@ -35,7 +52,7 @@ export class ProcessMessagesService {
     messages: ProcessMessage;
     protocol: string;
     host: string;
-  }) {
+  }, options: ProcessMessagesOptions = {}): Promise<ProcessMessagesResponse> {
     const processedFiles: string[] = [];
     const failedFiles: { fileId: string; error: string }[] = [];
     const extractedTexts: string[] = [];
@@ -45,9 +62,22 @@ export class ProcessMessagesService {
       const { files } = body;
 
       if (files && files.length > 0) {
+        if (options.limits?.maxFiles && files.length > options.limits.maxFiles) {
+          const errorMessage = `A requisição contém ${files.length} arquivos, acima do limite configurado de ${options.limits.maxFiles}.`;
+          failedFiles.push(...files.map((file) => ({ fileId: file.fileId, error: errorMessage })));
+
+          if (options.includeReadableErrorBlocks) {
+            extractedTexts.push(
+              this.createReadableErrorBlock('request-files-limit', new Error(errorMessage))
+            );
+          }
+
+          continue;
+        }
+
         const limit = pLimit(env.PROCESSING_CONCURRENCY);
         const promises = files.map((file) =>
-          limit(() => this.processAndHandleFile(file, extractedTexts))
+          limit(() => this.processAndHandleFile(file, extractedTexts, options))
         );
         const results = await Promise.all(promises);
 
@@ -73,15 +103,23 @@ export class ProcessMessagesService {
 
   private async processAndHandleFile(
     file: FileInfo,
-    extractedTexts: string[]
+    extractedTexts: string[],
+    options: ProcessMessagesOptions
   ): Promise<{ success: boolean; fileId: string; error?: string }> {
-    const result = await this.processFile(file);
+    const result = await this.processFile(file, options);
 
     if (result.error) {
       logger.error('Failed to process file', {
         fileId: file.fileId,
         error: result.error.message,
       });
+
+      if (options.includeReadableErrorBlocks) {
+        extractedTexts.push(
+          this.createReadableErrorBlock(path.basename(new URL(file.url).pathname), result.error)
+        );
+      }
+
       return { success: false, fileId: file.fileId, error: result.error.message };
     }
 
@@ -92,7 +130,10 @@ export class ProcessMessagesService {
     return { success: true, fileId: file.fileId };
   }
 
-  private async processFile(file: FileInput): Promise<Result<string, Error>> {
+  private async processFile(
+    file: FileInput,
+    options: ProcessMessagesOptions = {}
+  ): Promise<Result<string, Error>> {
     const fileType = file.mimeType.split('/')[1];
 
     if (file.mimeType.startsWith('audio/')) {
@@ -101,7 +142,7 @@ export class ProcessMessagesService {
 
     const fileTypeMap: Record<string, () => Promise<Result<string, Error>>> = {
       plain: () => this.processTxt(file),
-      pdf: () => this.processPdfService.execute(file),
+      pdf: () => this.processPdfService.execute(file, { maxFileBytes: options.limits?.maxFileBytes }),
       jpeg: () => this.processImage(file),
       jpg: () => this.processImage(file),
       png: () => this.processImage(file),
@@ -173,7 +214,7 @@ export class ProcessMessagesService {
     host: string,
     processedFiles: string[],
     failedFiles: { fileId: string; error: string }[]
-  ) {
+  ): Promise<ProcessMessagesResponse> {
     const filename = `${conversationId}-${Date.now()}.txt`;
 
     const { error: mkdirError } = await wrapPromiseResult(
@@ -182,7 +223,7 @@ export class ProcessMessagesService {
 
     if (mkdirError) {
       logger.error('Failed to create texts directory', { error: mkdirError, conversationId });
-      return errResult({ status: 500, message: 'Failed to create texts directory' });
+      throw new Error('Failed to create texts directory');
     }
 
     const filePath = path.join(TEXTS_DIR, conversationId, filename);
@@ -198,6 +239,12 @@ export class ProcessMessagesService {
       filename,
       downloadUrl,
     };
+  }
+
+  private createReadableErrorBlock(fileName: string, error: Error): string {
+    const code = error instanceof FileSizeLimitError ? error.code : 'FILE_PROCESSING_ERROR';
+
+    return `## Transcricao do arquivo: ${fileName}:\n\n[${code}]\nEste arquivo não foi processado integralmente.\nMotivo: ${error.message}\nOriente o usuário a reduzir, dividir ou reenviar uma versão compatível do arquivo, se necessário.`;
   }
 
   private async processTxt(file: FileInput): Promise<Result<string, Error>> {

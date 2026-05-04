@@ -74,14 +74,17 @@ export class ProcessPdfService {
     });
   }
 
-  async execute(file: FileInput): Promise<Result<string, Error>> {
+  async execute(
+    file: FileInput,
+    options: { maxFileBytes?: number } = {}
+  ): Promise<Result<string, Error>> {
     const { fileId, url } = file;
 
     logger.info('Starting PDF processing', { fileId, url });
 
     // 1. Download do arquivo
     const { value: downloadedFile, error: downloadError } =
-      await this.fileDownloadService.downloadFile(url, fileId);
+      await this.fileDownloadService.downloadFile(url, fileId, { maxBytes: options.maxFileBytes });
 
     if (downloadError) {
       return errResult(downloadError);

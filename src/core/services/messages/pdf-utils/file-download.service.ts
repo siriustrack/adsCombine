@@ -8,16 +8,43 @@ export interface DownloadedFile {
   contentLength?: number;
 }
 
+export class FileSizeLimitError extends Error {
+  readonly code = 'FILE_LIMIT_EXCEEDED';
+
+  constructor(
+    readonly fileId: string,
+    readonly limitBytes: number,
+    readonly actualBytes?: number
+  ) {
+    super(
+      actualBytes
+        ? `Arquivo excede o limite configurado de ${limitBytes} bytes (${actualBytes} bytes recebidos).`
+        : `Arquivo excede o limite configurado de ${limitBytes} bytes.`
+    );
+    this.name = 'FileSizeLimitError';
+  }
+}
+
 export class FileDownloadService {
-  async downloadFile(url: string, fileId: string): Promise<Result<DownloadedFile, Error>> {
+  async downloadFile(
+    url: string,
+    fileId: string,
+    options: { maxBytes?: number } = {}
+  ): Promise<Result<DownloadedFile, Error>> {
     const { value: response, error } = await wrapPromiseResult<AxiosResponse, Error>(
       httpClient.get(url, {
         responseType: 'arraybuffer',
         validateStatus: (status) => status < 500,
+        maxContentLength: options.maxBytes,
+        maxBodyLength: options.maxBytes,
       })
     );
 
     if (error) {
+      if (options.maxBytes && error.message.includes('maxContentLength')) {
+        return errResult(new FileSizeLimitError(fileId, options.maxBytes));
+      }
+
       logger.error('Error fetching file', {
         fileId,
         url,
@@ -52,6 +79,14 @@ export class FileDownloadService {
     const contentLength = response.headers['content-length']
       ? parseInt(response.headers['content-length'], 10)
       : buffer.length;
+
+    if (options.maxBytes && contentLength > options.maxBytes) {
+      return errResult(new FileSizeLimitError(fileId, options.maxBytes, contentLength));
+    }
+
+    if (options.maxBytes && buffer.length > options.maxBytes) {
+      return errResult(new FileSizeLimitError(fileId, options.maxBytes, buffer.length));
+    }
 
     return okResult({
       buffer,
