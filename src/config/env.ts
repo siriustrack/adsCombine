@@ -18,6 +18,7 @@ const envSchema = z.object({
   MAX_PDF_PAGES: z.coerce.number().int().positive().default(300),
   MAX_OCR_PAGES_PER_PDF: z.coerce.number().int().positive().default(150),
   MAX_TOTAL_OCR_PAGES_PER_JOB: z.coerce.number().int().positive().default(200),
+  OCR_MAX_PAGES_PER_CHUNK: z.coerce.number().int().positive().default(2),
   TOKEN: z.string().min(1),
   // Toggle to enable/disable request/route logs ("true"/"false")
   REQUEST_LOGS_ENABLED: z.coerce.boolean().default(false),

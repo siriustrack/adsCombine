@@ -1,3 +1,4 @@
+import { env } from '@config/env';
 import logger from '@lib/logger';
 import { maxWorkers } from '@lib/worker-pool';
 
@@ -51,7 +52,9 @@ export class OcrChunkManager {
     let last = uniquePages[0];
 
     for (const page of uniquePages.slice(1)) {
-      if (page === last + 1) {
+      const chunkSize = last - first + 1;
+
+      if (page === last + 1 && chunkSize < env.OCR_MAX_PAGES_PER_CHUNK) {
         last = page;
         continue;
       }
