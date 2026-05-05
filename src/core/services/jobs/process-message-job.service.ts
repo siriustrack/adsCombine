@@ -103,7 +103,6 @@ export class ProcessMessageJobService {
           },
           {
             includeReadableErrorBlocks: true,
-            pdfMode: 'mixed-page',
             limits: {
               maxFileBytes: env.EXTRACTION_MAX_FILE_BYTES,
               maxFiles: env.MAX_FILES_PER_JOB,
