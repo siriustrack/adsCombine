@@ -21,7 +21,10 @@ type ProcessPdfOptions = {
 };
 
 class PdfLimitError extends Error {
-  constructor(readonly code: string, message: string) {
+  constructor(
+    readonly code: string,
+    message: string
+  ) {
     super(message);
     this.name = 'PdfLimitError';
   }
@@ -93,10 +96,7 @@ export class ProcessPdfService {
     });
   }
 
-  async execute(
-    file: FileInput,
-    options: ProcessPdfOptions = {}
-  ): Promise<Result<string, Error>> {
+  async execute(file: FileInput, options: ProcessPdfOptions = {}): Promise<Result<string, Error>> {
     const { fileId, url } = file;
 
     logger.info('Starting PDF processing', { fileId, url });
@@ -234,6 +234,37 @@ export class ProcessPdfService {
     fileId: string,
     options: ProcessPdfOptions
   ): Promise<Result<string, Error>> {
+    if (this.shouldUseDirectOcrForSmallImageOnlyPdf(textData)) {
+      const directOcrPageCount = textData.totalPages;
+
+      if (options.maxOcrPagesPerPdf && directOcrPageCount > options.maxOcrPagesPerPdf) {
+        return errResult(
+          new PdfLimitError(
+            'OCR_PAGES_PER_PDF_LIMIT_EXCEEDED',
+            `PDF requer OCR em ${directOcrPageCount} páginas, acima do limite configurado de ${options.maxOcrPagesPerPdf}.`
+          )
+        );
+      }
+
+      if (options.ocrPageBudget && !options.ocrPageBudget.reserve(directOcrPageCount)) {
+        return errResult(
+          new PdfLimitError(
+            'OCR_PAGES_PER_JOB_LIMIT_EXCEEDED',
+            `PDF requer OCR em ${directOcrPageCount} páginas, mas restam ${options.ocrPageBudget.remaining()} páginas de OCR no limite deste job.`
+          )
+        );
+      }
+
+      logger.info('Running direct OCR - small PDF has insufficient native text', {
+        fileId,
+        totalPages: textData.totalPages,
+        nativeCharsPerPage: Math.round(textData.text.trim().length / textData.totalPages),
+        directOcrMaxPages: env.MIXED_PAGE_OCR_DIRECT_MAX_PAGES,
+        minNativeCharsPerPage: env.MIXED_PAGE_MIN_NATIVE_CHARS_PER_PAGE,
+      });
+      return this.runOcrWithFallback(buffer, textData.totalPages, fileId, textData.text);
+    }
+
     const pages = this.normalizePages(textData);
     const pagesToOcr = pages.filter((page) => this.shouldOcrPage(page));
 
@@ -311,10 +342,19 @@ export class ProcessPdfService {
     );
   }
 
-  private normalizePages(textData: {
+  private shouldUseDirectOcrForSmallImageOnlyPdf(textData: {
+    text: string;
     totalPages: number;
-    pages: PdfPageText[];
-  }): PdfPageText[] {
+  }): boolean {
+    if (textData.totalPages === 0 || textData.totalPages > env.MIXED_PAGE_OCR_DIRECT_MAX_PAGES) {
+      return false;
+    }
+
+    const charsPerPage = textData.text.trim().length / textData.totalPages;
+    return charsPerPage < env.MIXED_PAGE_MIN_NATIVE_CHARS_PER_PAGE;
+  }
+
+  private normalizePages(textData: { totalPages: number; pages: PdfPageText[] }): PdfPageText[] {
     const byPage = new Map(textData.pages.map((page) => [page.pageNumber, page]));
     const pages: PdfPageText[] = [];
 

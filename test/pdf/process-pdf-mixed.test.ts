@@ -18,13 +18,19 @@ type ProcessPdfServiceInstance = {
   execute: (...args: unknown[]) => Promise<{ value?: string; error?: Error }>;
   fileDownloadService: unknown;
   textExtractorService: unknown;
-  ocrOrchestrator: unknown;
+  ocrOrchestrator: {
+    selectedCalls: number;
+    directCalls: number;
+    processPagesWithOcr: (...args: unknown[]) => Promise<unknown>;
+    processWithOcr: (...args: unknown[]) => Promise<unknown>;
+  };
 };
 
 async function createService({
   totalPages,
   pages,
   ocrPages = [],
+  directOcrText = 'TEXTO OCR DIRETO',
 }: {
   totalPages: number;
   pages: Array<{
@@ -35,6 +41,7 @@ async function createService({
     hasVisualContent?: boolean;
   }>;
   ocrPages?: Array<{ pageNumber: number; text: string }>;
+  directOcrText?: string;
 }) {
   const { ProcessPdfService } = await import(
     '../../src/core/services/messages/pdf-utils/process-pdf.service'
@@ -64,16 +71,30 @@ async function createService({
     },
   };
   service.ocrOrchestrator = {
+    selectedCalls: 0,
+    directCalls: 0,
     async processPagesWithOcr(
       _buffer: Buffer,
       _totalPages: number,
       _fileId: string,
       selectedPages: number[]
     ) {
+      this.selectedCalls++;
       return {
         value: {
           pages: ocrPages.filter((page) => selectedPages.includes(page.pageNumber)),
           chunksProcessed: selectedPages.length,
+          processingTime: 1,
+        },
+        error: null,
+      };
+    },
+    async processWithOcr() {
+      this.directCalls++;
+      return {
+        value: {
+          ocrText: directOcrText,
+          chunksProcessed: totalPages,
           processingTime: 1,
         },
         error: null,
@@ -122,6 +143,33 @@ describe('ProcessPdfService mixed-page mode', () => {
     expect(text.indexOf('PAGINA OCR 2')).toBeLessThan(text.indexOf('PAGINA NATIVA 3'));
   });
 
+  test('uses direct OCR for small PDFs with insufficient native text', async () => {
+    const service = await createService({
+      totalPages: 7,
+      pages: Array.from({ length: 7 }, (_, index) => ({
+        pageNumber: index + 1,
+        text: '',
+        embeddedImageCount: 1,
+        hasVisualContent: true,
+      })),
+      directOcrText: 'TEXTO OCR PURO DO PDF INTEIRO',
+    });
+
+    const result = await service.execute(
+      {
+        fileId: 'small-scanned-pdf',
+        url: 'https://example.com/scanned.pdf',
+        mimeType: 'application/pdf',
+      },
+      { mode: 'mixed-page' }
+    );
+
+    expect(result.error).toBeNull();
+    expect(result.value).toContain('TEXTO OCR PURO DO PDF INTEIRO');
+    expect(service.ocrOrchestrator.directCalls).toBe(1);
+    expect(service.ocrOrchestrator.selectedCalls).toBe(0);
+  });
+
   test('runs OCR on pages with visual content even when native text is strong', async () => {
     const service = await createService({
       totalPages: 1,
@@ -137,7 +185,11 @@ describe('ProcessPdfService mixed-page mode', () => {
     });
 
     const result = await service.execute(
-      { fileId: 'visual-table-pdf', url: 'https://example.com/visual.pdf', mimeType: 'application/pdf' },
+      {
+        fileId: 'visual-table-pdf',
+        url: 'https://example.com/visual.pdf',
+        mimeType: 'application/pdf',
+      },
       { mode: 'mixed-page' }
     );
 
