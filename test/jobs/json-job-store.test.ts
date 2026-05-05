@@ -2,8 +2,12 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { InvalidJobIdError, JsonJobStoreService, JobNotFoundError } from '../../src/core/services/jobs/json-job-store.service';
 import type { ProcessMessageJobRecord } from '../../src/core/services/jobs/job.types';
+import {
+  InvalidJobIdError,
+  JobNotFoundError,
+  JsonJobStoreService,
+} from '../../src/core/services/jobs/json-job-store.service';
 
 let tempDir: string | undefined;
 
@@ -75,5 +79,53 @@ describe('JsonJobStoreService', () => {
     const store = await createStore();
 
     await expect(store.get(store.createJobId())).rejects.toBeInstanceOf(JobNotFoundError);
+  });
+
+  test('expires stale queued and processing jobs', async () => {
+    const store = await createStore();
+    const queuedJobId = store.createJobId();
+    const processingJobId = store.createJobId();
+    const oldDate = new Date(Date.now() - 60_000).toISOString();
+
+    await store.save({ ...createRecord(queuedJobId), createdAt: oldDate, updatedAt: oldDate });
+    await store.save({
+      ...createRecord(processingJobId),
+      status: 'processing',
+      createdAt: oldDate,
+      updatedAt: oldDate,
+      startedAt: oldDate,
+    });
+
+    expect(await store.expireStaleJobs(1_000)).toBe(2);
+    expect((await store.get(queuedJobId)).status).toBe('expired');
+    expect((await store.get(processingJobId)).status).toBe('expired');
+  });
+
+  test('deletes finished jobs older than retention window', async () => {
+    const store = await createStore();
+    const oldCompletedJobId = store.createJobId();
+    const recentCompletedJobId = store.createJobId();
+    const activeJobId = store.createJobId();
+    const oldDate = new Date(Date.now() - 60_000).toISOString();
+    const recentDate = new Date().toISOString();
+
+    await store.save({
+      ...createRecord(oldCompletedJobId),
+      status: 'completed',
+      updatedAt: oldDate,
+      finishedAt: oldDate,
+    });
+    await store.save({
+      ...createRecord(recentCompletedJobId),
+      status: 'completed',
+      updatedAt: recentDate,
+      finishedAt: recentDate,
+    });
+    await store.save({ ...createRecord(activeJobId), updatedAt: oldDate });
+
+    expect(await store.deleteFinishedOlderThan(1_000)).toBe(1);
+    await expect(store.get(oldCompletedJobId)).rejects.toBeInstanceOf(JobNotFoundError);
+    expect((await store.get(recentCompletedJobId)).status).toBe('completed');
+    expect((await store.get(activeJobId)).status).toBe('queued');
   });
 });

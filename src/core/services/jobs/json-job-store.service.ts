@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { JOBS_DIR } from '@config/dirs';
 import logger from '@lib/logger';
-import type { ProcessMessageJobRecord } from './job.types';
+import type { JobStatus, ProcessMessageJobRecord } from './job.types';
 
 const JOB_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -69,6 +69,95 @@ export class JsonJobStoreService {
 
     await this.save(updated);
     return updated;
+  }
+
+  async list(): Promise<ProcessMessageJobRecord[]> {
+    await fs.mkdir(this.jobsDir, { recursive: true });
+
+    const entries = await fs.readdir(this.jobsDir, { withFileTypes: true });
+    const jobs: ProcessMessageJobRecord[] = [];
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) {
+        continue;
+      }
+
+      const jobId = entry.name.replace(/\.json$/, '');
+      if (!JOB_ID_PATTERN.test(jobId)) {
+        continue;
+      }
+
+      try {
+        jobs.push(await this.get(jobId));
+      } catch (error) {
+        logger.warn('Skipping unreadable job file', { jobId, error: (error as Error).message });
+      }
+    }
+
+    return jobs;
+  }
+
+  async delete(jobId: string): Promise<void> {
+    this.assertValidJobId(jobId);
+
+    try {
+      await fs.unlink(this.getJobPath(jobId));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return;
+      }
+
+      throw error;
+    }
+  }
+
+  async deleteFinishedOlderThan(retentionMs: number): Promise<number> {
+    const cutoff = Date.now() - retentionMs;
+    const removableStatuses = new Set<JobStatus>(['completed', 'failed', 'expired']);
+    const jobs = await this.list();
+    let deleted = 0;
+
+    for (const job of jobs) {
+      if (!removableStatuses.has(job.status)) {
+        continue;
+      }
+
+      const referenceDate = job.finishedAt ?? job.updatedAt;
+      if (Date.parse(referenceDate) >= cutoff) {
+        continue;
+      }
+
+      await this.delete(job.id);
+      deleted++;
+    }
+
+    return deleted;
+  }
+
+  async expireStaleJobs(staleAfterMs: number): Promise<number> {
+    const cutoff = Date.now() - staleAfterMs;
+    const jobs = await this.list();
+    let expired = 0;
+
+    for (const job of jobs) {
+      if (job.status !== 'queued' && job.status !== 'processing') {
+        continue;
+      }
+
+      const referenceDate = job.startedAt ?? job.updatedAt ?? job.createdAt;
+      if (Date.parse(referenceDate) >= cutoff) {
+        continue;
+      }
+
+      await this.update(job.id, {
+        status: 'expired',
+        error: `Job expirado apos ${staleAfterMs}ms sem conclusao`,
+        finishedAt: new Date().toISOString(),
+      });
+      expired++;
+    }
+
+    return expired;
   }
 
   private getJobPath(jobId: string): string {
