@@ -136,7 +136,7 @@ export class OcrOrchestrator {
       const ocrText = ocrResults.join('\n');
       const processingTime = Date.now() - startTime;
 
-      logger.info('OCR processing completed', {
+      logger.debug('OCR processing completed', {
         fileId,
         totalPages: effectivePages,
         chunksProcessed: chunks.length,
@@ -210,7 +210,7 @@ export class OcrOrchestrator {
 
       const processingTime = Date.now() - startTime;
 
-      logger.info('Selected-page OCR processing completed', {
+      logger.debug('Selected-page OCR processing completed', {
         fileId,
         totalPages: effectivePages,
         selectedPages: validSelectedPages.length,

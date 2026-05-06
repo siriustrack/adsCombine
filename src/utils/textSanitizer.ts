@@ -51,7 +51,7 @@ export async function sanitizeTextFile(filePath: string): Promise<string> {
       const sanitizedPath = path.join(dir, `${name}_sanitized.txt`);
 
       await fs.promises.writeFile(sanitizedPath, sanitized, 'utf8');
-      logger.info(
+      logger.debug(
         `Arquivo sanitizado salvo: ${sanitizedPath} (removidos ${content.length - sanitized.length} caracteres)`
       );
     }
@@ -73,7 +73,7 @@ export async function sanitizeAllTextFiles(folderPath: string): Promise<void> {
     const files = await fs.promises.readdir(folderPath);
     const txtFiles = files.filter((file) => file.endsWith('.txt'));
 
-    logger.info(`Iniciando sanitizacao de ${txtFiles.length} arquivos .txt em ${folderPath}`);
+    logger.debug(`Iniciando sanitizacao de ${txtFiles.length} arquivos .txt em ${folderPath}`);
 
     let processedCount = 0;
     let errorCount = 0;
@@ -90,7 +90,7 @@ export async function sanitizeAllTextFiles(folderPath: string): Promise<void> {
       }
     }
 
-    logger.info(
+    logger.debug(
       `Sanitizacao concluida. ${processedCount} arquivos processados, ${errorCount} com erros.`
     );
   } catch (error) {
@@ -118,7 +118,7 @@ export async function deleteSanitizedTextFilesWithOnlyText(folderPath: string): 
 
         if (content === 'TEXTO') {
           await fs.promises.unlink(filePath);
-          logger.info(`Arquivo removido (apenas 'TEXTO'): ${file}`);
+          logger.debug(`Arquivo removido (apenas 'TEXTO'): ${file}`);
           deletedCount++;
         }
       } catch (error) {
@@ -127,7 +127,7 @@ export async function deleteSanitizedTextFilesWithOnlyText(folderPath: string): 
     }
 
     if (deletedCount > 0) {
-      logger.info(`${deletedCount} arquivos sanitizados contendo apenas "TEXTO" foram removidos.`);
+      logger.debug(`${deletedCount} arquivos sanitizados contendo apenas "TEXTO" foram removidos.`);
     }
   } catch (error) {
     logger.error(`Erro na limpeza de arquivos sanitizados em ${folderPath}:`, error);

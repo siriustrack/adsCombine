@@ -18,7 +18,7 @@ export class DeleteTextsService {
     deletedFiles: string[];
     deletedCount: number;
   }> {
-    logger.info('Received /delete-texts request', { conversationId });
+    logger.debug('Received /delete-texts request', { conversationId });
 
     const { value: allFiles, error } = await wrapPromiseResult<string[], Error>(
       fs.readdir(join(TEXTS_DIR, conversationId!))
@@ -36,7 +36,7 @@ export class DeleteTextsService {
       };
     }
 
-    logger.info('Found files to delete', { count: allFiles.length });
+    logger.debug('Found files to delete', { count: allFiles.length });
 
     const { error: deleteError } = await wrapPromiseResult<void, Error>(
       fs.rm(join(TEXTS_DIR, conversationId!), { recursive: true, force: true })
@@ -69,7 +69,7 @@ export class DeleteTextsService {
       status: 200,
     };
 
-    logger.info('Delete operation completed', response);
+    logger.debug('Delete operation completed', response);
 
     return response;
   }
