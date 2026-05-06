@@ -1,5 +1,6 @@
 import { env } from '@config/env';
 import logger from '@lib/logger';
+import { redactUrl } from '@lib/redact-url';
 import { errResult, okResult, type Result } from '@lib/result.types';
 import { sanitize } from 'utils/sanitize';
 import type { FileInput } from '../process-messages.service';
@@ -7,7 +8,11 @@ import { FileDownloadService } from './file-download.service';
 import { OcrOrchestrator } from './ocr-orchestrator.service';
 import type { PdfPageText } from './pdf-text-extractor.service';
 import { PdfTextExtractorService } from './pdf-text-extractor.service';
-import { TextQualityAnalyzer } from './text-quality-analyzer.service';
+import {
+  type PageTextClassification,
+  type PageTextDiagnostics,
+  TextQualityAnalyzer,
+} from './text-quality-analyzer.service';
 
 type ProcessPdfOptions = {
   maxFileBytes?: number;
@@ -19,6 +24,25 @@ type ProcessPdfOptions = {
     remaining(): number;
   };
 };
+
+type PageOcrDecisionReason =
+  | 'visual-content'
+  | 'ocr-indicators'
+  | 'insufficient-native-text'
+  | 'quality-analysis-skip'
+  | 'native-text-sufficient';
+
+type MixedPageDiagnostics = {
+  pageNumber: number;
+  embeddedImageCount: number;
+  tableCount: number;
+  hasVisualContent: boolean;
+  shouldOcr: boolean;
+  ocrDecisionReason: PageOcrDecisionReason;
+  textDiagnostics: PageTextDiagnostics;
+};
+
+type PageClassificationCounts = Record<PageTextClassification, number>;
 
 class PdfLimitError extends Error {
   constructor(
@@ -99,9 +123,12 @@ export class ProcessPdfService {
   async execute(file: FileInput, options: ProcessPdfOptions = {}): Promise<Result<string, Error>> {
     const { fileId, url } = file;
 
-    logger.info('Starting PDF processing', { fileId, url });
+    logger.info('Starting PDF processing', { fileId, url: redactUrl(url) });
 
     // 1. Download do arquivo
+    const downloadStartedAt = Date.now();
+    logger.info('Downloading PDF file', { fileId, url: redactUrl(url) });
+
     const { value: downloadedFile, error: downloadError } =
       await this.fileDownloadService.downloadFile(url, fileId, { maxBytes: options.maxFileBytes });
 
@@ -109,9 +136,24 @@ export class ProcessPdfService {
       return errResult(downloadError);
     }
 
+    logger.info('PDF file downloaded', {
+      fileId,
+      bytes: downloadedFile.buffer.byteLength,
+      contentLength: downloadedFile.contentLength,
+      durationMs: Date.now() - downloadStartedAt,
+    });
+
     // 2. Extração de texto direto
+    const nativeExtractionStartedAt = Date.now();
+    logger.info('Extracting native text from PDF', {
+      fileId,
+      bytes: downloadedFile.buffer.byteLength,
+    });
+
     const { value: textData, error: extractionError } =
-      await this.textExtractorService.extractTextFromPdf(downloadedFile.buffer, fileId);
+      await this.textExtractorService.extractTextFromPdf(downloadedFile.buffer, fileId, {
+        includePageVisualMetadata: options.mode === 'mixed-page',
+      });
 
     if (extractionError) {
       logger.error('Error extracting text from PDF', {
@@ -120,6 +162,13 @@ export class ProcessPdfService {
       });
       return errResult(new Error(`Erro ao extrair texto do PDF: ${extractionError.message}`));
     }
+
+    logger.info('Native PDF extraction completed', {
+      fileId,
+      totalPages: textData.totalPages,
+      textLength: textData.text.length,
+      durationMs: Date.now() - nativeExtractionStartedAt,
+    });
 
     const { text: extractedText, totalPages } = textData;
 
@@ -266,7 +315,10 @@ export class ProcessPdfService {
     }
 
     const pages = this.normalizePages(textData);
+    const pageDiagnostics = pages.map((page) => this.createMixedPageDiagnostics(page));
     const pagesToOcr = pages.filter((page) => this.shouldOcrPage(page));
+
+    this.logMixedPageDiagnostics(fileId, textData.totalPages, pageDiagnostics);
 
     if (options.maxOcrPagesPerPdf && pagesToOcr.length > options.maxOcrPagesPerPdf) {
       return errResult(
@@ -380,6 +432,101 @@ export class ProcessPdfService {
 
     const analysis = this.textQualityAnalyzer.analyzePage(page.text);
     return !analysis.shouldSkipOcr && (!analysis.isHighQuality || analysis.hasOcrIndicators);
+  }
+
+  private createMixedPageDiagnostics(page: PdfPageText): MixedPageDiagnostics {
+    const textDiagnostics = this.textQualityAnalyzer.analyzePageDiagnostics(page.text);
+    const { qualityAnalysis } = textDiagnostics;
+
+    if (page.hasVisualContent) {
+      return this.createMixedPageDiagnosticsEntry(page, textDiagnostics, true, 'visual-content');
+    }
+
+    const shouldOcr =
+      !qualityAnalysis.shouldSkipOcr &&
+      (!qualityAnalysis.isHighQuality || qualityAnalysis.hasOcrIndicators);
+
+    return this.createMixedPageDiagnosticsEntry(
+      page,
+      textDiagnostics,
+      shouldOcr,
+      this.getPageOcrDecisionReason(shouldOcr, qualityAnalysis)
+    );
+  }
+
+  private createMixedPageDiagnosticsEntry(
+    page: PdfPageText,
+    textDiagnostics: PageTextDiagnostics,
+    shouldOcr: boolean,
+    ocrDecisionReason: PageOcrDecisionReason
+  ): MixedPageDiagnostics {
+    return {
+      pageNumber: page.pageNumber,
+      embeddedImageCount: page.embeddedImageCount,
+      tableCount: page.tableCount,
+      hasVisualContent: page.hasVisualContent,
+      shouldOcr,
+      ocrDecisionReason,
+      textDiagnostics,
+    };
+  }
+
+  private getPageOcrDecisionReason(
+    shouldOcr: boolean,
+    qualityAnalysis: ReturnType<TextQualityAnalyzer['analyzePage']>
+  ): PageOcrDecisionReason {
+    if (shouldOcr) {
+      return qualityAnalysis.hasOcrIndicators ? 'ocr-indicators' : 'insufficient-native-text';
+    }
+
+    return qualityAnalysis.shouldSkipOcr ? 'quality-analysis-skip' : 'native-text-sufficient';
+  }
+
+  private logMixedPageDiagnostics(
+    fileId: string,
+    totalPages: number,
+    pageDiagnostics: MixedPageDiagnostics[]
+  ) {
+    const classificationCounts = this.countPageClassifications(pageDiagnostics);
+
+    logger.debug('Mixed-page PDF diagnostics evaluated', {
+      fileId,
+      totalPages,
+      normalizedPages: pageDiagnostics.length,
+      pagesSelectedForOcr: pageDiagnostics.filter((page) => page.shouldOcr).length,
+      pagesWithVisualContent: pageDiagnostics.filter((page) => page.hasVisualContent).length,
+      pagesWithEmbeddedImages: pageDiagnostics.filter((page) => page.embeddedImageCount > 0).length,
+      pagesWithTables: pageDiagnostics.filter((page) => page.tableCount > 0).length,
+      classificationCounts,
+      pages: pageDiagnostics.map((page) => ({
+        pageNumber: page.pageNumber,
+        embeddedImageCount: page.embeddedImageCount,
+        tableCount: page.tableCount,
+        hasVisualContent: page.hasVisualContent,
+        shouldOcr: page.shouldOcr,
+        ocrDecisionReason: page.ocrDecisionReason,
+        textDiagnostics: page.textDiagnostics,
+      })),
+    });
+  }
+
+  private countPageClassifications(
+    pageDiagnostics: MixedPageDiagnostics[]
+  ): PageClassificationCounts {
+    const counts: PageClassificationCounts = {
+      empty: 0,
+      'short-text': 0,
+      'corrupted-text': 0,
+      'repetitive-text': 0,
+      'native-text': 0,
+      'ocr-candidate': 0,
+    };
+
+    for (const page of pageDiagnostics) {
+      counts[page.textDiagnostics.classification]++;
+    }
+
+    return counts;
   }
 
   private async runOcrWithFallback(

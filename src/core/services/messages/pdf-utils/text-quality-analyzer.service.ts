@@ -7,6 +7,27 @@ export interface TextQualityAnalysis {
   qualityScore: number;
 }
 
+export type PageTextClassification =
+  | 'empty'
+  | 'short-text'
+  | 'corrupted-text'
+  | 'repetitive-text'
+  | 'native-text'
+  | 'ocr-candidate';
+
+export interface PageTextDiagnostics {
+  textLength: number;
+  trimmedLength: number;
+  wordCount: number;
+  alphanumericRatio: number;
+  whitespaceRatio: number;
+  spaceDensity: number;
+  repetitionRatio: number;
+  hasReplacementCharacters: boolean;
+  classification: PageTextClassification;
+  qualityAnalysis: TextQualityAnalysis;
+}
+
 export class TextQualityAnalyzer {
   private readonly QUALITY_THRESHOLDS = {
     MIN_TEXT_LENGTH: 2000,
@@ -135,17 +156,41 @@ export class TextQualityAnalyzer {
   }
 
   analyzePage(pageText: string): TextQualityAnalysis {
+    return this.analyzePageDiagnostics(pageText).qualityAnalysis;
+  }
+
+  analyzePageDiagnostics(pageText: string): PageTextDiagnostics {
     const text = pageText.trim();
+    const metrics = this.calculatePageMetrics(text);
+    const hasReplacementCharacters = /[��]/.test(text);
 
     if (text.length === 0) {
-      return this.createQualityAnalysis({ qualityScore: 0 });
+      const qualityAnalysis = this.createQualityAnalysis({ qualityScore: 0 });
+
+      return this.createPageDiagnostics(
+        pageText,
+        text,
+        metrics,
+        hasReplacementCharacters,
+        qualityAnalysis
+      );
     }
 
-    if (text.length < this.PAGE_THRESHOLDS.MIN_TEXT_LENGTH || /[��]/.test(text)) {
-      return this.createQualityAnalysis({ hasOcrIndicators: true, qualityScore: 10 });
+    if (text.length < this.PAGE_THRESHOLDS.MIN_TEXT_LENGTH || hasReplacementCharacters) {
+      const qualityAnalysis = this.createQualityAnalysis({
+        hasOcrIndicators: true,
+        qualityScore: 10,
+      });
+
+      return this.createPageDiagnostics(
+        pageText,
+        text,
+        metrics,
+        hasReplacementCharacters,
+        qualityAnalysis
+      );
     }
 
-    const metrics = this.calculatePageMetrics(text);
     const isRepetitive = metrics.repetitionRatio > this.PAGE_THRESHOLDS.MAX_REPETITION_RATIO;
     const hasOcrIndicators = metrics.spaceDensity > this.PAGE_THRESHOLDS.MAX_SPACE_DENSITY;
     const isHighQuality =
@@ -160,9 +205,9 @@ export class TextQualityAnalyzer {
       metrics.wordCount >= this.PAGE_THRESHOLDS.STRONG_WORDS &&
       isHighQuality &&
       !isRepetitive;
-    const shouldSkipOcr = hasStrongNativeText || (isHighQuality && hasSubstantialContent && !isRepetitive);
-
-    return this.createQualityAnalysis({
+    const shouldSkipOcr =
+      hasStrongNativeText || (isHighQuality && hasSubstantialContent && !isRepetitive);
+    const qualityAnalysis = this.createQualityAnalysis({
       shouldSkipOcr,
       isHighQuality,
       isRepetitive,
@@ -176,6 +221,14 @@ export class TextQualityAnalyzer {
         hasSubstantialContent
       ),
     });
+
+    return this.createPageDiagnostics(
+      pageText,
+      text,
+      metrics,
+      hasReplacementCharacters,
+      qualityAnalysis
+    );
   }
 
   private performSinglePassAnalysis(text: string) {
@@ -328,21 +381,73 @@ export class TextQualityAnalyzer {
   }
 
   private calculatePageMetrics(text: string) {
-    const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+    const lines = text
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
     const uniqueLines = new Set(lines);
     const { spaceCount, alphanumericCount } = this.analyzeCharacters(text);
+    const whitespaceCount = text.match(/\s/g)?.length ?? 0;
 
     return {
       wordCount: text.split(/\s+/).filter(Boolean).length,
       alphanumericRatio: alphanumericCount / Math.max(1, text.length),
+      whitespaceRatio: whitespaceCount / Math.max(1, text.length),
       spaceDensity: spaceCount / Math.max(1, text.length),
       repetitionRatio: lines.length > 0 ? (lines.length - uniqueLines.size) / lines.length : 0,
     };
   }
 
-  private createQualityAnalysis(
-    overrides: Partial<TextQualityAnalysis> = {}
-  ): TextQualityAnalysis {
+  private createPageDiagnostics(
+    originalText: string,
+    trimmedText: string,
+    metrics: ReturnType<TextQualityAnalyzer['calculatePageMetrics']>,
+    hasReplacementCharacters: boolean,
+    qualityAnalysis: TextQualityAnalysis
+  ): PageTextDiagnostics {
+    return {
+      textLength: originalText.length,
+      trimmedLength: trimmedText.length,
+      wordCount: metrics.wordCount,
+      alphanumericRatio: metrics.alphanumericRatio,
+      whitespaceRatio: metrics.whitespaceRatio,
+      spaceDensity: metrics.spaceDensity,
+      repetitionRatio: metrics.repetitionRatio,
+      hasReplacementCharacters,
+      classification: this.classifyPageText(trimmedText, hasReplacementCharacters, qualityAnalysis),
+      qualityAnalysis,
+    };
+  }
+
+  private classifyPageText(
+    trimmedText: string,
+    hasReplacementCharacters: boolean,
+    qualityAnalysis: TextQualityAnalysis
+  ): PageTextClassification {
+    if (trimmedText.length === 0) {
+      return 'empty';
+    }
+
+    if (hasReplacementCharacters) {
+      return 'corrupted-text';
+    }
+
+    if (trimmedText.length < this.PAGE_THRESHOLDS.MIN_TEXT_LENGTH) {
+      return 'short-text';
+    }
+
+    if (qualityAnalysis.isRepetitive) {
+      return 'repetitive-text';
+    }
+
+    if (qualityAnalysis.shouldSkipOcr) {
+      return 'native-text';
+    }
+
+    return 'ocr-candidate';
+  }
+
+  private createQualityAnalysis(overrides: Partial<TextQualityAnalysis> = {}): TextQualityAnalysis {
     return {
       shouldSkipOcr: false,
       isHighQuality: false,
