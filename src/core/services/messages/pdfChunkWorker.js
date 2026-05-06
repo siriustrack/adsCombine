@@ -50,7 +50,8 @@ function logWorkerWarn(message) {
 }
 
 function sh(cmd, opts = {}) {
-  return execSync(cmd, { stdio: 'pipe', encoding: 'utf-8', ...opts });
+  const timeout = getEnvInt('PDF_WORKER_CMD_TIMEOUT', 120000); // 2 minutes default per command
+  return execSync(cmd, { stdio: 'pipe', encoding: 'utf-8', timeout, killSignal: 'SIGKILL', ...opts });
 }
 
 // -----------------------------------------------------------------------------
@@ -70,6 +71,12 @@ function getEnvFloat(name, defaultValue) {
   return Number.isFinite(parsed) ? parsed : defaultValue;
 }
 
+function getEnvBool(name, defaultValue) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || String(raw).trim() === '') return defaultValue;
+  return /^(1|true|yes|on)$/i.test(String(raw));
+}
+
 function getEnvStr(name, defaultValue) {
   const raw = process.env[name];
   return raw && String(raw).trim() ? String(raw).trim() : defaultValue;
@@ -87,11 +94,12 @@ function hasCmd(cmd) {
   }
 }
 
-function magickCmd() {
-  return hasCmd('magick') ? 'magick' : 'convert';
-}
+const MAGICK_CMD = hasCmd('magick') ? 'magick' : hasCmd('convert') ? 'convert' : null;
+const HAS_MAGICK = Boolean(MAGICK_CMD);
 
-const HAS_MAGICK = hasCmd('magick') || hasCmd('convert');
+function magickCmd() {
+  return MAGICK_CMD || 'convert';
+}
 
 function magickHelp() {
   try {
@@ -104,6 +112,11 @@ function magickHelp() {
 const MAGICK_HELP = HAS_MAGICK ? String(magickHelp()) : '';
 const HAS_MAGICK_ADAPTIVE_THRESHOLD = /-adaptive-threshold\b/i.test(MAGICK_HELP);
 const HAS_MAGICK_LAT = /-lat\b/i.test(MAGICK_HELP);
+
+const testHooks = {
+  runTesseractTsv: null,
+  rotatePngWithMagick: null,
+};
 
 // -----------------------------------------------------------------------------
 // Tesseract language selection
@@ -214,11 +227,38 @@ function collectPageOcrResult({ structuredPages, pages, texts, pageNumber, text 
 }
 
 function runTesseractTsv(imagePath, { lang, oem, psm, dpi, env }) {
+  if (testHooks.runTesseractTsv) {
+    return testHooks.runTesseractTsv(imagePath, { lang, oem, psm, dpi, env });
+  }
+
   // Use TSV output to get confidence; we also reconstruct text from the TSV.
   // Note: `--dpi` exists in tesseract 5.x and helps some scans.
   const cmd = `tesseract "${imagePath}" stdout -l ${lang} --oem ${oem} --psm ${psm} --dpi ${dpi} tsv`;
   const tsv = sh(cmd, { env });
   return parseTsvToTextAndConfidence(tsv);
+}
+
+function parseRotationAngles() {
+  const raw = getEnvStr('PDF_OCR_ROTATE_ANGLES', '90,270');
+  const allowedAngles = new Set([90, 180, 270]);
+  const angles = raw
+    .split(',')
+    .map((value) => Number.parseInt(value.trim(), 10))
+    .filter((angle) => allowedAngles.has(angle));
+
+  return Array.from(new Set(angles));
+}
+
+function rotatePngWithMagick(inputPng, outputPng, angle) {
+  if (testHooks.rotatePngWithMagick) {
+    return testHooks.rotatePngWithMagick(inputPng, outputPng, angle);
+  }
+
+  if (!HAS_MAGICK) return false;
+
+  const cmd = magickCmd();
+  sh(`${cmd} "${inputPng}" -rotate ${angle} +repage "${outputPng}"`);
+  return true;
 }
 
 function preprocessWithMagick(inputPng, outputPng, { scalePercent, threshold }) {
@@ -321,6 +361,14 @@ function performOcrOnPages(pngs, env, options = {}) {
   const goodEnoughConfidence = getEnvInt('PDF_OCR_GOOD_CONF', 78);
   const goodEnoughMinChars = getEnvInt('PDF_OCR_GOOD_MIN_CHARS', 300);
   const goodEnoughMinWords = getEnvInt('PDF_OCR_GOOD_MIN_WORDS', 30);
+  const rotateEnabled = getEnvBool('PDF_OCR_ROTATE_ENABLED', false);
+  const rotateMaxAttempts = getEnvInt('PDF_OCR_ROTATE_MAX_ATTEMPTS', 1);
+  const rotateAngles = parseRotationAngles().slice(0, rotateMaxAttempts);
+  const rotateMinScoreGain = getEnvFloat('PDF_OCR_ROTATE_MIN_SCORE_GAIN', 8);
+  const rotateMinWords = getEnvInt('PDF_OCR_ROTATE_MIN_WORDS', 10);
+  const rotateWeakMaxWords = getEnvInt('PDF_OCR_ROTATE_WEAK_MAX_WORDS', 5);
+  const rotateWeakMaxConfidence = getEnvInt('PDF_OCR_ROTATE_WEAK_MAX_CONF', 50);
+  const rotateWeakMaxChars = getEnvInt('PDF_OCR_ROTATE_WEAK_MAX_CHARS', 30);
 
   for (let pageIndex = 0; pageIndex < pngs.length; pageIndex++) {
     const png = pngs[pageIndex];
@@ -379,6 +427,14 @@ function performOcrOnPages(pngs, env, options = {}) {
       );
     }
 
+    function hasVeryWeakOcrEvidence(result) {
+      return (
+        result.wordCount <= rotateWeakMaxWords ||
+        result.meanConfidence <= rotateWeakMaxConfidence ||
+        result.text.length <= rotateWeakMaxChars
+      );
+    }
+
     function maybeQueueMoreAttempts(result) {
       // If the first attempt isn't good enough, try a preprocessed version.
       if (attempts.length < maxAttempts && !isGoodEnough(result)) {
@@ -396,6 +452,54 @@ function performOcrOnPages(pngs, env, options = {}) {
       if (attempts.length < maxAttempts && !isGoodEnough(result)) {
         if (ensurePrepThreshold()) {
           attempts.push({ label: 'prep_thr', path: pre2, psm: fallbackPsm });
+        }
+      }
+    }
+
+    function maybeTryRotatedFallback() {
+      if (!rotateEnabled || isGoodEnough(best) || !hasVeryWeakOcrEvidence(best) || rotateAngles.length === 0) {
+        return;
+      }
+
+      const baselineScore = bestScore;
+      const baselineMeta = bestMeta;
+
+      for (const angle of rotateAngles) {
+        const rotatedPng = path.join(workDir, `${base}__rot_${angle}.png`);
+        try {
+          if (!rotatePngWithMagick(png, rotatedPng, angle)) {
+            continue;
+          }
+
+          const result = runTesseractTsv(rotatedPng, {
+            lang,
+            oem,
+            psm: preferredPsm,
+            dpi,
+            env,
+          });
+          const score = scoreOcrResult(result);
+          const scoreGain = score - baselineScore;
+
+          if (result.wordCount >= rotateMinWords && scoreGain >= rotateMinScoreGain && score > bestScore) {
+            bestScore = score;
+            best = result;
+            bestMeta = {
+              label: 'rotated',
+              psm: preferredPsm,
+              rotation: {
+                angle,
+                baselineLabel: baselineMeta.label,
+                scoreGain: Number(scoreGain.toFixed(2)),
+              },
+            };
+          }
+        } catch (error) {
+          logWorkerWarn(
+            `[Worker ${process.pid}] OCR rotated fallback failed (angle=${angle}, psm=${preferredPsm}) on page ${
+              pageIndex + 1
+            }: ${error.message}`
+          );
         }
       }
     }
@@ -435,6 +539,8 @@ function performOcrOnPages(pngs, env, options = {}) {
         );
       }
     }
+
+    maybeTryRotatedFallback();
 
     if (best?.text?.trim()) {
       const pageNumber = pageOffset + pageIndex;
@@ -483,7 +589,7 @@ function logError(fileId, pageRange, totalDuration, error) {
 // -----------------------------------------------------------------------------
 // Worker entrypoint
 // -----------------------------------------------------------------------------
-module.exports = async function worker(payload) {
+async function worker(payload) {
   const t0 = Date.now();
   const { pageRange, pdfPath, fileId, structuredPages } = payload;
 
@@ -546,4 +652,18 @@ module.exports = async function worker(payload) {
       // Ignore cleanup errors
     }
   }
+}
+
+module.exports = worker;
+module.exports.__test = {
+  performOcrOnPages,
+  scoreOcrResult,
+  setHooks(hooks = {}) {
+    testHooks.runTesseractTsv = hooks.runTesseractTsv || null;
+    testHooks.rotatePngWithMagick = hooks.rotatePngWithMagick || null;
+  },
+  resetHooks() {
+    testHooks.runTesseractTsv = null;
+    testHooks.rotatePngWithMagick = null;
+  },
 };
