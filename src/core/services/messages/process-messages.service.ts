@@ -67,15 +67,18 @@ export class ProcessMessagesService {
   private readonly processPdfService = new ProcessPdfService();
   private readonly wordExtractor = new WordExtractor();
 
-  async execute({
-    messages,
-    host,
-    protocol,
-  }: {
-    messages: ProcessMessage;
-    protocol: string;
-    host: string;
-  }, options: ProcessMessagesOptions = {}): Promise<ProcessMessagesResponse> {
+  async execute(
+    {
+      messages,
+      host,
+      protocol
+    }: {
+      messages: ProcessMessage;
+      protocol: string;
+      host: string;
+    },
+    options: ProcessMessagesOptions = {}
+  ): Promise<ProcessMessagesResponse> {
     const processedFiles: string[] = [];
     const failedFiles: { fileId: string; error: string }[] = [];
     const extractedTexts: string[] = [];
@@ -93,9 +96,7 @@ export class ProcessMessagesService {
           failedFiles.push(...files.map((file) => ({ fileId: file.fileId, error: errorMessage })));
 
           if (options.includeReadableErrorBlocks) {
-            extractedTexts.push(
-              this.createReadableErrorBlock('request-files-limit', new Error(errorMessage))
-            );
+            extractedTexts.push(this.createReadableErrorBlock('request-files-limit', new Error(errorMessage)));
           }
 
           continue;
@@ -138,13 +139,11 @@ export class ProcessMessagesService {
     if (result.error) {
       logger.error('Failed to process file', {
         fileId: file.fileId,
-        error: result.error.message,
+        error: result.error.message
       });
 
       if (options.includeReadableErrorBlocks) {
-        extractedTexts.push(
-          this.createReadableErrorBlock(path.basename(new URL(file.url).pathname), result.error)
-        );
+        extractedTexts.push(this.createReadableErrorBlock(path.basename(new URL(file.url).pathname), result.error));
       }
 
       return { success: false, fileId: file.fileId, error: result.error.message };
@@ -171,13 +170,26 @@ export class ProcessMessagesService {
     const fileTypeMap: Record<string, () => Promise<Result<string, Error>>> = {
       plain: () => this.processTxt(file),
       pdf: () =>
-        this.processPdfService.execute(file, {
-          maxFileBytes: options.limits?.maxFileBytes,
-          mode: options.pdfMode,
-          maxPdfPages: options.limits?.maxPdfPages,
-          maxOcrPagesPerPdf: options.limits?.maxOcrPagesPerPdf,
-          ocrPageBudget,
-        }),
+        this.processWithTimeout(
+          async () => {
+            const result = await this.processPdfService.execute(file, {
+              maxFileBytes: options.limits?.maxFileBytes,
+              mode: options.pdfMode,
+              maxPdfPages: options.limits?.maxPdfPages,
+              maxOcrPagesPerPdf: options.limits?.maxOcrPagesPerPdf,
+              ocrPageBudget,
+            });
+
+            if (result.error) {
+              throw result.error;
+            }
+
+            return result.value;
+          },
+          PROCESSING_TIMEOUTS.PDF_GLOBAL,
+          file.fileId,
+          'pdf'
+        ),
       jpeg: () => this.processImage(file),
       jpg: () => this.processImage(file),
       png: () => this.processImage(file),
@@ -192,7 +204,7 @@ export class ProcessMessagesService {
     if (!processor) {
       logger.warn('Unsupported file type, skipping', {
         fileType,
-        fileId: file.fileId,
+        fileId: file.fileId
       });
       return errResult(new Error(`Unsupported file type: ${fileType}`));
     }
@@ -217,7 +229,7 @@ export class ProcessMessagesService {
         processor(),
         new Promise<T>((_, reject) => {
           timer = setTimeout(() => reject(new Error(timeoutError)), timeout);
-        }),
+        })
       ]).finally(() => {
         if (timer) {
           clearTimeout(timer);
@@ -229,7 +241,7 @@ export class ProcessMessagesService {
       logger.error(`Error processing ${fileType} file`, {
         fileId,
         error: error.message,
-        stack: error.stack,
+        stack: error.stack
       });
 
       if (error.message.includes('timed out')) {
@@ -272,7 +284,7 @@ export class ProcessMessagesService {
       processedFiles,
       failedFiles,
       filename,
-      downloadUrl,
+      downloadUrl
     };
   }
 
@@ -317,12 +329,12 @@ export class ProcessMessagesService {
                   {
                     type: 'image_url',
                     image_url: {
-                      url: `data:${file.mimeType};base64,${base64Image}`,
-                    },
-                  },
-                ],
-              },
-            ],
+                      url: `data:${file.mimeType};base64,${base64Image}`
+                    }
+                  }
+                ]
+              }
+            ]
           },
           { timeout: PROCESSING_TIMEOUTS.OPENAI }
         );
@@ -374,10 +386,7 @@ export class ProcessMessagesService {
         const response = await httpClient.get(url, { responseType: 'arraybuffer' });
         const buffer = response.data as Buffer;
         const xlsxResult = processXLSXFile(
-          buffer.buffer.slice(
-            buffer.byteOffset,
-            buffer.byteOffset + buffer.byteLength
-          ) as ArrayBuffer
+          buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer
         );
         return xlsxToText(xlsxResult);
       },
@@ -402,7 +411,7 @@ export class ProcessMessagesService {
 
         const fileName = path.basename(new URL(url).pathname) || 'audio';
         const audioFile = new File([arrayBuffer], fileName, {
-          type: file.mimeType,
+          type: file.mimeType
         }) as Uploadable;
 
         const transcription = await openaiClient.audio.transcriptions.create(
@@ -410,7 +419,7 @@ export class ProcessMessagesService {
             file: audioFile,
             model: openaiConfig.models.audio,
             language: 'pt',
-            response_format: 'json',
+            response_format: 'json'
           },
           { timeout: PROCESSING_TIMEOUTS.OPENAI }
         );
