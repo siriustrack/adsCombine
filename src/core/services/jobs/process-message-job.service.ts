@@ -159,7 +159,7 @@ export class ProcessMessageJobService {
       );
 
       if (expired > 0 || deleted > 0) {
-        logger.info('Job maintenance completed', { expired, deleted });
+        logger.debug('Job maintenance completed', { expired, deleted });
       }
     } catch (error) {
       logger.warn('Job maintenance failed', { error: (error as Error).message }, error);

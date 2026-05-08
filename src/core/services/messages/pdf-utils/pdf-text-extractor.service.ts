@@ -32,7 +32,7 @@ export class PdfTextExtractorService {
     const includePageVisualMetadata = options.includePageVisualMetadata ?? true;
 
     try {
-      logger.info('Starting native PDF text extraction', {
+      logger.debug('Starting native PDF text extraction', {
         fileId,
         bytes: buffer.byteLength,
         timeoutMs: PROCESSING_TIMEOUTS.PDF_NATIVE_TEXT,
@@ -44,7 +44,7 @@ export class PdfTextExtractorService {
         'native PDF text extraction'
       );
 
-      logger.info('Native PDF text extraction completed', {
+      logger.debug('Native PDF text extraction completed', {
         fileId,
         totalPages: data.total ?? 0,
         textLength: data.text?.trim().length ?? 0,
@@ -104,7 +104,7 @@ export class PdfTextExtractorService {
   ): Promise<ImageResult | null> {
     const startedAt = Date.now();
 
-    logger.info('Starting PDF image metadata extraction', {
+    logger.debug('Starting PDF image metadata extraction', {
       fileId,
       timeoutMs: PROCESSING_TIMEOUTS.PDF_METADATA,
     });
@@ -126,7 +126,7 @@ export class PdfTextExtractorService {
       return null;
     }
 
-    logger.info('PDF image metadata extraction completed', {
+    logger.debug('PDF image metadata extraction completed', {
       fileId,
       pagesWithImages: value.pages.length,
       durationMs: Date.now() - startedAt,
@@ -141,7 +141,7 @@ export class PdfTextExtractorService {
   ): Promise<TableResult | null> {
     const startedAt = Date.now();
 
-    logger.info('Starting PDF table metadata extraction', {
+    logger.debug('Starting PDF table metadata extraction', {
       fileId,
       timeoutMs: PROCESSING_TIMEOUTS.PDF_METADATA,
     });
@@ -163,7 +163,7 @@ export class PdfTextExtractorService {
       return null;
     }
 
-    logger.info('PDF table metadata extraction completed', {
+    logger.debug('PDF table metadata extraction completed', {
       fileId,
       pagesWithTables: value.pages.length,
       durationMs: Date.now() - startedAt,

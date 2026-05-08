@@ -30,7 +30,7 @@ export const handleAuthMiddleware: RequestHandler = (req, res, next) => {
     return next();
   }
 
-  logger.info(`Skipping auth for path: ${req.path}`);
+  logger.debug(`Skipping auth for path: ${req.path}`);
 
   const auth = req.headers.authorization;
   if (!auth?.startsWith('Bearer ')) {

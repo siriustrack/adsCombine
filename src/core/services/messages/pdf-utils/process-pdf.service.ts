@@ -104,7 +104,7 @@ export class ProcessPdfService {
     hasStrongDirectText: boolean;
     ocrAlwaysThreshold: number;
   }) {
-    logger.info('PDF OCR decision evaluated', {
+    logger.debug('PDF OCR decision evaluated', {
       fileId,
       totalPages,
       textLength: extractedText.length,
@@ -123,11 +123,11 @@ export class ProcessPdfService {
   async execute(file: FileInput, options: ProcessPdfOptions = {}): Promise<Result<string, Error>> {
     const { fileId, url } = file;
 
-    logger.info('Starting PDF processing', { fileId, url: redactUrl(url) });
+    logger.debug('Starting PDF processing', { fileId, url: redactUrl(url) });
 
     // 1. Download do arquivo
     const downloadStartedAt = Date.now();
-    logger.info('Downloading PDF file', { fileId, url: redactUrl(url) });
+    logger.debug('Downloading PDF file', { fileId, url: redactUrl(url) });
 
     const { value: downloadedFile, error: downloadError } =
       await this.fileDownloadService.downloadFile(url, fileId, { maxBytes: options.maxFileBytes });
@@ -136,7 +136,7 @@ export class ProcessPdfService {
       return errResult(downloadError);
     }
 
-    logger.info('PDF file downloaded', {
+    logger.debug('PDF file downloaded', {
       fileId,
       bytes: downloadedFile.buffer.byteLength,
       contentLength: downloadedFile.contentLength,
@@ -145,7 +145,7 @@ export class ProcessPdfService {
 
     // 2. Extração de texto direto
     const nativeExtractionStartedAt = Date.now();
-    logger.info('Extracting native text from PDF', {
+    logger.debug('Extracting native text from PDF', {
       fileId,
       bytes: downloadedFile.buffer.byteLength,
     });
@@ -163,7 +163,7 @@ export class ProcessPdfService {
       return errResult(new Error(`Erro ao extrair texto do PDF: ${extractionError.message}`));
     }
 
-    logger.info('Native PDF extraction completed', {
+    logger.debug('Native PDF extraction completed', {
       fileId,
       totalPages: textData.totalPages,
       textLength: textData.text.length,
@@ -222,7 +222,7 @@ export class ProcessPdfService {
     }
 
     if (totalPages <= ocrAlwaysThreshold) {
-      logger.info('Running OCR - document within always-OCR threshold', {
+      logger.debug('Running OCR - document within always-OCR threshold', {
         fileId,
         totalPages,
         ocrAlwaysThreshold,
@@ -232,7 +232,7 @@ export class ProcessPdfService {
         const bytesPerPage = buffer.byteLength / totalPages;
         const looksLikeScannedDoc = bytesPerPage > env.PDF_BYTES_PER_PAGE_THRESHOLD;
 
-        logger.info('PDF file-size heuristic', {
+        logger.debug('PDF file-size heuristic', {
           fileId,
           totalBytes: buffer.byteLength,
           totalPages,
@@ -242,12 +242,12 @@ export class ProcessPdfService {
         });
 
         if (looksLikeScannedDoc) {
-          logger.info('Running OCR - file size suggests scanned/image content', {
+          logger.debug('Running OCR - file size suggests scanned/image content', {
             fileId,
             bytesPerPage: Math.round(bytesPerPage),
           });
         } else {
-          logger.info('Skipping OCR - file size consistent with digital text', {
+          logger.debug('Skipping OCR - file size consistent with digital text', {
             fileId,
             totalPages,
             charsPerPage: Math.round(charsPerPage),
@@ -257,7 +257,7 @@ export class ProcessPdfService {
           return okResult(sanitize(extractedText));
         }
       } else {
-        logger.info('Skipping OCR - text quality is sufficient', {
+        logger.debug('Skipping OCR - text quality is sufficient', {
           fileId,
           totalPages,
           charsPerPage: Math.round(charsPerPage),
@@ -267,7 +267,7 @@ export class ProcessPdfService {
       }
     }
 
-    logger.info('Starting OCR processing', {
+    logger.debug('Starting OCR processing', {
       fileId,
       totalPages,
       qualityScore: qualityAnalysis.qualityScore,
@@ -304,7 +304,7 @@ export class ProcessPdfService {
         );
       }
 
-      logger.info('Running direct OCR - small PDF has insufficient native text', {
+      logger.debug('Running direct OCR - small PDF has insufficient native text', {
         fileId,
         totalPages: textData.totalPages,
         nativeCharsPerPage: Math.round(textData.text.trim().length / textData.totalPages),
@@ -339,7 +339,7 @@ export class ProcessPdfService {
     }
 
     if (pagesToOcr.length === 0) {
-      logger.info('Skipping OCR - all pages have sufficient native text', {
+      logger.debug('Skipping OCR - all pages have sufficient native text', {
         fileId,
         totalPages: textData.totalPages,
       });
@@ -371,7 +371,7 @@ export class ProcessPdfService {
       .filter((text) => text.trim().length > 0)
       .join('\n\n');
 
-    logger.info('Mixed-page PDF processing completed', {
+    logger.debug('Mixed-page PDF processing completed', {
       fileId,
       totalPages: textData.totalPages,
       nativePages: pages.length - pagesToOcr.length,
@@ -545,7 +545,7 @@ export class ProcessPdfService {
       logger.error('OCR processing failed', { fileId, error: ocrError.message });
 
       if (extractedText.trim().length > 0) {
-        logger.info('OCR failed, falling back to direct text extraction', {
+        logger.debug('OCR failed, falling back to direct text extraction', {
           fileId,
           extractedTextLength: extractedText.length,
         });
@@ -556,7 +556,7 @@ export class ProcessPdfService {
     }
 
     if (!ocrResult.ocrText.trim() && extractedText.trim().length > 0) {
-      logger.info('OCR produced no text, using direct extraction as fallback', {
+      logger.debug('OCR produced no text, using direct extraction as fallback', {
         fileId,
         chunksProcessed: ocrResult.chunksProcessed,
         extractedTextLength: extractedText.length,
@@ -574,7 +574,7 @@ export class ProcessPdfService {
   ): string {
     const finalText = sanitize(ocrText);
 
-    logger.info('PDF processing completed', {
+    logger.debug('PDF processing completed', {
       fileId,
       finalTextLength: finalText.length,
       ocrTextLength: ocrText ? ocrText.length : 0,
