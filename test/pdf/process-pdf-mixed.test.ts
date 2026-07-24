@@ -179,6 +179,27 @@ async function createService({
 }
 
 describe('ProcessPdfService mixed-page mode', () => {
+  test('preserves OCR line and page breaks in the default PDF path', async () => {
+    const service = await createService({
+      totalPages: 1,
+      pages: [{ pageNumber: 1, text: '' }],
+      directOcrText: 'R.18/62.132\nTÍTULO: Compra e venda\n\nAV.20/62.132\nÁREA: 131,22m²',
+    });
+
+    const result = await service.execute({
+      fileId: 'default-ocr-layout-pdf',
+      url: 'https://example.com/default-ocr-layout.pdf',
+      mimeType: 'application/pdf',
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.value).toBe(
+      'R.18/62.132\nTÍTULO: Compra e venda\n\nAV.20/62.132\nÁREA: 131,22m²'
+    );
+    expect(service.ocrOrchestrator.directCalls).toBe(1);
+    expect(service.extractionOptions).toEqual([{ includePageVisualMetadata: false }]);
+  });
+
   test('disables visual metadata extraction for default and legacy modes', async () => {
     const defaultService = await createService({
       totalPages: 1,
@@ -213,7 +234,11 @@ describe('ProcessPdfService mixed-page mode', () => {
     });
 
     await service.execute(
-      { fileId: 'mixed-options-pdf', url: 'https://example.com/mixed.pdf', mimeType: 'application/pdf' },
+      {
+        fileId: 'mixed-options-pdf',
+        url: 'https://example.com/mixed.pdf',
+        mimeType: 'application/pdf',
+      },
       { mode: 'mixed-page' }
     );
 

@@ -2,7 +2,7 @@ import { env } from '@config/env';
 import logger from '@lib/logger';
 import { redactUrl } from '@lib/redact-url';
 import { errResult, okResult, type Result } from '@lib/result.types';
-import { sanitize } from 'utils/sanitize';
+import { sanitizePdfText } from 'utils/sanitize';
 import type { FileInput } from '../process-messages.service';
 import { FileDownloadService } from './file-download.service';
 import { OcrOrchestrator } from './ocr-orchestrator.service';
@@ -218,7 +218,7 @@ export class ProcessPdfService {
 
     if (totalPages === 0) {
       logger.warn('No pages found in PDF', { fileId });
-      return okResult(sanitize(extractedText));
+      return okResult(sanitizePdfText(extractedText));
     }
 
     if (totalPages <= ocrAlwaysThreshold) {
@@ -254,7 +254,7 @@ export class ProcessPdfService {
             bytesPerPage: Math.round(bytesPerPage),
             reason: 'filesize-validated',
           });
-          return okResult(sanitize(extractedText));
+          return okResult(sanitizePdfText(extractedText));
         }
       } else {
         logger.debug('Skipping OCR - text quality is sufficient', {
@@ -263,7 +263,7 @@ export class ProcessPdfService {
           charsPerPage: Math.round(charsPerPage),
           reason: hasStrongDirectText ? 'strong-direct-text' : 'quality-analysis',
         });
-        return okResult(sanitize(extractedText));
+        return okResult(sanitizePdfText(extractedText));
       }
     }
 
@@ -343,7 +343,7 @@ export class ProcessPdfService {
         fileId,
         totalPages: textData.totalPages,
       });
-      return okResult(sanitize(pages.map((page) => page.text).join('\n\n')));
+      return okResult(sanitizePdfText(pages.map((page) => page.text).join('\n\n')));
     }
 
     const { value: ocrResult, error } = await this.ocrOrchestrator.processPagesWithOcr(
@@ -356,7 +356,7 @@ export class ProcessPdfService {
     if (error) {
       const nativeText = textData.text.trim();
       if (nativeText.length > 0) {
-        return okResult(sanitize(nativeText));
+        return okResult(sanitizePdfText(nativeText));
       }
 
       return errResult(error);
@@ -380,7 +380,7 @@ export class ProcessPdfService {
       processingTime: ocrResult.processingTime,
     });
 
-    return okResult(sanitize(mergedText));
+    return okResult(sanitizePdfText(mergedText));
   }
 
   private validatePdfPageLimit(totalPages: number, maxPdfPages?: number): Error | null {
@@ -549,7 +549,7 @@ export class ProcessPdfService {
           fileId,
           extractedTextLength: extractedText.length,
         });
-        return okResult(sanitize(extractedText));
+        return okResult(sanitizePdfText(extractedText));
       }
 
       return errResult(ocrError);
@@ -561,7 +561,7 @@ export class ProcessPdfService {
         chunksProcessed: ocrResult.chunksProcessed,
         extractedTextLength: extractedText.length,
       });
-      return okResult(sanitize(extractedText));
+      return okResult(sanitizePdfText(extractedText));
     }
 
     return okResult(this.combineTextResults(ocrResult.ocrText, fileId, ocrResult));
@@ -572,7 +572,7 @@ export class ProcessPdfService {
     fileId: string,
     ocrResult: { chunksProcessed: number; processingTime: number }
   ): string {
-    const finalText = sanitize(ocrText);
+    const finalText = sanitizePdfText(ocrText);
 
     logger.debug('PDF processing completed', {
       fileId,
