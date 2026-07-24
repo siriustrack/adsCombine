@@ -13,10 +13,10 @@ export const httpClient = axios.create({
 httpClient.interceptors.response.use(
   response => response,
   error => {
-    if (error.config && error.config.url) {
+    if (error.config?.url) {
       error.config.url = redactUrl(error.config.url)
     }
-    if (error.request && error.request.path) {
+    if (error.request?.path) {
       error.request.path = redactUrl(error.request.path)
     }
     if (error.message) {

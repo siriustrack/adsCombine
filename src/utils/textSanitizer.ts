@@ -2,9 +2,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 import logger from '../lib/logger'
 
-const RE_CONTROL_CHARS = /[\u0000-\u0008\u000B-\u000C\u000E-\u001F]/g
+const CONTROL_CHARS_PATTERN = String.raw`[\u0000-\u0008\u000B-\u000C\u000E-\u001F]`
+const RE_CONTROL_CHARS = new RegExp(CONTROL_CHARS_PATTERN, 'g')
 const RE_ZERO_WIDTH = /[\u200B-\u200F\uFEFF\u00A0]/g
-const RE_LINE_SEPS = /[\u2028\u2029\u0085\u000A\u000D]/g
+const LINE_SEPARATORS_PATTERN = String.raw`[\u2028\u2029\u0085\u000A\u000D]`
+const RE_LINE_SEPS = new RegExp(LINE_SEPARATORS_PATTERN, 'g')
 const RE_NON_PRINTABLE = /[^\x20-\x7E\xC0-\xFF\u00A1-\u017F\u0400-\u04FF\n\r\t]/g
 const RE_SYMBOL_SEQUENCES = /[!@#$%^&*()_+\-={}[\]|\\:;"'<>,.?/]{3,}/g
 const RE_MULTI_SPACES = /\s{3,}/g
