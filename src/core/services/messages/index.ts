@@ -1,5 +1,5 @@
-import { DeleteTextsService } from './delete-texts.services';
-import { ProcessMessagesService } from './process-messages.service';
+import { DeleteTextsService } from './delete-texts.services'
+import { ProcessMessagesService } from './process-messages.service'
 
-export const deleteTextsService = new DeleteTextsService();
-export const processMessagesService = new ProcessMessagesService();
+export const deleteTextsService = new DeleteTextsService()
+export const processMessagesService = new ProcessMessagesService()

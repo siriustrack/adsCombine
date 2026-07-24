@@ -1,8 +1,8 @@
-import express from 'express';
-import multer from 'multer';
-import { transcribeController } from '../controllers';
+import express from 'express'
+import multer from 'multer'
+import { transcribeController } from '../controllers'
 
-const router = express.Router();
+const router = express.Router()
 
 // Configure multer for memory storage with 50MB limit
 const upload = multer({
@@ -20,15 +20,15 @@ const upload = multer({
       'audio/ogg',
       'audio/m4a',
       'audio/mp4',
-    ];
+    ]
 
     if (allowedMimeTypes.includes(file.mimetype)) {
-      cb(null, true);
+      cb(null, true)
     } else {
-      cb(new Error(`Formato de áudio não suportado: ${file.mimetype}`));
+      cb(new Error(`Formato de áudio não suportado: ${file.mimetype}`))
     }
   },
-});
+})
 
 /**
  * @openapi
@@ -117,7 +117,7 @@ const upload = multer({
  */
 router.post('/transcribe', upload.single('audio'), (req, res) =>
   transcribeController.transcribe(req, res)
-);
+)
 
 // Error handler for multer errors
 router.use(
@@ -130,26 +130,26 @@ router.use(
           details: {
             maxSize: '50MB',
           },
-        });
-        return;
+        })
+        return
       }
       res.status(400).json({
         error: err.message,
         code: 'UPLOAD_ERROR',
-      });
-      return;
+      })
+      return
     }
 
     if (err instanceof Error) {
       res.status(400).json({
         error: err.message,
         code: 'VALIDATION_ERROR',
-      });
-      return;
+      })
+      return
     }
 
-    next();
+    next()
   }
-);
+)
 
-export default router;
+export default router

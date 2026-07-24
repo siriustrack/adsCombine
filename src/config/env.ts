@@ -1,4 +1,4 @@
-import z from 'zod';
+import z from 'zod'
 
 const envSchema = z.object({
   BASE_URL: z.string(),
@@ -24,6 +24,6 @@ const envSchema = z.object({
   TOKEN: z.string().min(1),
   // Toggle to enable/disable request/route logs ("true"/"false")
   REQUEST_LOGS_ENABLED: z.coerce.boolean().default(false),
-});
+})
 
-export const env = envSchema.parse(process.env);
+export const env = envSchema.parse(process.env)

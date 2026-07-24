@@ -1,4 +1,4 @@
-import { OpenAI } from 'openai';
+import { OpenAI } from 'openai'
 
 export const openaiConfig = {
   apiKey: process.env.OPENAI_API_KEY,
@@ -7,6 +7,6 @@ export const openaiConfig = {
     vision: process.env.OPENAI_MODEL_VISION || 'gpt-4o-mini',
     audio: process.env.OPENAI_MODEL_AUDIO || 'whisper-1',
   },
-};
+}
 
-export const openaiClient = new OpenAI({ apiKey: openaiConfig.apiKey });
+export const openaiClient = new OpenAI({ apiKey: openaiConfig.apiKey })

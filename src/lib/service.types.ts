@@ -1,21 +1,21 @@
-import type { Result } from './result.types';
+import type { Result } from './result.types'
 
 /**
  * Padroniza a resposta de sucesso dos serviços
  */
 export interface ServiceSuccess<TData = unknown> {
-  status: number;
-  data: TData;
+  status: number
+  data: TData
 }
 
 /**
  * Padroniza a resposta de erro dos serviços
  */
 export interface ServiceError {
-  status: number;
-  message: string;
-  code?: string;
-  details?: unknown;
+  status: number
+  message: string
+  code?: string
+  details?: unknown
 }
 
 /**
@@ -34,15 +34,15 @@ export interface ServiceError {
  * ```
  */
 export interface Service<TInput = unknown, TOutput = unknown> {
-  execute(data: TInput): Promise<Result<ServiceSuccess<TOutput>, ServiceError>>;
+  execute(data: TInput): Promise<Result<ServiceSuccess<TOutput>, ServiceError>>
 }
 
 /**
  * Response type para Express
  */
 type ExpressResponse = {
-  status: (code: number) => { json: (data: unknown) => unknown };
-};
+  status: (code: number) => { json: (data: unknown) => unknown }
+}
 
 /**
  * Envia resposta de sucesso para o cliente
@@ -51,7 +51,7 @@ function sendSuccessResponse<T>(res: ExpressResponse, result: ServiceSuccess<T>)
   return res.status(result.status).json({
     success: true,
     data: result.data,
-  });
+  })
 }
 
 /**
@@ -65,7 +65,7 @@ function sendErrorResponse(res: ExpressResponse, error: ServiceError) {
       code: error.code,
       details: error.details,
     },
-  });
+  })
 }
 
 /**
@@ -75,11 +75,11 @@ export async function handleServiceResult<T>(
   res: ExpressResponse,
   servicePromise: Promise<Result<ServiceSuccess<T>, ServiceError>>
 ) {
-  const result = await servicePromise;
+  const result = await servicePromise
 
   if (result.error) {
-    return sendErrorResponse(res, result.error);
+    return sendErrorResponse(res, result.error)
   }
 
-  return sendSuccessResponse(res, result.value!);
+  return sendSuccessResponse(res, result.value!)
 }

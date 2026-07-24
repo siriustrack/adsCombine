@@ -11,4 +11,4 @@ export const PROCESSING_TIMEOUTS = {
   OPENAI: 30000, // 30 segundos,
   AUDIO: 120000, // 2 minutos
   XLSX: 20000, // 20 segundos
-} as const;
+} as const

@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import swaggerJsdoc from 'swagger-jsdoc';
+import { existsSync, readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import swaggerJsdoc from 'swagger-jsdoc'
 
 const definition = {
   openapi: '3.0.0',
@@ -78,19 +78,19 @@ const definition = {
       },
     },
   },
-} as const;
+} as const
 
-const staticSpecPath = resolve(__dirname, '../../openapi.json');
+const staticSpecPath = resolve(__dirname, '../../openapi.json')
 
 function loadSwaggerSpec(): object {
   if (existsSync(staticSpecPath)) {
-    return JSON.parse(readFileSync(staticSpecPath, 'utf-8'));
+    return JSON.parse(readFileSync(staticSpecPath, 'utf-8'))
   }
 
   return swaggerJsdoc({
     definition,
     apis: ['./src/api/routes/*.ts'],
-  });
+  })
 }
 
-export const swaggerSpec = loadSwaggerSpec();
+export const swaggerSpec = loadSwaggerSpec()

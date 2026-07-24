@@ -1,90 +1,90 @@
-import { env } from '@config/env';
-import logger from '@lib/logger';
-import { redactUrl } from '@lib/redact-url';
-import { errResult, okResult, type Result } from '@lib/result.types';
-import { sanitizePdfText } from 'utils/sanitize';
-import type { FileInput } from '../process-messages.service';
-import { FileDownloadService } from './file-download.service';
-import { OcrOrchestrator } from './ocr-orchestrator.service';
-import type { PdfPageText } from './pdf-text-extractor.service';
-import { PdfTextExtractorService } from './pdf-text-extractor.service';
+import { env } from '@config/env'
+import logger from '@lib/logger'
+import { redactUrl } from '@lib/redact-url'
+import { errResult, okResult, type Result } from '@lib/result.types'
+import { sanitizePdfText } from 'utils/sanitize'
+import type { FileInput } from '../process-messages.service'
+import { FileDownloadService } from './file-download.service'
+import { OcrOrchestrator } from './ocr-orchestrator.service'
+import type { PdfPageText } from './pdf-text-extractor.service'
+import { PdfTextExtractorService } from './pdf-text-extractor.service'
 import {
   type PageTextClassification,
   type PageTextDiagnostics,
   TextQualityAnalyzer,
-} from './text-quality-analyzer.service';
+} from './text-quality-analyzer.service'
 
 type ProcessPdfOptions = {
-  maxFileBytes?: number;
-  mode?: 'legacy' | 'mixed-page';
-  maxPdfPages?: number;
-  maxOcrPagesPerPdf?: number;
+  maxFileBytes?: number
+  mode?: 'legacy' | 'mixed-page'
+  maxPdfPages?: number
+  maxOcrPagesPerPdf?: number
   ocrPageBudget?: {
-    reserve(pageCount: number): boolean;
-    remaining(): number;
-  };
-};
+    reserve(pageCount: number): boolean
+    remaining(): number
+  }
+}
 
 type PageOcrDecisionReason =
   | 'visual-content'
   | 'ocr-indicators'
   | 'insufficient-native-text'
   | 'quality-analysis-skip'
-  | 'native-text-sufficient';
+  | 'native-text-sufficient'
 
 type MixedPageDiagnostics = {
-  pageNumber: number;
-  embeddedImageCount: number;
-  tableCount: number;
-  hasVisualContent: boolean;
-  shouldOcr: boolean;
-  ocrDecisionReason: PageOcrDecisionReason;
-  textDiagnostics: PageTextDiagnostics;
-};
+  pageNumber: number
+  embeddedImageCount: number
+  tableCount: number
+  hasVisualContent: boolean
+  shouldOcr: boolean
+  ocrDecisionReason: PageOcrDecisionReason
+  textDiagnostics: PageTextDiagnostics
+}
 
-type PageClassificationCounts = Record<PageTextClassification, number>;
+type PageClassificationCounts = Record<PageTextClassification, number>
 
 class PdfLimitError extends Error {
   constructor(
     readonly code: string,
     message: string
   ) {
-    super(message);
-    this.name = 'PdfLimitError';
+    super(message)
+    this.name = 'PdfLimitError'
   }
 }
 
 export class ProcessPdfService {
-  private readonly fileDownloadService = new FileDownloadService();
-  private readonly textExtractorService = new PdfTextExtractorService();
-  private readonly textQualityAnalyzer = new TextQualityAnalyzer();
-  private readonly ocrOrchestrator = new OcrOrchestrator();
+  private readonly fileDownloadService = new FileDownloadService()
+  private readonly textExtractorService = new PdfTextExtractorService()
+  private readonly textQualityAnalyzer = new TextQualityAnalyzer()
+  private readonly ocrOrchestrator = new OcrOrchestrator()
 
   private shouldBypassOcr({
     extractedText,
     totalPages,
     qualityAnalysis,
   }: {
-    extractedText: string;
-    totalPages: number;
-    qualityAnalysis: ReturnType<TextQualityAnalyzer['analyze']>;
+    extractedText: string
+    totalPages: number
+    qualityAnalysis: ReturnType<TextQualityAnalyzer['analyze']>
   }) {
-    const pages = Math.max(1, totalPages || 0);
-    const charsPerPage = extractedText.length / pages;
-    const minCharsPerPage = pages <= 1 ? 300 : pages === 2 ? 650 : 900;
+    const pages = Math.max(1, totalPages || 0)
+    const charsPerPage = extractedText.length / pages
+    const minCharsPerPage = pages <= 1 ? 300 : pages === 2 ? 650 : 900
     const hasStrongDirectText =
       qualityAnalysis.isHighQuality &&
       qualityAnalysis.hasSubstantialContent &&
       !qualityAnalysis.isRepetitive &&
       charsPerPage >= minCharsPerPage &&
-      extractedText.length >= 8000;
+      extractedText.length >= 8000
 
     return {
       charsPerPage,
       hasStrongDirectText,
       shouldSkipOcr:
         hasStrongDirectText || (qualityAnalysis.shouldSkipOcr && charsPerPage >= minCharsPerPage),
-    };
+    }
   }
 
   private logOcrDecision({
@@ -96,13 +96,13 @@ export class ProcessPdfService {
     hasStrongDirectText,
     ocrAlwaysThreshold,
   }: {
-    fileId: string;
-    extractedText: string;
-    totalPages: number;
-    qualityAnalysis: ReturnType<TextQualityAnalyzer['analyze']>;
-    charsPerPage: number;
-    hasStrongDirectText: boolean;
-    ocrAlwaysThreshold: number;
+    fileId: string
+    extractedText: string
+    totalPages: number
+    qualityAnalysis: ReturnType<TextQualityAnalyzer['analyze']>
+    charsPerPage: number
+    hasStrongDirectText: boolean
+    ocrAlwaysThreshold: number
   }) {
     logger.debug('PDF OCR decision evaluated', {
       fileId,
@@ -117,23 +117,23 @@ export class ProcessPdfService {
       hasOcrIndicators: qualityAnalysis.hasOcrIndicators,
       hasSubstantialContent: qualityAnalysis.hasSubstantialContent,
       qualityScore: qualityAnalysis.qualityScore,
-    });
+    })
   }
 
   async execute(file: FileInput, options: ProcessPdfOptions = {}): Promise<Result<string, Error>> {
-    const { fileId, url } = file;
+    const { fileId, url } = file
 
-    logger.debug('Starting PDF processing', { fileId, url: redactUrl(url) });
+    logger.debug('Starting PDF processing', { fileId, url: redactUrl(url) })
 
     // 1. Download do arquivo
-    const downloadStartedAt = Date.now();
-    logger.debug('Downloading PDF file', { fileId, url: redactUrl(url) });
+    const downloadStartedAt = Date.now()
+    logger.debug('Downloading PDF file', { fileId, url: redactUrl(url) })
 
     const { value: downloadedFile, error: downloadError } =
-      await this.fileDownloadService.downloadFile(url, fileId, { maxBytes: options.maxFileBytes });
+      await this.fileDownloadService.downloadFile(url, fileId, { maxBytes: options.maxFileBytes })
 
     if (downloadError) {
-      return errResult(downloadError);
+      return errResult(downloadError)
     }
 
     logger.debug('PDF file downloaded', {
@@ -141,26 +141,26 @@ export class ProcessPdfService {
       bytes: downloadedFile.buffer.byteLength,
       contentLength: downloadedFile.contentLength,
       durationMs: Date.now() - downloadStartedAt,
-    });
+    })
 
     // 2. Extração de texto direto
-    const nativeExtractionStartedAt = Date.now();
+    const nativeExtractionStartedAt = Date.now()
     logger.debug('Extracting native text from PDF', {
       fileId,
       bytes: downloadedFile.buffer.byteLength,
-    });
+    })
 
     const { value: textData, error: extractionError } =
       await this.textExtractorService.extractTextFromPdf(downloadedFile.buffer, fileId, {
         includePageVisualMetadata: options.mode === 'mixed-page',
-      });
+      })
 
     if (extractionError) {
       logger.error('Error extracting text from PDF', {
         fileId,
         error: extractionError.message,
-      });
-      return errResult(new Error(`Erro ao extrair texto do PDF: ${extractionError.message}`));
+      })
+      return errResult(new Error(`Erro ao extrair texto do PDF: ${extractionError.message}`))
     }
 
     logger.debug('Native PDF extraction completed', {
@@ -168,20 +168,20 @@ export class ProcessPdfService {
       totalPages: textData.totalPages,
       textLength: textData.text.length,
       durationMs: Date.now() - nativeExtractionStartedAt,
-    });
+    })
 
-    const { text: extractedText, totalPages } = textData;
+    const { text: extractedText, totalPages } = textData
 
-    const pageLimitError = this.validatePdfPageLimit(totalPages, options.maxPdfPages);
+    const pageLimitError = this.validatePdfPageLimit(totalPages, options.maxPdfPages)
     if (pageLimitError) {
-      return errResult(pageLimitError);
+      return errResult(pageLimitError)
     }
 
     if (options.mode === 'mixed-page') {
-      return this.processMixedPagePdf(downloadedFile.buffer, textData, fileId, options);
+      return this.processMixedPagePdf(downloadedFile.buffer, textData, fileId, options)
     }
 
-    return this.processLegacyPdf(downloadedFile.buffer, extractedText, totalPages, fileId);
+    return this.processLegacyPdf(downloadedFile.buffer, extractedText, totalPages, fileId)
   }
 
   private processLegacyPdf(
@@ -190,21 +190,21 @@ export class ProcessPdfService {
     totalPages: number,
     fileId: string
   ): Promise<Result<string, Error>> | Result<string, Error> {
-    const qualityAnalysis = this.textQualityAnalyzer.analyze(extractedText);
+    const qualityAnalysis = this.textQualityAnalyzer.analyze(extractedText)
 
     logger.debug('Text quality analysis completed', {
       fileId,
       textLength: extractedText.length,
       totalPages,
       qualityAnalysis,
-    });
+    })
 
-    const ocrAlwaysThreshold = env.PDF_OCR_ALWAYS_THRESHOLD;
+    const ocrAlwaysThreshold = env.PDF_OCR_ALWAYS_THRESHOLD
     const { charsPerPage, hasStrongDirectText, shouldSkipOcr } = this.shouldBypassOcr({
       extractedText,
       totalPages,
       qualityAnalysis,
-    });
+    })
 
     this.logOcrDecision({
       fileId,
@@ -214,11 +214,11 @@ export class ProcessPdfService {
       charsPerPage,
       hasStrongDirectText,
       ocrAlwaysThreshold,
-    });
+    })
 
     if (totalPages === 0) {
-      logger.warn('No pages found in PDF', { fileId });
-      return okResult(sanitizePdfText(extractedText));
+      logger.warn('No pages found in PDF', { fileId })
+      return okResult(sanitizePdfText(extractedText))
     }
 
     if (totalPages <= ocrAlwaysThreshold) {
@@ -226,11 +226,11 @@ export class ProcessPdfService {
         fileId,
         totalPages,
         ocrAlwaysThreshold,
-      });
+      })
     } else if (shouldSkipOcr) {
       if (hasStrongDirectText && qualityAnalysis.hasOcrIndicators) {
-        const bytesPerPage = buffer.byteLength / totalPages;
-        const looksLikeScannedDoc = bytesPerPage > env.PDF_BYTES_PER_PAGE_THRESHOLD;
+        const bytesPerPage = buffer.byteLength / totalPages
+        const looksLikeScannedDoc = bytesPerPage > env.PDF_BYTES_PER_PAGE_THRESHOLD
 
         logger.debug('PDF file-size heuristic', {
           fileId,
@@ -239,13 +239,13 @@ export class ProcessPdfService {
           bytesPerPage: Math.round(bytesPerPage),
           bytesPerPageThreshold: env.PDF_BYTES_PER_PAGE_THRESHOLD,
           looksLikeScannedDoc,
-        });
+        })
 
         if (looksLikeScannedDoc) {
           logger.debug('Running OCR - file size suggests scanned/image content', {
             fileId,
             bytesPerPage: Math.round(bytesPerPage),
-          });
+          })
         } else {
           logger.debug('Skipping OCR - file size consistent with digital text', {
             fileId,
@@ -253,8 +253,8 @@ export class ProcessPdfService {
             charsPerPage: Math.round(charsPerPage),
             bytesPerPage: Math.round(bytesPerPage),
             reason: 'filesize-validated',
-          });
-          return okResult(sanitizePdfText(extractedText));
+          })
+          return okResult(sanitizePdfText(extractedText))
         }
       } else {
         logger.debug('Skipping OCR - text quality is sufficient', {
@@ -262,8 +262,8 @@ export class ProcessPdfService {
           totalPages,
           charsPerPage: Math.round(charsPerPage),
           reason: hasStrongDirectText ? 'strong-direct-text' : 'quality-analysis',
-        });
-        return okResult(sanitizePdfText(extractedText));
+        })
+        return okResult(sanitizePdfText(extractedText))
       }
     }
 
@@ -272,9 +272,9 @@ export class ProcessPdfService {
       totalPages,
       qualityScore: qualityAnalysis.qualityScore,
       extractedTextLength: extractedText.length,
-    });
+    })
 
-    return this.runOcrWithFallback(buffer, totalPages, fileId, extractedText);
+    return this.runOcrWithFallback(buffer, totalPages, fileId, extractedText)
   }
 
   private async processMixedPagePdf(
@@ -284,7 +284,7 @@ export class ProcessPdfService {
     options: ProcessPdfOptions
   ): Promise<Result<string, Error>> {
     if (this.shouldUseDirectOcrForSmallImageOnlyPdf(textData)) {
-      const directOcrPageCount = textData.totalPages;
+      const directOcrPageCount = textData.totalPages
 
       if (options.maxOcrPagesPerPdf && directOcrPageCount > options.maxOcrPagesPerPdf) {
         return errResult(
@@ -292,7 +292,7 @@ export class ProcessPdfService {
             'OCR_PAGES_PER_PDF_LIMIT_EXCEEDED',
             `PDF requer OCR em ${directOcrPageCount} páginas, acima do limite configurado de ${options.maxOcrPagesPerPdf}.`
           )
-        );
+        )
       }
 
       if (options.ocrPageBudget && !options.ocrPageBudget.reserve(directOcrPageCount)) {
@@ -301,7 +301,7 @@ export class ProcessPdfService {
             'OCR_PAGES_PER_JOB_LIMIT_EXCEEDED',
             `PDF requer OCR em ${directOcrPageCount} páginas, mas restam ${options.ocrPageBudget.remaining()} páginas de OCR no limite deste job.`
           )
-        );
+        )
       }
 
       logger.debug('Running direct OCR - small PDF has insufficient native text', {
@@ -310,15 +310,15 @@ export class ProcessPdfService {
         nativeCharsPerPage: Math.round(textData.text.trim().length / textData.totalPages),
         directOcrMaxPages: env.MIXED_PAGE_OCR_DIRECT_MAX_PAGES,
         minNativeCharsPerPage: env.MIXED_PAGE_MIN_NATIVE_CHARS_PER_PAGE,
-      });
-      return this.runOcrWithFallback(buffer, textData.totalPages, fileId, textData.text);
+      })
+      return this.runOcrWithFallback(buffer, textData.totalPages, fileId, textData.text)
     }
 
-    const pages = this.normalizePages(textData);
-    const pageDiagnostics = pages.map((page) => this.createMixedPageDiagnostics(page));
-    const pagesToOcr = pages.filter((page) => this.shouldOcrPage(page));
+    const pages = this.normalizePages(textData)
+    const pageDiagnostics = pages.map(page => this.createMixedPageDiagnostics(page))
+    const pagesToOcr = pages.filter(page => this.shouldOcrPage(page))
 
-    this.logMixedPageDiagnostics(fileId, textData.totalPages, pageDiagnostics);
+    this.logMixedPageDiagnostics(fileId, textData.totalPages, pageDiagnostics)
 
     if (options.maxOcrPagesPerPdf && pagesToOcr.length > options.maxOcrPagesPerPdf) {
       return errResult(
@@ -326,7 +326,7 @@ export class ProcessPdfService {
           'OCR_PAGES_PER_PDF_LIMIT_EXCEEDED',
           `PDF requer OCR em ${pagesToOcr.length} páginas, acima do limite configurado de ${options.maxOcrPagesPerPdf}.`
         )
-      );
+      )
     }
 
     if (options.ocrPageBudget && !options.ocrPageBudget.reserve(pagesToOcr.length)) {
@@ -335,41 +335,41 @@ export class ProcessPdfService {
           'OCR_PAGES_PER_JOB_LIMIT_EXCEEDED',
           `PDF requer OCR em ${pagesToOcr.length} páginas, mas restam ${options.ocrPageBudget.remaining()} páginas de OCR no limite deste job.`
         )
-      );
+      )
     }
 
     if (pagesToOcr.length === 0) {
       logger.debug('Skipping OCR - all pages have sufficient native text', {
         fileId,
         totalPages: textData.totalPages,
-      });
-      return okResult(sanitizePdfText(pages.map((page) => page.text).join('\n\n')));
+      })
+      return okResult(sanitizePdfText(pages.map(page => page.text).join('\n\n')))
     }
 
     const { value: ocrResult, error } = await this.ocrOrchestrator.processPagesWithOcr(
       buffer,
       textData.totalPages,
       fileId,
-      pagesToOcr.map((page) => page.pageNumber)
-    );
+      pagesToOcr.map(page => page.pageNumber)
+    )
 
     if (error) {
-      const nativeText = textData.text.trim();
+      const nativeText = textData.text.trim()
       if (nativeText.length > 0) {
-        return okResult(sanitizePdfText(nativeText));
+        return okResult(sanitizePdfText(nativeText))
       }
 
-      return errResult(error);
+      return errResult(error)
     }
 
-    const ocrByPage = new Map(ocrResult.pages.map((page) => [page.pageNumber, page.text]));
+    const ocrByPage = new Map(ocrResult.pages.map(page => [page.pageNumber, page.text]))
     const mergedText = pages
-      .map((page) => {
-        const ocrText = ocrByPage.get(page.pageNumber)?.trim();
-        return ocrText || page.text;
+      .map(page => {
+        const ocrText = ocrByPage.get(page.pageNumber)?.trim()
+        return ocrText || page.text
       })
-      .filter((text) => text.trim().length > 0)
-      .join('\n\n');
+      .filter(text => text.trim().length > 0)
+      .join('\n\n')
 
     logger.debug('Mixed-page PDF processing completed', {
       fileId,
@@ -378,37 +378,37 @@ export class ProcessPdfService {
       ocrPages: pagesToOcr.length,
       chunksProcessed: ocrResult.chunksProcessed,
       processingTime: ocrResult.processingTime,
-    });
+    })
 
-    return okResult(sanitizePdfText(mergedText));
+    return okResult(sanitizePdfText(mergedText))
   }
 
   private validatePdfPageLimit(totalPages: number, maxPdfPages?: number): Error | null {
     if (!maxPdfPages || totalPages <= maxPdfPages) {
-      return null;
+      return null
     }
 
     return new PdfLimitError(
       'PDF_PAGE_LIMIT_EXCEEDED',
       `PDF possui ${totalPages} páginas, acima do limite configurado de ${maxPdfPages}.`
-    );
+    )
   }
 
   private shouldUseDirectOcrForSmallImageOnlyPdf(textData: {
-    text: string;
-    totalPages: number;
+    text: string
+    totalPages: number
   }): boolean {
     if (textData.totalPages === 0 || textData.totalPages > env.MIXED_PAGE_OCR_DIRECT_MAX_PAGES) {
-      return false;
+      return false
     }
 
-    const charsPerPage = textData.text.trim().length / textData.totalPages;
-    return charsPerPage < env.MIXED_PAGE_MIN_NATIVE_CHARS_PER_PAGE;
+    const charsPerPage = textData.text.trim().length / textData.totalPages
+    return charsPerPage < env.MIXED_PAGE_MIN_NATIVE_CHARS_PER_PAGE
   }
 
   private normalizePages(textData: { totalPages: number; pages: PdfPageText[] }): PdfPageText[] {
-    const byPage = new Map(textData.pages.map((page) => [page.pageNumber, page]));
-    const pages: PdfPageText[] = [];
+    const byPage = new Map(textData.pages.map(page => [page.pageNumber, page]))
+    const pages: PdfPageText[] = []
 
     for (let pageNumber = 1; pageNumber <= textData.totalPages; pageNumber++) {
       pages.push(
@@ -419,39 +419,39 @@ export class ProcessPdfService {
           tableCount: 0,
           hasVisualContent: false,
         }
-      );
+      )
     }
 
-    return pages;
+    return pages
   }
 
   private shouldOcrPage(page: PdfPageText): boolean {
     if (page.hasVisualContent) {
-      return true;
+      return true
     }
 
-    const analysis = this.textQualityAnalyzer.analyzePage(page.text);
-    return !analysis.shouldSkipOcr && (!analysis.isHighQuality || analysis.hasOcrIndicators);
+    const analysis = this.textQualityAnalyzer.analyzePage(page.text)
+    return !analysis.shouldSkipOcr && (!analysis.isHighQuality || analysis.hasOcrIndicators)
   }
 
   private createMixedPageDiagnostics(page: PdfPageText): MixedPageDiagnostics {
-    const textDiagnostics = this.textQualityAnalyzer.analyzePageDiagnostics(page.text);
-    const { qualityAnalysis } = textDiagnostics;
+    const textDiagnostics = this.textQualityAnalyzer.analyzePageDiagnostics(page.text)
+    const { qualityAnalysis } = textDiagnostics
 
     if (page.hasVisualContent) {
-      return this.createMixedPageDiagnosticsEntry(page, textDiagnostics, true, 'visual-content');
+      return this.createMixedPageDiagnosticsEntry(page, textDiagnostics, true, 'visual-content')
     }
 
     const shouldOcr =
       !qualityAnalysis.shouldSkipOcr &&
-      (!qualityAnalysis.isHighQuality || qualityAnalysis.hasOcrIndicators);
+      (!qualityAnalysis.isHighQuality || qualityAnalysis.hasOcrIndicators)
 
     return this.createMixedPageDiagnosticsEntry(
       page,
       textDiagnostics,
       shouldOcr,
       this.getPageOcrDecisionReason(shouldOcr, qualityAnalysis)
-    );
+    )
   }
 
   private createMixedPageDiagnosticsEntry(
@@ -468,7 +468,7 @@ export class ProcessPdfService {
       shouldOcr,
       ocrDecisionReason,
       textDiagnostics,
-    };
+    }
   }
 
   private getPageOcrDecisionReason(
@@ -476,10 +476,10 @@ export class ProcessPdfService {
     qualityAnalysis: ReturnType<TextQualityAnalyzer['analyzePage']>
   ): PageOcrDecisionReason {
     if (shouldOcr) {
-      return qualityAnalysis.hasOcrIndicators ? 'ocr-indicators' : 'insufficient-native-text';
+      return qualityAnalysis.hasOcrIndicators ? 'ocr-indicators' : 'insufficient-native-text'
     }
 
-    return qualityAnalysis.shouldSkipOcr ? 'quality-analysis-skip' : 'native-text-sufficient';
+    return qualityAnalysis.shouldSkipOcr ? 'quality-analysis-skip' : 'native-text-sufficient'
   }
 
   private logMixedPageDiagnostics(
@@ -487,18 +487,18 @@ export class ProcessPdfService {
     totalPages: number,
     pageDiagnostics: MixedPageDiagnostics[]
   ) {
-    const classificationCounts = this.countPageClassifications(pageDiagnostics);
+    const classificationCounts = this.countPageClassifications(pageDiagnostics)
 
     logger.debug('Mixed-page PDF diagnostics evaluated', {
       fileId,
       totalPages,
       normalizedPages: pageDiagnostics.length,
-      pagesSelectedForOcr: pageDiagnostics.filter((page) => page.shouldOcr).length,
-      pagesWithVisualContent: pageDiagnostics.filter((page) => page.hasVisualContent).length,
-      pagesWithEmbeddedImages: pageDiagnostics.filter((page) => page.embeddedImageCount > 0).length,
-      pagesWithTables: pageDiagnostics.filter((page) => page.tableCount > 0).length,
+      pagesSelectedForOcr: pageDiagnostics.filter(page => page.shouldOcr).length,
+      pagesWithVisualContent: pageDiagnostics.filter(page => page.hasVisualContent).length,
+      pagesWithEmbeddedImages: pageDiagnostics.filter(page => page.embeddedImageCount > 0).length,
+      pagesWithTables: pageDiagnostics.filter(page => page.tableCount > 0).length,
       classificationCounts,
-      pages: pageDiagnostics.map((page) => ({
+      pages: pageDiagnostics.map(page => ({
         pageNumber: page.pageNumber,
         embeddedImageCount: page.embeddedImageCount,
         tableCount: page.tableCount,
@@ -507,7 +507,7 @@ export class ProcessPdfService {
         ocrDecisionReason: page.ocrDecisionReason,
         textDiagnostics: page.textDiagnostics,
       })),
-    });
+    })
   }
 
   private countPageClassifications(
@@ -520,13 +520,13 @@ export class ProcessPdfService {
       'repetitive-text': 0,
       'native-text': 0,
       'ocr-candidate': 0,
-    };
-
-    for (const page of pageDiagnostics) {
-      counts[page.textDiagnostics.classification]++;
     }
 
-    return counts;
+    for (const page of pageDiagnostics) {
+      counts[page.textDiagnostics.classification]++
+    }
+
+    return counts
   }
 
   private async runOcrWithFallback(
@@ -539,20 +539,20 @@ export class ProcessPdfService {
       buffer,
       totalPages,
       fileId
-    );
+    )
 
     if (ocrError) {
-      logger.error('OCR processing failed', { fileId, error: ocrError.message });
+      logger.error('OCR processing failed', { fileId, error: ocrError.message })
 
       if (extractedText.trim().length > 0) {
         logger.debug('OCR failed, falling back to direct text extraction', {
           fileId,
           extractedTextLength: extractedText.length,
-        });
-        return okResult(sanitizePdfText(extractedText));
+        })
+        return okResult(sanitizePdfText(extractedText))
       }
 
-      return errResult(ocrError);
+      return errResult(ocrError)
     }
 
     if (!ocrResult.ocrText.trim() && extractedText.trim().length > 0) {
@@ -560,11 +560,11 @@ export class ProcessPdfService {
         fileId,
         chunksProcessed: ocrResult.chunksProcessed,
         extractedTextLength: extractedText.length,
-      });
-      return okResult(sanitizePdfText(extractedText));
+      })
+      return okResult(sanitizePdfText(extractedText))
     }
 
-    return okResult(this.combineTextResults(ocrResult.ocrText, fileId, ocrResult));
+    return okResult(this.combineTextResults(ocrResult.ocrText, fileId, ocrResult))
   }
 
   private combineTextResults(
@@ -572,7 +572,7 @@ export class ProcessPdfService {
     fileId: string,
     ocrResult: { chunksProcessed: number; processingTime: number }
   ): string {
-    const finalText = sanitizePdfText(ocrText);
+    const finalText = sanitizePdfText(ocrText)
 
     logger.debug('PDF processing completed', {
       fileId,
@@ -580,16 +580,16 @@ export class ProcessPdfService {
       ocrTextLength: ocrText ? ocrText.length : 0,
       chunksProcessed: ocrResult.chunksProcessed,
       processingTime: ocrResult.processingTime,
-    });
+    })
 
     if (finalText.trim().length < 50) {
       logger.warn('Very little text extracted from PDF', {
         fileId,
         finalTextLength: finalText.length,
         ocrTextLength: ocrText ? ocrText.length : 0,
-      });
+      })
     }
 
-    return finalText;
+    return finalText
   }
 }

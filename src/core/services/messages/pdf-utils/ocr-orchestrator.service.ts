@@ -1,43 +1,43 @@
-import { execFile as execFileCb } from 'node:child_process';
-import fs from 'node:fs';
-import { promisify } from 'node:util';
-import { PROCESSING_TIMEOUTS } from '@config/constants';
-import logger from '@lib/logger';
-import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types';
-import { pdfWorkerPool } from '@lib/worker-pool';
-import tmp from 'tmp';
-import type { PageChunk } from './ocr-chunk-manager.service';
-import { OcrChunkManager } from './ocr-chunk-manager.service';
+import { execFile as execFileCb } from 'node:child_process'
+import fs from 'node:fs'
+import { promisify } from 'node:util'
+import { PROCESSING_TIMEOUTS } from '@config/constants'
+import logger from '@lib/logger'
+import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types'
+import { pdfWorkerPool } from '@lib/worker-pool'
+import tmp from 'tmp'
+import type { PageChunk } from './ocr-chunk-manager.service'
+import { OcrChunkManager } from './ocr-chunk-manager.service'
 
 export interface OcrProcessingResult {
-  ocrText: string;
-  chunksProcessed: number;
-  processingTime: number;
+  ocrText: string
+  chunksProcessed: number
+  processingTime: number
 }
 
 export interface OcrPageResult {
-  pageNumber: number;
-  text: string;
+  pageNumber: number
+  text: string
 }
 
 export interface OcrPagesProcessingResult {
-  pages: OcrPageResult[];
-  chunksProcessed: number;
-  processingTime: number;
+  pages: OcrPageResult[]
+  chunksProcessed: number
+  processingTime: number
 }
 
 export class OcrOrchestrator {
-  private readonly chunkManager = new OcrChunkManager();
-  private readonly execFile = promisify(execFileCb);
+  private readonly chunkManager = new OcrChunkManager()
+  private readonly execFile = promisify(execFileCb)
 
   static async checkPdfinfo(): Promise<{ available: boolean; version?: string }> {
     try {
-      const execAsync = promisify(execFileCb);
-      const { stdout } = await execAsync('pdfinfo', ['-v'], { timeout: 5_000 });
-      const versionMatch = stdout.match(/(\d+\.\d+\.\d+)/);
-      return { available: true, version: versionMatch?.[1] };
+      const execAsync = promisify(execFileCb)
+      const { stdout } = await execAsync('pdfinfo', ['-v'], { timeout: 5_000 })
+      const versionMatch = stdout.match(/(\d+\.\d+\.\d+)/)
+      return { available: true, version: versionMatch?.[1] }
     } catch {
-      return { available: false };
+      return { available: false }
     }
   }
 
@@ -48,16 +48,16 @@ export class OcrOrchestrator {
     try {
       const { stdout } = await this.execFile('pdfinfo', [pdfPath], {
         timeout: 10_000,
-      });
-      const pagesMatch = stdout.match(/Pages:\s+(\d+)/);
-      const pageCount = pagesMatch ? parseInt(pagesMatch[1], 10) : 0;
-      return { valid: pageCount > 0, pageCount };
+      })
+      const pagesMatch = stdout.match(/Pages:\s+(\d+)/)
+      const pageCount = pagesMatch ? parseInt(pagesMatch[1], 10) : 0
+      return { valid: pageCount > 0, pageCount }
     } catch (error) {
       logger.warn('PDF structure validation failed (pdfinfo)', {
         fileId,
         error: (error as Error).message,
-      });
-      return { valid: false, pageCount: 0 };
+      })
+      return { valid: false, pageCount: 0 }
     }
   }
 
@@ -66,58 +66,58 @@ export class OcrOrchestrator {
     totalPages: number,
     fileId: string
   ): Promise<Result<OcrProcessingResult, Error>> {
-    const startTime = Date.now();
+    const startTime = Date.now()
 
     if (totalPages === 0) {
-      logger.warn('No pages to process with OCR', { fileId });
+      logger.warn('No pages to process with OCR', { fileId })
       return okResult({
         ocrText: '',
         chunksProcessed: 0,
         processingTime: Date.now() - startTime,
-      });
+      })
     }
 
     // Criar arquivo temporário antes de validar
-    const tempPdf = tmp.fileSync({ postfix: '.pdf' });
+    const tempPdf = tmp.fileSync({ postfix: '.pdf' })
 
     try {
-      await fs.promises.writeFile(tempPdf.name, buffer);
+      await fs.promises.writeFile(tempPdf.name, buffer)
 
       // Validar estrutura do PDF com poppler (mesmo engine do pdftoppm)
-      const validation = await this.validatePdfStructure(tempPdf.name, fileId);
+      const validation = await this.validatePdfStructure(tempPdf.name, fileId)
 
       if (!validation.valid) {
         logger.warn('PDF failed poppler structure validation, skipping OCR', {
           fileId,
           declaredPages: totalPages,
           popplerPages: validation.pageCount,
-        });
+        })
         return okResult({
           ocrText: '',
           chunksProcessed: 0,
           processingTime: Date.now() - startTime,
-        });
+        })
       }
 
       // Usar page count validado (poppler é autoritativo para pdftoppm)
-      const effectivePages = validation.pageCount;
+      const effectivePages = validation.pageCount
       if (effectivePages !== totalPages) {
         logger.warn('Page count mismatch: pdf-parse vs pdfinfo', {
           fileId,
           pdfParsePages: totalPages,
           pdfInfoPages: effectivePages,
-        });
+        })
       }
 
       // Criar chunks com page count validado
-      const chunks = this.chunkManager.createProcessingChunks(effectivePages, fileId);
+      const chunks = this.chunkManager.createProcessingChunks(effectivePages, fileId)
 
       if (chunks.length === 0) {
         return okResult({
           ocrText: '',
           chunksProcessed: 0,
           processingTime: Date.now() - startTime,
-        });
+        })
       }
 
       // Processar chunks em paralelo
@@ -126,15 +126,15 @@ export class OcrOrchestrator {
         tempPdf.name,
         fileId,
         effectivePages
-      );
+      )
 
       if (ocrError) {
-        return errResult(ocrError);
+        return errResult(ocrError)
       }
 
       // Processar resultados
-      const ocrText = ocrResults.join('\n');
-      const processingTime = Date.now() - startTime;
+      const ocrText = ocrResults.join('\n')
+      const processingTime = Date.now() - startTime
 
       logger.debug('OCR processing completed', {
         fileId,
@@ -142,24 +142,24 @@ export class OcrOrchestrator {
         chunksProcessed: chunks.length,
         ocrTextLength: ocrText.length,
         processingTime,
-      });
+      })
 
       return okResult({
         ocrText,
         chunksProcessed: chunks.length,
         processingTime,
-      });
+      })
     } finally {
       // Limpar arquivo temporário
       if (tempPdf) {
         try {
-          tempPdf.removeCallback();
+          tempPdf.removeCallback()
         } catch (error) {
           logger.warn('Failed to cleanup temporary PDF file', {
             fileId,
             tempFile: tempPdf.name,
             error: (error as Error).message,
-          });
+          })
         }
       }
     }
@@ -171,44 +171,44 @@ export class OcrOrchestrator {
     fileId: string,
     pageNumbers: number[]
   ): Promise<Result<OcrPagesProcessingResult, Error>> {
-    const startTime = Date.now();
-    const selectedPages = [...new Set(pageNumbers)].filter((page) => page >= 1).sort((a, b) => a - b);
+    const startTime = Date.now()
+    const selectedPages = [...new Set(pageNumbers)].filter(page => page >= 1).sort((a, b) => a - b)
 
     if (selectedPages.length === 0) {
-      return okResult({ pages: [], chunksProcessed: 0, processingTime: Date.now() - startTime });
+      return okResult({ pages: [], chunksProcessed: 0, processingTime: Date.now() - startTime })
     }
 
-    const tempPdf = tmp.fileSync({ postfix: '.pdf' });
+    const tempPdf = tmp.fileSync({ postfix: '.pdf' })
 
     try {
-      await fs.promises.writeFile(tempPdf.name, buffer);
-      const validation = await this.validatePdfStructure(tempPdf.name, fileId);
+      await fs.promises.writeFile(tempPdf.name, buffer)
+      const validation = await this.validatePdfStructure(tempPdf.name, fileId)
 
       if (!validation.valid) {
         logger.warn('PDF failed poppler structure validation, skipping selected-page OCR', {
           fileId,
           declaredPages: totalPages,
           popplerPages: validation.pageCount,
-        });
-        return okResult({ pages: [], chunksProcessed: 0, processingTime: Date.now() - startTime });
+        })
+        return okResult({ pages: [], chunksProcessed: 0, processingTime: Date.now() - startTime })
       }
 
-      const effectivePages = validation.pageCount;
-      const validSelectedPages = selectedPages.filter((page) => page <= effectivePages);
-      const chunks = this.chunkManager.createProcessingChunksForPages(validSelectedPages, fileId);
+      const effectivePages = validation.pageCount
+      const validSelectedPages = selectedPages.filter(page => page <= effectivePages)
+      const chunks = this.chunkManager.createProcessingChunksForPages(validSelectedPages, fileId)
 
       const { value: pages, error } = await this.processPageChunksInParallel(
         chunks,
         tempPdf.name,
         fileId,
         effectivePages
-      );
+      )
 
       if (error) {
-        return errResult(error);
+        return errResult(error)
       }
 
-      const processingTime = Date.now() - startTime;
+      const processingTime = Date.now() - startTime
 
       logger.debug('Selected-page OCR processing completed', {
         fileId,
@@ -216,22 +216,22 @@ export class OcrOrchestrator {
         selectedPages: validSelectedPages.length,
         chunksProcessed: chunks.length,
         processingTime,
-      });
+      })
 
       return okResult({
         pages: pages.sort((a, b) => a.pageNumber - b.pageNumber),
         chunksProcessed: chunks.length,
         processingTime,
-      });
+      })
     } finally {
       try {
-        tempPdf.removeCallback();
+        tempPdf.removeCallback()
       } catch (error) {
         logger.warn('Failed to cleanup temporary PDF file', {
           fileId,
           tempFile: tempPdf.name,
           error: (error as Error).message,
-        });
+        })
       }
     }
   }
@@ -244,11 +244,11 @@ export class OcrOrchestrator {
   ): Promise<Result<string[], Error>> {
     const { promise: timeoutPromise, timer } = this.createTimeoutPromise(
       PROCESSING_TIMEOUTS.PDF_GLOBAL
-    );
+    )
 
     const ocrPromise = Promise.all(
       chunks.map(async (chunk, index) => {
-        const chunkStartTime = Date.now();
+        const chunkStartTime = Date.now()
 
         try {
           const result = await pdfWorkerPool.run({
@@ -256,9 +256,9 @@ export class OcrOrchestrator {
             pdfPath,
             fileId,
             totalPages,
-          });
+          })
 
-          const chunkDuration = Date.now() - chunkStartTime;
+          const chunkDuration = Date.now() - chunkStartTime
           logger.debug('Chunk processed successfully', {
             fileId,
             chunkIndex: index,
@@ -270,37 +270,37 @@ export class OcrOrchestrator {
                 : Array.isArray(result)
                   ? result.join('').length
                   : 0,
-          });
+          })
 
-          return result;
+          return result
         } catch (error) {
-          const chunkDuration = Date.now() - chunkStartTime;
+          const chunkDuration = Date.now() - chunkStartTime
           logger.error('Chunk OCR failed', {
             fileId,
             chunkIndex: index,
             pageRange: `${chunk.first}-${chunk.last}`,
             chunkDuration,
             error: (error as Error).message,
-          });
-          throw error;
+          })
+          throw error
         }
       })
-    );
+    )
 
     const { value: ocrResults, error: ocrError } = await wrapPromiseResult<string[], Error>(
       Promise.race([ocrPromise, timeoutPromise]).finally(() => clearTimeout(timer))
-    );
+    )
 
     if (ocrError) {
       logger.error('Error in OCR processing', {
         fileId,
         error: ocrError.message,
         chunksCount: chunks.length,
-      });
-      return errResult(new Error(`Erro no processamento OCR: ${ocrError.message}`));
+      })
+      return errResult(new Error(`Erro no processamento OCR: ${ocrError.message}`))
     }
 
-    return okResult(ocrResults);
+    return okResult(ocrResults)
   }
 
   private async processPageChunksInParallel(
@@ -311,52 +311,52 @@ export class OcrOrchestrator {
   ): Promise<Result<OcrPageResult[], Error>> {
     const { promise: timeoutPromise, timer } = this.createTimeoutPromise(
       PROCESSING_TIMEOUTS.PDF_GLOBAL
-    );
+    )
 
     const ocrPromise = Promise.all(
-      chunks.map(async (chunk) => {
+      chunks.map(async chunk => {
         const result = await pdfWorkerPool.run({
           pageRange: chunk,
           pdfPath,
           fileId,
           totalPages,
           structuredPages: true,
-        });
+        })
 
-        return Array.isArray(result?.pages) ? (result.pages as OcrPageResult[]) : [];
+        return Array.isArray(result?.pages) ? (result.pages as OcrPageResult[]) : []
       })
-    );
+    )
 
     const { value: chunkResults, error } = await wrapPromiseResult<OcrPageResult[][], Error>(
       Promise.race([ocrPromise, timeoutPromise]).finally(() => clearTimeout(timer))
-    );
+    )
 
     if (error) {
       logger.error('Error in selected-page OCR processing', {
         fileId,
         error: error.message,
         chunksCount: chunks.length,
-      });
-      return errResult(new Error(`Erro no processamento OCR: ${error.message}`));
+      })
+      return errResult(new Error(`Erro no processamento OCR: ${error.message}`))
     }
 
-    return okResult(chunkResults.flat());
+    return okResult(chunkResults.flat())
   }
 
   private createTimeoutPromise(timeout: number): {
-    promise: Promise<never>;
-    timer: ReturnType<typeof setTimeout>;
+    promise: Promise<never>
+    timer: ReturnType<typeof setTimeout>
   } {
-    const timeoutInMinutes = timeout / 60000;
-    let timer!: ReturnType<typeof setTimeout>;
+    const timeoutInMinutes = timeout / 60000
+    let timer!: ReturnType<typeof setTimeout>
 
     const promise = new Promise<never>((_, reject) => {
       timer = setTimeout(
         () => reject(new Error(`OCR processing timed out after ${timeoutInMinutes} minutes`)),
         timeout
-      );
-    });
+      )
+    })
 
-    return { promise, timer };
+    return { promise, timer }
   }
 }
