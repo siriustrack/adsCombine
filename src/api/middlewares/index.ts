@@ -2,10 +2,12 @@ import { env } from '@config/env'
 import type { ErrorRequestHandler, RequestHandler } from 'express'
 import logger from 'lib/logger'
 
-export const handleGlobalRequestExceptions: ErrorRequestHandler = (err, _req, res, _next) => {
+export const handleGlobalRequestExceptions: ErrorRequestHandler = (...[err, _req, res, _next]) => {
   logger.error('Express error:', err)
   res.status(500).json({ error: err.message })
 }
+
+Object.defineProperty(handleGlobalRequestExceptions, 'length', { value: 4 })
 
 const authorizedPaths = ['/texts', '/api/process-message', '/api-docs', '/favicon.ico']
 

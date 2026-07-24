@@ -1,3 +1,4 @@
+import type { ErrorRequestHandler } from 'express'
 import express from 'express'
 import multer from 'multer'
 import { transcribeController } from '../controllers'
@@ -29,6 +30,11 @@ const upload = multer({
     }
   },
 })
+
+const uploadAudio = upload.single('audio')
+const uploadAudioMiddleware: express.RequestHandler = (req, res, next) => {
+  Reflect.apply(uploadAudio, undefined, [req, res, next])
+}
 
 /**
  * @openapi
@@ -115,41 +121,43 @@ const upload = multer({
  *             schema:
  *               $ref: '#/components/schemas/Error500'
  */
-router.post('/transcribe', upload.single('audio'), (req, res) =>
+router.post('/transcribe', uploadAudioMiddleware, (req, res) =>
   transcribeController.transcribe(req, res)
 )
 
-// Error handler for multer errors
-router.use(
-  (err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
-    if (err instanceof multer.MulterError) {
-      if (err.code === 'LIMIT_FILE_SIZE') {
-        res.status(413).json({
-          error: 'Arquivo muito grande',
-          code: 'FILE_TOO_LARGE',
-          details: {
-            maxSize: '50MB',
-          },
-        })
-        return
-      }
-      res.status(400).json({
-        error: err.message,
-        code: 'UPLOAD_ERROR',
+const handleMulterErrors: ErrorRequestHandler = (...[err, _req, res, next]) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      res.status(413).json({
+        error: 'Arquivo muito grande',
+        code: 'FILE_TOO_LARGE',
+        details: {
+          maxSize: '50MB',
+        },
       })
       return
     }
-
-    if (err instanceof Error) {
-      res.status(400).json({
-        error: err.message,
-        code: 'VALIDATION_ERROR',
-      })
-      return
-    }
-
-    next()
+    res.status(400).json({
+      error: err.message,
+      code: 'UPLOAD_ERROR',
+    })
+    return
   }
-)
+
+  if (err instanceof Error) {
+    res.status(400).json({
+      error: err.message,
+      code: 'VALIDATION_ERROR',
+    })
+    return
+  }
+
+  next()
+}
+
+Object.defineProperty(handleMulterErrors, 'length', { value: 4 })
+
+// Error handler for multer errors
+router.use(handleMulterErrors)
 
 export default router
