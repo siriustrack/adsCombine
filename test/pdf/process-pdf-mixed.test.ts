@@ -24,12 +24,7 @@ type ProcessPdfServiceInstance = {
     selectedCalls: number;
     directCalls: number;
     selectedPageNumbers: number[][];
-    processPagesWithOcr: (
-      buffer: Buffer,
-      totalPages: number,
-      fileId: string,
-      selectedPages: number[]
-    ) => Promise<unknown>;
+    processPagesWithOcr: (options: { pageNumbers: number[] }) => Promise<unknown>;
     processWithOcr: () => Promise<unknown>;
   };
 };
@@ -145,12 +140,7 @@ async function createService({
     selectedCalls: 0,
     directCalls: 0,
     selectedPageNumbers: [],
-    async processPagesWithOcr(
-      _buffer: Buffer,
-      _totalPages: number,
-      _fileId: string,
-      selectedPages: number[]
-    ) {
+    async processPagesWithOcr({ pageNumbers: selectedPages }: { pageNumbers: number[] }) {
       this.selectedCalls++;
       this.selectedPageNumbers.push(selectedPages);
       return {
