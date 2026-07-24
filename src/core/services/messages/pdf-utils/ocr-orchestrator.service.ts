@@ -26,6 +26,20 @@ export interface OcrPagesProcessingResult {
   processingTime: number
 }
 
+type OcrPageProcessingOptions = {
+  buffer: Buffer
+  totalPages: number
+  fileId: string
+  pageNumbers: number[]
+}
+
+type OcrChunkProcessingOptions = {
+  chunks: PageChunk[]
+  pdfPath: string
+  fileId: string
+  totalPages: number
+}
+
 export class OcrOrchestrator {
   private readonly chunkManager = new OcrChunkManager()
   private readonly execFile = promisify(execFileCb)
@@ -121,12 +135,12 @@ export class OcrOrchestrator {
       }
 
       // Processar chunks em paralelo
-      const { value: ocrResults, error: ocrError } = await this.processChunksInParallel(
+      const { value: ocrResults, error: ocrError } = await this.processChunksInParallel({
         chunks,
-        tempPdf.name,
+        pdfPath: tempPdf.name,
         fileId,
-        effectivePages
-      )
+        totalPages: effectivePages,
+      })
 
       if (ocrError) {
         return errResult(ocrError)
@@ -165,12 +179,12 @@ export class OcrOrchestrator {
     }
   }
 
-  async processPagesWithOcr(
-    buffer: Buffer,
-    totalPages: number,
-    fileId: string,
-    pageNumbers: number[]
-  ): Promise<Result<OcrPagesProcessingResult, Error>> {
+  async processPagesWithOcr({
+    buffer,
+    totalPages,
+    fileId,
+    pageNumbers,
+  }: OcrPageProcessingOptions): Promise<Result<OcrPagesProcessingResult, Error>> {
     const startTime = Date.now()
     const selectedPages = [...new Set(pageNumbers)].filter(page => page >= 1).sort((a, b) => a - b)
 
@@ -197,12 +211,12 @@ export class OcrOrchestrator {
       const validSelectedPages = selectedPages.filter(page => page <= effectivePages)
       const chunks = this.chunkManager.createProcessingChunksForPages(validSelectedPages, fileId)
 
-      const { value: pages, error } = await this.processPageChunksInParallel(
+      const { value: pages, error } = await this.processPageChunksInParallel({
         chunks,
-        tempPdf.name,
+        pdfPath: tempPdf.name,
         fileId,
-        effectivePages
-      )
+        totalPages: effectivePages,
+      })
 
       if (error) {
         return errResult(error)
@@ -236,12 +250,12 @@ export class OcrOrchestrator {
     }
   }
 
-  private async processChunksInParallel(
-    chunks: PageChunk[],
-    pdfPath: string,
-    fileId: string,
-    totalPages: number
-  ): Promise<Result<string[], Error>> {
+  private async processChunksInParallel({
+    chunks,
+    pdfPath,
+    fileId,
+    totalPages,
+  }: OcrChunkProcessingOptions): Promise<Result<string[], Error>> {
     const { promise: timeoutPromise, timer } = this.createTimeoutPromise(
       PROCESSING_TIMEOUTS.PDF_GLOBAL
     )
@@ -303,12 +317,12 @@ export class OcrOrchestrator {
     return okResult(ocrResults)
   }
 
-  private async processPageChunksInParallel(
-    chunks: PageChunk[],
-    pdfPath: string,
-    fileId: string,
-    totalPages: number
-  ): Promise<Result<OcrPageResult[], Error>> {
+  private async processPageChunksInParallel({
+    chunks,
+    pdfPath,
+    fileId,
+    totalPages,
+  }: OcrChunkProcessingOptions): Promise<Result<OcrPageResult[], Error>> {
     const { promise: timeoutPromise, timer } = this.createTimeoutPromise(
       PROCESSING_TIMEOUTS.PDF_GLOBAL
     )

@@ -28,6 +28,21 @@ export interface PageTextDiagnostics {
   qualityAnalysis: TextQualityAnalysis
 }
 
+type QualityScoreOptions = Pick<
+  TextQualityAnalysis,
+  'isHighQuality' | 'isRepetitive' | 'hasOcrIndicators' | 'hasSubstantialContent'
+> & {
+  textLength: number
+}
+
+type PageDiagnosticsOptions = {
+  originalText: string
+  trimmedText: string
+  metrics: ReturnType<TextQualityAnalyzer['calculatePageMetrics']>
+  hasReplacementCharacters: boolean
+  qualityAnalysis: TextQualityAnalysis
+}
+
 export class TextQualityAnalyzer {
   private readonly QUALITY_THRESHOLDS = {
     MIN_TEXT_LENGTH: 2000,
@@ -137,13 +152,13 @@ export class TextQualityAnalyzer {
         analysis.isHighQuality && analysis.hasSubstantialContent && !analysis.isRepetitive
     }
 
-    const qualityScore = this.calculateQualityScore(
+    const qualityScore = this.calculateQualityScore({
       textLength,
-      analysis.isHighQuality,
-      analysis.isRepetitive,
-      analysis.hasOcrIndicators,
-      analysis.hasSubstantialContent
-    )
+      isHighQuality: analysis.isHighQuality,
+      isRepetitive: analysis.isRepetitive,
+      hasOcrIndicators: analysis.hasOcrIndicators,
+      hasSubstantialContent: analysis.hasSubstantialContent,
+    })
 
     return {
       shouldSkipOcr,
@@ -167,13 +182,13 @@ export class TextQualityAnalyzer {
     if (text.length === 0) {
       const qualityAnalysis = this.createQualityAnalysis({ qualityScore: 0 })
 
-      return this.createPageDiagnostics(
-        pageText,
-        text,
+      return this.createPageDiagnostics({
+        originalText: pageText,
+        trimmedText: text,
         metrics,
         hasReplacementCharacters,
-        qualityAnalysis
-      )
+        qualityAnalysis,
+      })
     }
 
     if (text.length < this.PAGE_THRESHOLDS.MIN_TEXT_LENGTH || hasReplacementCharacters) {
@@ -182,13 +197,13 @@ export class TextQualityAnalyzer {
         qualityScore: 10,
       })
 
-      return this.createPageDiagnostics(
-        pageText,
-        text,
+      return this.createPageDiagnostics({
+        originalText: pageText,
+        trimmedText: text,
         metrics,
         hasReplacementCharacters,
-        qualityAnalysis
-      )
+        qualityAnalysis,
+      })
     }
 
     const isRepetitive = metrics.repetitionRatio > this.PAGE_THRESHOLDS.MAX_REPETITION_RATIO
@@ -213,22 +228,22 @@ export class TextQualityAnalyzer {
       isRepetitive,
       hasOcrIndicators,
       hasSubstantialContent,
-      qualityScore: this.calculateQualityScore(
-        text.length,
+      qualityScore: this.calculateQualityScore({
+        textLength: text.length,
         isHighQuality,
         isRepetitive,
         hasOcrIndicators,
-        hasSubstantialContent
-      ),
+        hasSubstantialContent,
+      }),
     })
 
-    return this.createPageDiagnostics(
-      pageText,
-      text,
+    return this.createPageDiagnostics({
+      originalText: pageText,
+      trimmedText: text,
       metrics,
       hasReplacementCharacters,
-      qualityAnalysis
-    )
+      qualityAnalysis,
+    })
   }
 
   private performSinglePassAnalysis(text: string) {
@@ -358,13 +373,13 @@ export class TextQualityAnalyzer {
     }
   }
 
-  private calculateQualityScore(
-    textLength: number,
-    isHighQuality: boolean,
-    isRepetitive: boolean,
-    hasOcrIndicators: boolean,
-    hasSubstantialContent: boolean
-  ): number {
+  private calculateQualityScore({
+    textLength,
+    isHighQuality,
+    isRepetitive,
+    hasOcrIndicators,
+    hasSubstantialContent,
+  }: QualityScoreOptions): number {
     let score = 0
 
     if (isHighQuality) score += 40
@@ -398,13 +413,13 @@ export class TextQualityAnalyzer {
     }
   }
 
-  private createPageDiagnostics(
-    originalText: string,
-    trimmedText: string,
-    metrics: ReturnType<TextQualityAnalyzer['calculatePageMetrics']>,
-    hasReplacementCharacters: boolean,
-    qualityAnalysis: TextQualityAnalysis
-  ): PageTextDiagnostics {
+  private createPageDiagnostics({
+    originalText,
+    trimmedText,
+    metrics,
+    hasReplacementCharacters,
+    qualityAnalysis,
+  }: PageDiagnosticsOptions): PageTextDiagnostics {
     return {
       textLength: originalText.length,
       trimmedLength: trimmedText.length,

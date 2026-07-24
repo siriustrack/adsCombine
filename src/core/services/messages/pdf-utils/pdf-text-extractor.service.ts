@@ -21,6 +21,13 @@ export interface PdfTextExtractorOptions {
   includePageVisualMetadata?: boolean
 }
 
+type CreatePageTextOptions = {
+  pageNumber: number
+  text: string
+  imageCountByPage: Map<number, number>
+  tableCountByPage: Map<number, number>
+}
+
 export class PdfTextExtractorService {
   async extractTextFromPdf(
     buffer: Buffer,
@@ -60,7 +67,12 @@ export class PdfTextExtractorService {
       const pages = [...(data.pages ?? [])]
         .sort((a, b) => a.num - b.num)
         .map(page =>
-          this.createPageText(page.num, page.text ?? '', imageCountByPage, tableCountByPage)
+          this.createPageText({
+            pageNumber: page.num,
+            text: page.text ?? '',
+            imageCountByPage,
+            tableCountByPage,
+          })
         )
       const text = data.text?.trim() ?? ''
       const totalPages = data.total ?? 0
@@ -216,12 +228,12 @@ export class PdfTextExtractorService {
     return new Map(result?.pages.map(page => [page.num, page.tables.length]) ?? [])
   }
 
-  private createPageText(
-    pageNumber: number,
-    text: string,
-    imageCountByPage: Map<number, number>,
-    tableCountByPage: Map<number, number>
-  ): PdfPageText {
+  private createPageText({
+    pageNumber,
+    text,
+    imageCountByPage,
+    tableCountByPage,
+  }: CreatePageTextOptions): PdfPageText {
     const embeddedImageCount = imageCountByPage.get(pageNumber) ?? 0
     const tableCount = tableCountByPage.get(pageNumber) ?? 0
 
