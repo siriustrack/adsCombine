@@ -6,7 +6,7 @@ import { httpClient } from '@config/http'
 import { openaiClient, openaiConfig } from '@config/openai'
 import logger from '@lib/logger'
 import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types'
-import type { FileInfo, ProcessMessage } from 'api/controllers/messages.controllers'
+import type { ProcessMessage } from 'api/controllers/messages.controllers'
 import { TEXTS_DIR } from 'config/dirs'
 import mammoth from 'mammoth'
 import type { Uploadable } from 'openai/uploads'
@@ -16,24 +16,19 @@ import { sanitizeText } from 'utils/textSanitizer'
 import WordExtractor from 'word-extractor'
 import { FileSizeLimitError } from './pdf-utils/file-download.service'
 import { ProcessPdfService } from './pdf-utils/process-pdf.service'
+import type {
+  OcrPageBudget as OcrPageBudgetContract,
+  ProcessAndHandleFileOptions,
+  ProcessMessagesOptions,
+  ProcessWithTimeoutOptions,
+  SaveProcessedTextOptions,
+} from './process-messages.types'
 import { processXLSXFile, xlsxToText } from './xlsx/xlsx-processor'
 
 export interface FileInput {
   fileId: string
   url: string
   mimeType: string
-}
-
-type ProcessMessagesOptions = {
-  includeReadableErrorBlocks?: boolean
-  pdfMode?: 'legacy' | 'mixed-page'
-  limits?: {
-    maxFileBytes?: number
-    maxFiles?: number
-    maxPdfPages?: number
-    maxOcrPagesPerPdf?: number
-    maxTotalOcrPagesPerJob?: number
-  }
 }
 
 export class OcrPageBudget {
@@ -106,7 +101,7 @@ export class ProcessMessagesService {
 
         const limit = pLimit(env.PROCESSING_CONCURRENCY)
         const promises = files.map(file =>
-          limit(() => this.processAndHandleFile(file, extractedTexts, options, ocrPageBudget))
+          limit(() => this.processAndHandleFile({ file, extractedTexts, options, ocrPageBudget }))
         )
         const results = await Promise.all(promises)
 
@@ -120,22 +115,22 @@ export class ProcessMessagesService {
       }
     }
 
-    return this.saveProcessedText(
-      extractedTexts.join('\n\n---\n\n'),
-      messages[0].conversationId,
+    return this.saveProcessedText({
+      allExtractedText: extractedTexts.join('\n\n---\n\n'),
+      conversationId: messages[0].conversationId,
       protocol,
       host,
       processedFiles,
-      failedFiles
-    )
+      failedFiles,
+    })
   }
 
-  private async processAndHandleFile(
-    file: FileInfo,
-    extractedTexts: string[],
-    options: ProcessMessagesOptions,
-    ocrPageBudget?: OcrPageBudget
-  ): Promise<{ success: boolean; fileId: string; error?: string }> {
+  private async processAndHandleFile({
+    file,
+    extractedTexts,
+    options,
+    ocrPageBudget,
+  }: ProcessAndHandleFileOptions): Promise<{ success: boolean; fileId: string; error?: string }> {
     const result = await this.processFile(file, options, ocrPageBudget)
 
     if (result.error) {
@@ -163,7 +158,7 @@ export class ProcessMessagesService {
   private async processFile(
     file: FileInput,
     options: ProcessMessagesOptions = {},
-    ocrPageBudget?: OcrPageBudget
+    ocrPageBudget?: OcrPageBudgetContract
   ): Promise<Result<string, Error>> {
     const fileType = file.mimeType.split('/')[1]
 
@@ -174,8 +169,8 @@ export class ProcessMessagesService {
     const fileTypeMap: Record<string, () => Promise<Result<string, Error>>> = {
       plain: () => this.processTxt(file),
       pdf: () =>
-        this.processWithTimeout(
-          async () => {
+        this.processWithTimeout({
+          processor: async () => {
             const result = await this.processPdfService.execute(file, {
               maxFileBytes: options.limits?.maxFileBytes,
               mode: options.pdfMode,
@@ -190,10 +185,10 @@ export class ProcessMessagesService {
 
             return result.value
           },
-          PROCESSING_TIMEOUTS.PDF_GLOBAL,
-          file.fileId,
-          'pdf'
-        ),
+          timeout: PROCESSING_TIMEOUTS.PDF_GLOBAL,
+          fileId: file.fileId,
+          fileType: 'pdf',
+        }),
       jpeg: () => this.processImage(file),
       jpg: () => this.processImage(file),
       png: () => this.processImage(file),
@@ -216,12 +211,12 @@ export class ProcessMessagesService {
     return processor()
   }
 
-  private async processWithTimeout<T>(
-    processor: () => Promise<T>,
-    timeout: number,
-    fileId: string,
-    fileType: string
-  ): Promise<Result<T, Error>> {
+  private async processWithTimeout<T>({
+    processor,
+    timeout,
+    fileId,
+    fileType,
+  }: ProcessWithTimeoutOptions<T>): Promise<Result<T, Error>> {
     const timeoutError = `${fileType.toUpperCase()} processing timed out after ${timeout / 1000} seconds`
     const userErrorMessage = `O processamento deste arquivo ${fileType.toUpperCase()} excedeu o tempo limite de ${
       timeout / 1000
@@ -258,14 +253,14 @@ export class ProcessMessagesService {
     return okResult(value)
   }
 
-  private async saveProcessedText(
-    allExtractedText: string,
-    conversationId: string,
-    protocol: string,
-    host: string,
-    processedFiles: string[],
-    failedFiles: { fileId: string; error: string }[]
-  ): Promise<ProcessMessagesResponse> {
+  private async saveProcessedText({
+    allExtractedText,
+    conversationId,
+    protocol,
+    host,
+    processedFiles,
+    failedFiles,
+  }: SaveProcessedTextOptions): Promise<ProcessMessagesResponse> {
     const filename = `${conversationId}-${Date.now()}.txt`
 
     const { error: mkdirError } = await wrapPromiseResult(
@@ -301,23 +296,23 @@ export class ProcessMessagesService {
   private async processTxt(file: FileInput): Promise<Result<string, Error>> {
     const { fileId, url } = file
 
-    return this.processWithTimeout(
-      async () => {
+    return this.processWithTimeout({
+      processor: async () => {
         const response = await httpClient.get(url, { responseType: 'arraybuffer' })
         const textContent = (response.data as Buffer).toString('utf-8')
         return sanitize(textContent)
       },
-      PROCESSING_TIMEOUTS.TXT,
+      timeout: PROCESSING_TIMEOUTS.TXT,
       fileId,
-      'txt'
-    )
+      fileType: 'txt',
+    })
   }
 
   private async processImage(file: FileInput): Promise<Result<string, Error>> {
     const { fileId, url } = file
 
-    return this.processWithTimeout(
-      async () => {
+    return this.processWithTimeout({
+      processor: async () => {
         const response = await httpClient.get(url, { responseType: 'arraybuffer' })
         const imageBuffer = response.data as Buffer
         const base64Image = imageBuffer.toString('base64')
@@ -346,47 +341,47 @@ export class ProcessMessagesService {
         const description = aiResponse.choices[0].message.content || 'No description generated.'
         return sanitize(description)
       },
-      PROCESSING_TIMEOUTS.IMAGE,
+      timeout: PROCESSING_TIMEOUTS.IMAGE,
       fileId,
-      'image'
-    )
+      fileType: 'image',
+    })
   }
 
   private async processDocx({ fileId, url }: FileInput): Promise<Result<string, Error>> {
-    return this.processWithTimeout(
-      async () => {
+    return this.processWithTimeout({
+      processor: async () => {
         const response = await httpClient.get(url, { responseType: 'arraybuffer' })
         const buffer = response.data as Buffer
         const result = await mammoth.extractRawText({ buffer })
         return sanitize(result.value)
       },
-      PROCESSING_TIMEOUTS.DOCX,
+      timeout: PROCESSING_TIMEOUTS.DOCX,
       fileId,
-      'docx'
-    )
+      fileType: 'docx',
+    })
   }
 
   private async processDoc(file: FileInput): Promise<Result<string, Error>> {
     const { fileId, url } = file
 
-    return this.processWithTimeout(
-      async () => {
+    return this.processWithTimeout({
+      processor: async () => {
         const response = await httpClient.get(url, { responseType: 'arraybuffer' })
         const buffer = response.data as Buffer
         const doc = await this.wordExtractor.extract(buffer)
         return sanitize(doc.getBody())
       },
-      PROCESSING_TIMEOUTS.DOCX, // Reusing DOCX timeout for now
+      timeout: PROCESSING_TIMEOUTS.DOCX, // Reusing DOCX timeout for now
       fileId,
-      'doc'
-    )
+      fileType: 'doc',
+    })
   }
 
   private async processXlsx(file: FileInput): Promise<Result<string, Error>> {
     const { fileId, url } = file
 
-    return this.processWithTimeout(
-      async () => {
+    return this.processWithTimeout({
+      processor: async () => {
         const response = await httpClient.get(url, { responseType: 'arraybuffer' })
         const buffer = response.data as Buffer
         const xlsxResult = processXLSXFile(
@@ -397,17 +392,17 @@ export class ProcessMessagesService {
         )
         return xlsxToText(xlsxResult)
       },
-      PROCESSING_TIMEOUTS.XLSX,
+      timeout: PROCESSING_TIMEOUTS.XLSX,
       fileId,
-      'xlsx'
-    )
+      fileType: 'xlsx',
+    })
   }
 
   private async processAudio(file: FileInput): Promise<Result<string, Error>> {
     const { fileId, url } = file
 
-    return this.processWithTimeout(
-      async () => {
+    return this.processWithTimeout({
+      processor: async () => {
         const response = await httpClient.get(url, { responseType: 'arraybuffer' })
         const buffer = response.data as Buffer
 
@@ -433,9 +428,9 @@ export class ProcessMessagesService {
 
         return sanitize(transcription.text || '')
       },
-      PROCESSING_TIMEOUTS.AUDIO,
+      timeout: PROCESSING_TIMEOUTS.AUDIO,
       fileId,
-      'audio'
-    )
+      fileType: 'audio',
+    })
   }
 }
