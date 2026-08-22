@@ -190,6 +190,33 @@ describe('ProcessPdfService mixed-page mode', () => {
     expect(service.extractionOptions).toEqual([{ includePageVisualMetadata: false }]);
   });
 
+  test('keeps native legal amendment markers when OCR drops revoked article text', async () => {
+    const nativeNormativeText = `Art. 22. Os responsáveis pelos serviços notariais e de registro deverão alimentar
+semestralmente e diretamente os dados no sistema Justiça Aberta.
+(Revogado pelo Provimento COGER nº 4, de 27.3.2026)
+
+Art. 22-A. No exercício de suas atribuições, os delegatários deverão adotar medidas de prevenção.
+(Acrescido pelo Provimento COGER nº 3, de 19.3.2026)`;
+    const service = await createService({
+      totalPages: 1,
+      pages: [{ pageNumber: 1, text: nativeNormativeText }],
+      directOcrText:
+        'Art. 22-A. No exercício de suas atribuições, os delegatários deverão adotar medidas de prevenção.',
+    });
+
+    const result = await service.execute({
+      fileId: 'tjac-revoked-article-pdf',
+      url: 'https://example.com/tjac.pdf',
+      mimeType: 'application/pdf',
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.value).toContain('Art. 22. Os responsáveis');
+    expect(result.value).toContain('(Revogado pelo Provimento COGER nº 4, de 27.3.2026)');
+    expect(result.value).toContain('(Acrescido pelo Provimento COGER nº 3, de 19.3.2026)');
+    expect(service.ocrOrchestrator.directCalls).toBe(1);
+  });
+
   test('disables visual metadata extraction for default and legacy modes', async () => {
     const defaultService = await createService({
       totalPages: 1,

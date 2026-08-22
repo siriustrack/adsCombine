@@ -21,6 +21,7 @@ import {
   logOcrDecision,
   normalizePages,
   shouldBypassOcr,
+  shouldPreferNativePdfTextOverOcr,
   shouldUseDirectOcrForSmallImageOnlyPdf,
   validatePdfPageLimit,
 } from './process-pdf-helpers'
@@ -385,6 +386,18 @@ export class ProcessPdfService {
         fileId,
         chunksProcessed: ocrResult.chunksProcessed,
         extractedTextLength: extractedText.length,
+      })
+      return okResult(sanitizePdfText(extractedText))
+    }
+
+    if (
+      extractedText.trim().length > 0 &&
+      shouldPreferNativePdfTextOverOcr({ nativeText: extractedText, ocrText: ocrResult.ocrText })
+    ) {
+      logger.debug('Using native PDF text because OCR dropped legal amendment markers', {
+        fileId,
+        extractedTextLength: extractedText.length,
+        ocrTextLength: ocrResult.ocrText.length,
       })
       return okResult(sanitizePdfText(extractedText))
     }

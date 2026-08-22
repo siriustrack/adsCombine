@@ -148,6 +148,30 @@ export function getPageOcrDecisionReason(
   return qualityAnalysis.shouldSkipOcr ? 'quality-analysis-skip' : 'native-text-sufficient'
 }
 
+function hasLegalChangeMarker(text: string, marker: RegExp): boolean {
+  return marker.test(text)
+}
+
+export function shouldPreferNativePdfTextOverOcr({
+  nativeText,
+  ocrText,
+}: {
+  nativeText: string
+  ocrText: string
+}): boolean {
+  const legalChangeMarkers = [
+    /revogad[oa]/iu,
+    /acrescid[oa]/iu,
+    /alterad[oa]/iu,
+    /reda[cç][aã]o\s+dada/iu,
+    /inclu[ií]d[oa]/iu,
+  ]
+
+  return legalChangeMarkers.some(
+    marker => hasLegalChangeMarker(nativeText, marker) && !hasLegalChangeMarker(ocrText, marker)
+  )
+}
+
 function countPageClassifications(
   pageDiagnostics: MixedPageDiagnostics[]
 ): PageClassificationCounts {
