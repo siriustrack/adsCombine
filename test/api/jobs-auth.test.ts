@@ -8,6 +8,7 @@ process.env.TOKEN = 'main-token';
 process.env.JOBS_TOKEN = 'jobs-token';
 
 type AuthMiddleware = typeof import('../../src/api/middlewares')['handleAuthMiddleware'];
+type Environment = typeof import('../../src/config/env')['env'];
 
 function createResponse() {
   const response = {
@@ -29,6 +30,11 @@ function createResponse() {
 async function loadAuthMiddleware(): Promise<AuthMiddleware> {
   const module = await import('../../src/api/middlewares');
   return module.handleAuthMiddleware;
+}
+
+async function loadEnvironment(): Promise<Environment> {
+  const module = await import('../../src/config/env');
+  return module.env;
 }
 
 async function runAuth(path: string, authorization?: string) {
@@ -56,14 +62,34 @@ describe('jobs route auth', () => {
   });
 
   test('rejects the main token on /api/jobs routes', async () => {
-    const { res, nextCalled } = await runAuth('/api/jobs/job-id/status', 'Bearer main-token');
+    const env = await loadEnvironment();
+    const { res, nextCalled } = await runAuth('/api/jobs/job-id/status', `Bearer ${env.TOKEN}`);
 
     expect(nextCalled).toBe(false);
     expect(res.statusCode).toBe(403);
   });
 
   test('accepts the jobs token on /api/jobs routes', async () => {
-    const { res, nextCalled } = await runAuth('/api/jobs/job-id/result', 'Bearer jobs-token');
+    const env = await loadEnvironment();
+    const { res, nextCalled } = await runAuth('/api/jobs/job-id/result', `Bearer ${env.JOBS_TOKEN}`);
+
+    expect(nextCalled).toBe(true);
+    expect(res.statusCode).toBe(200);
+  });
+
+  test('requires the jobs token for enhanced jobs routes', async () => {
+    const { res, nextCalled } = await runAuth('/api/jobs/process-message/enhanced');
+
+    expect(nextCalled).toBe(false);
+    expect(res.statusCode).toBe(401);
+  });
+
+  test('accepts the jobs token for enhanced result routes', async () => {
+    const env = await loadEnvironment();
+    const { res, nextCalled } = await runAuth(
+      '/api/jobs/00000000-0000-4000-8000-000000000000/result/enhanced',
+      `Bearer ${env.JOBS_TOKEN}`
+    );
 
     expect(nextCalled).toBe(true);
     expect(res.statusCode).toBe(200);
