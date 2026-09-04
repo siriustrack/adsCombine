@@ -27,6 +27,7 @@
     "paths": {
       "@core/*": ["core/*"],
       "@api/*": ["api/*"],
+      "api/*": ["api/*"],
       "@config/*": ["config/*"],
       "@lib/*": ["lib/*"],
       "lib/*": ["lib/*"]

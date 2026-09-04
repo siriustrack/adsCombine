@@ -1,3 +1,4 @@
+// biome-ignore lint/style/noExcessiveLinesPerFile: file processors remain colocated because they share result and timeout handling.
 import fs from 'node:fs'
 import path, { join } from 'node:path'
 import { PROCESSING_TIMEOUTS } from '@config/constants'
@@ -17,8 +18,9 @@ import WordExtractor from 'word-extractor'
 import { FileSizeLimitError } from './pdf-utils/file-download.service'
 import { ProcessPdfService } from './pdf-utils/process-pdf.service'
 import type {
-  OcrPageBudget as OcrPageBudgetContract,
+  EnhancedPdfMetadata,
   ProcessAndHandleFileOptions,
+  ProcessFileOptions,
   ProcessMessagesOptions,
   ProcessWithTimeoutOptions,
   SaveProcessedTextOptions,
@@ -56,11 +58,20 @@ export type ProcessMessagesResponse = {
   failedFiles: { fileId: string; error: string }[]
   filename: string
   downloadUrl: string
+  enhancedResult?: {
+    summary?: string
+    files: EnhancedPdfMetadata[]
+  }
 }
 
 export class ProcessMessagesService {
-  private readonly processPdfService = new ProcessPdfService()
-  private readonly wordExtractor = new WordExtractor()
+  constructor(
+    private readonly processPdfService: Pick<
+      ProcessPdfService,
+      'execute' | 'executeEnhanced'
+    > = new ProcessPdfService(),
+    private readonly wordExtractor = new WordExtractor()
+  ) {}
 
   async execute(
     {
@@ -77,6 +88,7 @@ export class ProcessMessagesService {
     const processedFiles: string[] = []
     const failedFiles: { fileId: string; error: string }[] = []
     const extractedTexts: string[] = []
+    const enhancedPdfMetadata: EnhancedPdfMetadata[] = []
     const ocrPageBudget = options.limits?.maxTotalOcrPagesPerJob
       ? new OcrPageBudget(options.limits.maxTotalOcrPagesPerJob)
       : undefined
@@ -101,7 +113,15 @@ export class ProcessMessagesService {
 
         const limit = pLimit(env.PROCESSING_CONCURRENCY)
         const promises = files.map(file =>
-          limit(() => this.processAndHandleFile({ file, extractedTexts, options, ocrPageBudget }))
+          limit(() =>
+            this.processAndHandleFile({
+              file,
+              extractedTexts,
+              options,
+              ocrPageBudget,
+              enhancedPdfMetadata,
+            })
+          )
         )
         const results = await Promise.all(promises)
 
@@ -115,7 +135,7 @@ export class ProcessMessagesService {
       }
     }
 
-    return this.saveProcessedText({
+    const response = await this.saveProcessedText({
       allExtractedText: extractedTexts.join('\n\n---\n\n'),
       conversationId: messages[0].conversationId,
       protocol,
@@ -123,6 +143,17 @@ export class ProcessMessagesService {
       processedFiles,
       failedFiles,
     })
+
+    if (options.enhancedOcr) {
+      return {
+        ...response,
+        enhancedResult: {
+          files: enhancedPdfMetadata,
+        },
+      }
+    }
+
+    return response
   }
 
   private async processAndHandleFile({
@@ -130,8 +161,11 @@ export class ProcessMessagesService {
     extractedTexts,
     options,
     ocrPageBudget,
-  }: ProcessAndHandleFileOptions): Promise<{ success: boolean; fileId: string; error?: string }> {
-    const result = await this.processFile(file, options, ocrPageBudget)
+    enhancedPdfMetadata,
+  }: ProcessAndHandleFileOptions & {
+    enhancedPdfMetadata: EnhancedPdfMetadata[]
+  }): Promise<{ success: boolean; fileId: string; error?: string }> {
+    const result = await this.processFile({ file, options, ocrPageBudget, enhancedPdfMetadata })
 
     if (result.error) {
       logger.error('Failed to process file', {
@@ -155,11 +189,12 @@ export class ProcessMessagesService {
     return { success: true, fileId: file.fileId }
   }
 
-  private async processFile(
-    file: FileInput,
-    options: ProcessMessagesOptions = {},
-    ocrPageBudget?: OcrPageBudgetContract
-  ): Promise<Result<string, Error>> {
+  private async processFile({
+    file,
+    options = {},
+    ocrPageBudget,
+    enhancedPdfMetadata,
+  }: ProcessFileOptions): Promise<Result<string, Error>> {
     const fileType = file.mimeType.split('/')[1]
 
     if (file.mimeType.startsWith('audio/')) {
@@ -171,13 +206,18 @@ export class ProcessMessagesService {
       pdf: () =>
         this.processWithTimeout({
           processor: async () => {
-            const result = await this.processPdfService.execute(file, {
+            const pdfOptions = {
               maxFileBytes: options.limits?.maxFileBytes,
-              mode: options.pdfMode,
               maxPdfPages: options.limits?.maxPdfPages,
               maxOcrPagesPerPdf: options.limits?.maxOcrPagesPerPdf,
               ocrPageBudget,
-            })
+              onEnhancedMetadata: (metadata: EnhancedPdfMetadata) => {
+                enhancedPdfMetadata?.push(metadata)
+              },
+            }
+            const result = options.enhancedOcr
+              ? await this.processPdfService.executeEnhanced(file, pdfOptions)
+              : await this.processPdfService.execute(file, { ...pdfOptions, mode: options.pdfMode })
 
             if (result.error) {
               throw result.error
