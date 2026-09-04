@@ -1,5 +1,8 @@
 import { JobNotFoundError } from '@core/services/jobs/json-job-store.service'
-import { processMessageJobService } from '@core/services/jobs/process-message-job.service'
+import {
+  type ProcessMessageJobService,
+  processMessageJobService,
+} from '@core/services/jobs/process-message-job.service'
 import type { Request, Response } from 'express'
 import { z } from 'zod'
 import logger from '../../lib/logger'
@@ -9,11 +12,22 @@ const JobParamsSchema = z.object({
   jobId: z.uuid(),
 })
 
-function buildJobUrl(req: Request, jobId: string, suffix: 'status' | 'result'): string {
+function buildJobUrl(
+  req: Request,
+  jobId: string,
+  suffix: 'status' | 'result' | 'result/enhanced'
+): string {
   return `${req.protocol}://${req.get('host')}/api/jobs/${jobId}/${suffix}`
 }
 
 export class JobsController {
+  constructor(
+    private readonly jobService: Pick<
+      ProcessMessageJobService,
+      'create' | 'get'
+    > = processMessageJobService
+  ) {}
+
   createProcessMessageJobHandler = async (req: Request, res: Response) => {
     const rawMessages = Array.isArray(req.body) ? req.body : [req.body]
 
@@ -25,7 +39,7 @@ export class JobsController {
     }
 
     try {
-      const job = await processMessageJobService.create({
+      const job = await this.jobService.create({
         messages: validation.data,
         host: req.get('host')!,
         protocol: req.protocol,
@@ -35,7 +49,11 @@ export class JobsController {
         jobId: job.id,
         status: job.status,
         statusUrl: buildJobUrl(req, job.id, 'status'),
-        resultUrl: buildJobUrl(req, job.id, 'result'),
+        resultUrl: buildJobUrl(
+          req,
+          job.id,
+          job.profile === 'enhanced-ocr' ? 'result/enhanced' : 'result'
+        ),
         createdAt: job.createdAt,
       })
     } catch (error) {
@@ -45,10 +63,41 @@ export class JobsController {
     }
   }
 
+  createEnhancedProcessMessageJobHandler = async (req: Request, res: Response) => {
+    const rawMessages = Array.isArray(req.body) ? req.body : [req.body]
+    const validation = await ProcessMessageSchema.safeParseAsync(rawMessages)
+    if (!validation.success) {
+      return res
+        .status(400)
+        .json({ error: 'Invalid request body', details: validation.error.issues })
+    }
+
+    try {
+      const job = await this.jobService.create({
+        messages: validation.data,
+        host: req.get('host')!,
+        protocol: req.protocol,
+        profile: 'enhanced-ocr',
+      })
+
+      return res.status(202).json({
+        jobId: job.id,
+        status: job.status,
+        statusUrl: buildJobUrl(req, job.id, 'status'),
+        resultUrl: buildJobUrl(req, job.id, 'result/enhanced'),
+        createdAt: job.createdAt,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      logger.error('Failed to create enhanced process-message job', { error: message })
+      return res.status(503).json({ error: message })
+    }
+  }
+
   getJobStatusHandler = async (req: Request, res: Response) => {
     const params = JobParamsSchema.parse(req.params)
     try {
-      const job = await processMessageJobService.get(params.jobId)
+      const job = await this.jobService.get(params.jobId)
 
       return res.status(200).json({
         jobId: job.id,
@@ -59,7 +108,11 @@ export class JobsController {
         startedAt: job.startedAt,
         finishedAt: job.finishedAt,
         error: job.error,
-        resultUrl: buildJobUrl(req, job.id, 'result'),
+        resultUrl: buildJobUrl(
+          req,
+          job.id,
+          job.profile === 'enhanced-ocr' ? 'result/enhanced' : 'result'
+        ),
       })
     } catch (error) {
       if (error instanceof JobNotFoundError) {
@@ -75,7 +128,7 @@ export class JobsController {
   getJobResultHandler = async (req: Request, res: Response) => {
     const params = JobParamsSchema.parse(req.params)
     try {
-      const job = await processMessageJobService.get(params.jobId)
+      const job = await this.jobService.get(params.jobId)
 
       if (job.status === 'queued' || job.status === 'processing') {
         return res.status(202).json({ jobId: job.id, status: job.status })
@@ -98,6 +151,42 @@ export class JobsController {
       const message = error instanceof Error ? error.message : String(error)
       logger.error('Failed to read job result', { jobId: params.jobId, error: message })
       return res.status(500).json({ error: 'Failed to read job result' })
+    }
+  }
+
+  getEnhancedJobResultHandler = async (req: Request, res: Response) => {
+    const params = JobParamsSchema.parse(req.params)
+    try {
+      const job = await this.jobService.get(params.jobId)
+
+      if (job.profile !== 'enhanced-ocr') {
+        return res.status(409).json({ error: 'Job is not an enhanced OCR job' })
+      }
+
+      if (job.status === 'queued' || job.status === 'processing') {
+        return res.status(202).json({ jobId: job.id, status: job.status })
+      }
+
+      if (job.status === 'failed' || job.status === 'expired') {
+        return res.status(200).json({ jobId: job.id, status: job.status, error: job.error })
+      }
+
+      return res.status(200).json({
+        jobId: job.id,
+        status: job.status,
+        result: {
+          ...job.result,
+          ...job.enhancedResult,
+        },
+      })
+    } catch (error) {
+      if (error instanceof JobNotFoundError) {
+        return res.status(404).json({ error: 'Job not found' })
+      }
+
+      const message = error instanceof Error ? error.message : String(error)
+      logger.error('Failed to read enhanced job result', { jobId: params.jobId, error: message })
+      return res.status(500).json({ error: 'Failed to read enhanced job result' })
     }
   }
 }
