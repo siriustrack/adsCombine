@@ -24,6 +24,12 @@ const definition = {
         bearerFormat: 'JWT',
         description: 'Token de autenticação (env var TOKEN)',
       },
+      JobsBearerAuth: {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'token',
+        description: 'Token interno dos jobs assíncronos (env var JOBS_TOKEN)',
+      },
     },
     schemas: {
       Error400: {
