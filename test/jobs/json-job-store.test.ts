@@ -69,6 +69,35 @@ describe('JsonJobStoreService', () => {
     expect(updated.result?.downloadUrl).toContain('/texts/conv-1/conv-1.txt');
   });
 
+  test('persists an enhanced OCR profile and optional enhanced result', async () => {
+    const store = await createStore();
+    const jobId = store.createJobId();
+
+    await store.save({ ...createRecord(jobId), profile: 'enhanced-ocr' });
+    await store.update(jobId, {
+      status: 'completed',
+      enhancedResult: {
+        profile: 'enhanced-ocr',
+        summary: {
+          fileCount: 1,
+          pageCount: 1,
+          averageConfidence: 0.95,
+          totalWordCount: 0,
+          warningCount: 0,
+        },
+        files: [{ fileId: 'file-1', pageQuality: [{ pageNumber: 1, qualityScore: 0.95 }] }],
+      },
+    });
+
+    expect(await store.get(jobId)).toMatchObject({
+      profile: 'enhanced-ocr',
+      enhancedResult: {
+        profile: 'enhanced-ocr',
+        files: [{ fileId: 'file-1' }],
+      },
+    });
+  });
+
   test('rejects invalid job ids to prevent path traversal', async () => {
     const store = await createStore();
 

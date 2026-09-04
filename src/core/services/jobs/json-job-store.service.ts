@@ -58,7 +58,9 @@ export class JsonJobStoreService {
 
   async update(
     jobId: string,
-    changes: Partial<Omit<ProcessMessageJobRecord, 'id' | 'type' | 'request' | 'host' | 'protocol'>>
+    changes: Partial<
+      Omit<ProcessMessageJobRecord, 'id' | 'type' | 'request' | 'host' | 'protocol' | 'profile'>
+    >
   ): Promise<ProcessMessageJobRecord> {
     const current = await this.get(jobId)
     const updated: ProcessMessageJobRecord = {
