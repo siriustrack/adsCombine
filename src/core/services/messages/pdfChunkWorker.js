@@ -5,6 +5,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const tmp = require('tmp');
 const { threadId } = require('node:worker_threads');
+const {
+  analyzeEnhancedOcrText,
+  sanitizeEnhancedOcrText,
+  scoreEnhancedOcrAttempt,
+  shouldUseEnhancedPsmFallback,
+} = require('./pdf-utils/enhanced-ocr.service.js');
 
 // -----------------------------------------------------------------------------
 // Runtime setup
@@ -217,9 +223,9 @@ function scoreOcrResult({ text, meanConfidence, wordCount }) {
   return confScore * 1.0 + lengthScore * 1.0 + wordsScore * 1.2;
 }
 
-function collectPageOcrResult({ structuredPages, pages, texts, pageNumber, text }) {
+function collectPageOcrResult({ structuredPages, enhancedOcr, pages, texts, pageNumber, text, metadata }) {
   if (structuredPages) {
-    pages.push({ pageNumber, text });
+    pages.push(enhancedOcr ? { pageNumber, text, ...metadata } : { pageNumber, text });
     return;
   }
 
@@ -352,6 +358,7 @@ function performOcrOnPages(pngs, env, options = {}) {
   const pages = [];
   const pageOffset = options.pageOffset || 1;
   const structuredPages = options.structuredPages === true;
+  const enhancedOcr = options.enhancedOcr === true;
   const lang = pickLanguage();
   const oem = getEnvInt('PDF_OCR_OEM', 1);
   const dpi = getEnvInt('PDF_OCR_DPI', 300);
@@ -412,8 +419,13 @@ function performOcrOnPages(pngs, env, options = {}) {
     }
 
     const attempts = [];
+    function queueAttempt(attempt) {
+      if (!attempts.some((candidate) => candidate.label === attempt.label && candidate.path === attempt.path && candidate.psm === attempt.psm)) {
+        attempts.push(attempt);
+      }
+    }
     // 1) Try original first (fastest path)
-    attempts.push({ label: 'orig', path: png, psm: preferredPsm });
+    queueAttempt({ label: 'orig', path: png, psm: preferredPsm });
 
     let best = { text: '', meanConfidence: 0, wordCount: 0 };
     let bestScore = -Infinity;
@@ -436,22 +448,33 @@ function performOcrOnPages(pngs, env, options = {}) {
     }
 
     function maybeQueueMoreAttempts(result) {
+      // Enhanced mode prioritizes the alternate segmentation mode when evidence is
+      // corrupted; it never adds this fallback beyond the shared attempt budget.
+      if (enhancedOcr && attempts.length < maxAttempts && shouldUseEnhancedPsmFallback(result)) {
+        queueAttempt({ label: 'orig', path: png, psm: fallbackPsm });
+        return;
+      }
+
       // If the first attempt isn't good enough, try a preprocessed version.
       if (attempts.length < maxAttempts && !isGoodEnough(result)) {
         if (ensurePrep()) {
-          attempts.push({ label: 'prep', path: pre1, psm: preferredPsm });
+          queueAttempt({ label: 'prep', path: pre1, psm: preferredPsm });
         }
       }
 
       // Still weak? try fallback PSM (no extra preprocessing)
-      if (attempts.length < maxAttempts && !isGoodEnough(result)) {
-        attempts.push({ label: 'orig', path: png, psm: fallbackPsm });
+      if (
+        attempts.length < maxAttempts &&
+        !isGoodEnough(result) &&
+        (!enhancedOcr || shouldUseEnhancedPsmFallback(result))
+      ) {
+        queueAttempt({ label: 'orig', path: png, psm: fallbackPsm });
       }
 
       // Last resort: thresholded preprocess + fallback PSM (most expensive)
       if (attempts.length < maxAttempts && !isGoodEnough(result)) {
         if (ensurePrepThreshold()) {
-          attempts.push({ label: 'prep_thr', path: pre2, psm: fallbackPsm });
+          queueAttempt({ label: 'prep_thr', path: pre2, psm: fallbackPsm });
         }
       }
     }
@@ -478,7 +501,7 @@ function performOcrOnPages(pngs, env, options = {}) {
             dpi,
             env,
           });
-          const score = scoreOcrResult(result);
+          const score = enhancedOcr ? scoreEnhancedOcrAttempt(result) : scoreOcrResult(result);
           const scoreGain = score - baselineScore;
 
           if (result.wordCount >= rotateMinWords && scoreGain >= rotateMinScoreGain && score > bestScore) {
@@ -514,7 +537,7 @@ function performOcrOnPages(pngs, env, options = {}) {
           dpi,
           env,
         });
-        const score = scoreOcrResult(result);
+        const score = enhancedOcr ? scoreEnhancedOcrAttempt(result) : scoreOcrResult(result);
         if (score > bestScore) {
           bestScore = score;
           best = result;
@@ -525,7 +548,7 @@ function performOcrOnPages(pngs, env, options = {}) {
         maybeQueueMoreAttempts(result);
 
         // Early stop if quality is clearly good.
-        if (isGoodEnough(result)) {
+        if (isGoodEnough(result) && (!enhancedOcr || !shouldUseEnhancedPsmFallback(result))) {
           best = result;
           bestMeta = { label: attempt.label, psm: attempt.psm };
           break;
@@ -542,7 +565,7 @@ function performOcrOnPages(pngs, env, options = {}) {
 
     maybeTryRotatedFallback();
 
-    if (best?.text?.trim()) {
+    if (best?.text?.trim() || enhancedOcr) {
       const pageNumber = pageOffset + pageIndex;
       logWorkerInfo(`[Worker ${process.pid}] Best OCR selected`, {
         pageIndex: pageNumber,
@@ -556,12 +579,32 @@ function performOcrOnPages(pngs, env, options = {}) {
         pages,
         texts,
         pageNumber,
-        text: best.text.trim(),
+        text: enhancedOcr ? sanitizeEnhancedOcrText(best.text) : best.text.trim(),
+        enhancedOcr,
+        metadata: enhancedOcr
+          ? {
+              meanConfidence: Number(best.meanConfidence?.toFixed?.(2) ?? best.meanConfidence),
+              wordCount: best.wordCount,
+              selectedAttempt: bestMeta,
+              legalSignals: analyzeEnhancedOcrText(best.text),
+              warnings: best.text.trim() ? createEnhancedOcrWarnings(best.text) : ['no-text-detected'],
+            }
+          : undefined,
       });
     }
   }
 
   return structuredPages ? pages : texts.join('\n\n');
+}
+
+function createEnhancedOcrWarnings(text) {
+  const signals = analyzeEnhancedOcrText(text);
+  const warnings = [];
+  if (signals.corruptedSymbols > 0) warnings.push('corrupted-symbols');
+  if (signals.fragmentedNumbersOrMeasures > 0) warnings.push('fragmented-numbers-or-measures');
+  if (signals.duplicateLabels > 0) warnings.push('duplicate-labels');
+  if (signals.garbledSpans > 0) warnings.push('garbled-spans');
+  return warnings;
 }
 
 function logProgress(fileId, pageRange, pngs, resolution, ocrMs, totalMs) {
@@ -591,7 +634,7 @@ function logError(fileId, pageRange, totalDuration, error) {
 // -----------------------------------------------------------------------------
 async function worker(payload) {
   const t0 = Date.now();
-  const { pageRange, pdfPath, fileId, structuredPages } = payload;
+  const { pageRange, pdfPath, fileId, structuredPages, enhancedOcr } = payload;
 
   const tempDir = tmp.dirSync({ unsafeCleanup: true });
   const workDir = tempDir.name;
@@ -630,6 +673,7 @@ async function worker(payload) {
     const text = performOcrOnPages(pngs, env, {
       pageOffset: pageRange.first,
       structuredPages,
+      enhancedOcr,
     });
     const t2 = Date.now();
 
