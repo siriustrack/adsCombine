@@ -1,3 +1,4 @@
+// biome-ignore lint/style/noExcessiveLinesPerFile: OCR orchestration paths share temporary-file lifecycle and timeout handling.
 import { execFile as execFileCb } from 'node:child_process'
 import fs from 'node:fs'
 import { promisify } from 'node:util'
@@ -6,8 +7,10 @@ import logger from '@lib/logger'
 import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types'
 import { pdfWorkerPool } from '@lib/worker-pool'
 import tmp from 'tmp'
+import type { EnhancedOcrPageMetadata } from './enhanced-ocr.types'
 import type { PageChunk } from './ocr-chunk-manager.service'
 import { OcrChunkManager } from './ocr-chunk-manager.service'
+import { PdfLimitError } from './process-pdf.types'
 
 export interface OcrProcessingResult {
   ocrText: string
@@ -18,12 +21,57 @@ export interface OcrProcessingResult {
 export interface OcrPageResult {
   pageNumber: number
   text: string
+  meanConfidence?: number
+  wordCount?: number
+  selectedAttempt?: EnhancedOcrPageMetadata['selectedAttempt']
+  legalSignals?: EnhancedOcrPageMetadata['legalSignals']
+  warnings?: string[]
 }
 
 export interface OcrPagesProcessingResult {
   pages: OcrPageResult[]
   chunksProcessed: number
   processingTime: number
+}
+
+export type EnhancedOcrProcessingResult = OcrPagesProcessingResult & {
+  ocrText: string
+  totalPages: number
+}
+
+export type EnhancedOcrLimits = {
+  maxOcrPagesPerPdf?: number
+  ocrPageBudget?: {
+    reserve(pageCount: number): boolean
+    remaining(): number
+  }
+}
+
+export type EnhancedOcrProcessingOptions = EnhancedOcrLimits & {
+  buffer: Buffer
+  totalPages: number
+  fileId: string
+}
+
+export function validateEnhancedOcrLimits(
+  actualPageCount: number,
+  limits: EnhancedOcrLimits
+): PdfLimitError | undefined {
+  if (limits.maxOcrPagesPerPdf && actualPageCount > limits.maxOcrPagesPerPdf) {
+    return new PdfLimitError(
+      'OCR_PAGES_PER_PDF_LIMIT_EXCEEDED',
+      `PDF requer OCR em ${actualPageCount} páginas, acima do limite configurado de ${limits.maxOcrPagesPerPdf}.`
+    )
+  }
+
+  if (limits.ocrPageBudget && !limits.ocrPageBudget.reserve(actualPageCount)) {
+    return new PdfLimitError(
+      'OCR_PAGES_PER_JOB_LIMIT_EXCEEDED',
+      `PDF requer OCR em ${actualPageCount} páginas, mas restam ${limits.ocrPageBudget.remaining()} páginas de OCR no limite deste job.`
+    )
+  }
+
+  return undefined
 }
 
 type OcrPageProcessingOptions = {
@@ -38,6 +86,7 @@ type OcrChunkProcessingOptions = {
   pdfPath: string
   fileId: string
   totalPages: number
+  enhancedOcr?: boolean
 }
 
 export class OcrOrchestrator {
@@ -250,6 +299,71 @@ export class OcrOrchestrator {
     }
   }
 
+  async processWithEnhancedOcr({
+    buffer,
+    totalPages,
+    fileId,
+    ...limits
+  }: EnhancedOcrProcessingOptions): Promise<Result<EnhancedOcrProcessingResult, Error>> {
+    const startTime = Date.now()
+    if (totalPages === 0) {
+      return okResult({
+        pages: [],
+        ocrText: '',
+        totalPages: 0,
+        chunksProcessed: 0,
+        processingTime: 0,
+      })
+    }
+
+    const tempPdf = tmp.fileSync({ postfix: '.pdf' })
+    try {
+      await fs.promises.writeFile(tempPdf.name, buffer)
+      const validation = await this.validatePdfStructure(tempPdf.name, fileId)
+      if (!validation.valid) {
+        return okResult({
+          pages: [],
+          ocrText: '',
+          totalPages: validation.pageCount,
+          chunksProcessed: 0,
+          processingTime: Date.now() - startTime,
+        })
+      }
+
+      const limitError = validateEnhancedOcrLimits(validation.pageCount, limits)
+      if (limitError) return errResult(limitError)
+
+      const chunks = this.chunkManager.createProcessingChunks(validation.pageCount, fileId)
+      const { value: pages, error } = await this.processEnhancedChunksInParallel({
+        chunks,
+        pdfPath: tempPdf.name,
+        fileId,
+        totalPages: validation.pageCount,
+        enhancedOcr: true,
+      })
+      if (error) return errResult(error)
+
+      const orderedPages = pages.sort((a, b) => a.pageNumber - b.pageNumber)
+      return okResult({
+        pages: orderedPages,
+        ocrText: orderedPages.map(page => page.text).join('\n\n'),
+        totalPages: validation.pageCount,
+        chunksProcessed: chunks.length,
+        processingTime: Date.now() - startTime,
+      })
+    } finally {
+      try {
+        tempPdf.removeCallback()
+      } catch (error) {
+        logger.warn('Failed to cleanup temporary PDF file', {
+          fileId,
+          tempFile: tempPdf.name,
+          error: (error as Error).message,
+        })
+      }
+    }
+  }
+
   private async processChunksInParallel({
     chunks,
     pdfPath,
@@ -354,6 +468,42 @@ export class OcrOrchestrator {
       return errResult(new Error(`Erro no processamento OCR: ${error.message}`))
     }
 
+    return okResult(chunkResults.flat())
+  }
+
+  private async processEnhancedChunksInParallel({
+    chunks,
+    pdfPath,
+    fileId,
+    totalPages,
+  }: OcrChunkProcessingOptions): Promise<Result<OcrPageResult[], Error>> {
+    const { promise: timeoutPromise, timer } = this.createTimeoutPromise(
+      PROCESSING_TIMEOUTS.PDF_GLOBAL
+    )
+    const ocrPromise = Promise.all(
+      chunks.map(async chunk => {
+        const result = await pdfWorkerPool.run({
+          pageRange: chunk,
+          pdfPath,
+          fileId,
+          totalPages,
+          structuredPages: true,
+          enhancedOcr: true,
+        })
+        return Array.isArray(result?.pages) ? (result.pages as OcrPageResult[]) : []
+      })
+    )
+    const { value: chunkResults, error } = await wrapPromiseResult<OcrPageResult[][], Error>(
+      Promise.race([ocrPromise, timeoutPromise]).finally(() => clearTimeout(timer))
+    )
+    if (error) {
+      logger.error('Error in enhanced OCR processing', {
+        fileId,
+        error: error.message,
+        chunksCount: chunks.length,
+      })
+      return errResult(new Error(`Erro no processamento OCR: ${error.message}`))
+    }
     return okResult(chunkResults.flat())
   }
 
