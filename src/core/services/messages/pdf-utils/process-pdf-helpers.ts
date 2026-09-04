@@ -8,7 +8,7 @@ import type {
   PageOcrDecisionReason,
 } from './process-pdf.types'
 import { PdfLimitError } from './process-pdf.types'
-import type { TextQualityAnalysis } from './text-quality-analyzer.service'
+import type { TextQualityAnalysis, TextQualityAnalyzer } from './text-quality-analyzer.service'
 
 export function shouldBypassOcr({
   extractedText,
@@ -146,6 +146,34 @@ export function getPageOcrDecisionReason(
   }
 
   return qualityAnalysis.shouldSkipOcr ? 'quality-analysis-skip' : 'native-text-sufficient'
+}
+
+export function shouldOcrPage(analyzer: TextQualityAnalyzer, page: PdfPageText): boolean {
+  if (page.hasVisualContent) return true
+
+  const analysis = analyzer.analyzePage(page.text)
+  return !analysis.shouldSkipOcr && (!analysis.isHighQuality || analysis.hasOcrIndicators)
+}
+
+export function createMixedPageDiagnostics(
+  analyzer: TextQualityAnalyzer,
+  page: PdfPageText
+): MixedPageDiagnostics {
+  const textDiagnostics = analyzer.analyzePageDiagnostics(page.text)
+  const { qualityAnalysis } = textDiagnostics
+  const shouldOcr =
+    page.hasVisualContent ||
+    (!qualityAnalysis.shouldSkipOcr &&
+      (!qualityAnalysis.isHighQuality || qualityAnalysis.hasOcrIndicators))
+
+  return createMixedPageDiagnosticsEntry({
+    page,
+    textDiagnostics,
+    shouldOcr,
+    ocrDecisionReason: page.hasVisualContent
+      ? 'visual-content'
+      : getPageOcrDecisionReason(shouldOcr, qualityAnalysis),
+  })
 }
 
 function hasLegalChangeMarker(text: string, marker: RegExp): boolean {

@@ -1,15 +1,17 @@
+import type { EnhancedPdfMetadata } from '../process-messages.types'
 import type { PdfPageText } from './pdf-text-extractor.service'
 import type { PageTextClassification, PageTextDiagnostics } from './text-quality-analyzer.service'
 
 export type ProcessPdfOptions = {
   maxFileBytes?: number
-  mode?: 'legacy' | 'mixed-page'
+  mode?: 'legacy' | 'mixed-page' | 'enhanced'
   maxPdfPages?: number
   maxOcrPagesPerPdf?: number
   ocrPageBudget?: {
     reserve(pageCount: number): boolean
     remaining(): number
   }
+  onEnhancedMetadata?: (metadata: EnhancedPdfMetadata) => void
 }
 
 export type PageOcrDecisionReason =

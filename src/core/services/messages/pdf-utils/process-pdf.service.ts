@@ -1,3 +1,4 @@
+// biome-ignore lint/style/noExcessiveLinesPerFile: PDF processing paths are intentionally kept together to share download, extraction, limits, and OCR fallbacks.
 import { env } from '@config/env'
 import logger from '@lib/logger'
 import { redactUrl } from '@lib/redact-url'
@@ -8,19 +9,15 @@ import { FileDownloadService } from './file-download.service'
 import { OcrOrchestrator } from './ocr-orchestrator.service'
 import type { PdfPageText } from './pdf-text-extractor.service'
 import { PdfTextExtractorService } from './pdf-text-extractor.service'
-import {
-  type MixedPageDiagnostics,
-  PdfLimitError,
-  type ProcessPdfOptions,
-} from './process-pdf.types'
+import { PdfLimitError, type ProcessPdfOptions } from './process-pdf.types'
 import {
   combineTextResults,
-  createMixedPageDiagnosticsEntry,
-  getPageOcrDecisionReason,
+  createMixedPageDiagnostics,
   logMixedPageDiagnostics,
   logOcrDecision,
   normalizePages,
   shouldBypassOcr,
+  shouldOcrPage,
   shouldPreferNativePdfTextOverOcr,
   shouldUseDirectOcrForSmallImageOnlyPdf,
   validatePdfPageLimit,
@@ -28,10 +25,19 @@ import {
 import { TextQualityAnalyzer } from './text-quality-analyzer.service'
 
 export class ProcessPdfService {
-  private readonly fileDownloadService = new FileDownloadService()
-  private readonly textExtractorService = new PdfTextExtractorService()
-  private readonly textQualityAnalyzer = new TextQualityAnalyzer()
-  private readonly ocrOrchestrator = new OcrOrchestrator()
+  // biome-ignore lint/complexity/useMaxParams: constructor injection keeps PDF dependencies replaceable in focused tests.
+  constructor(
+    private readonly fileDownloadService = new FileDownloadService(),
+    private readonly textExtractorService: Pick<
+      PdfTextExtractorService,
+      'extractTextFromPdf'
+    > = new PdfTextExtractorService(),
+    private readonly textQualityAnalyzer = new TextQualityAnalyzer(),
+    private readonly ocrOrchestrator: Pick<
+      OcrOrchestrator,
+      'processWithOcr' | 'processPagesWithOcr' | 'processWithEnhancedOcr'
+    > = new OcrOrchestrator()
+  ) {}
 
   async execute(file: FileInput, options: ProcessPdfOptions = {}): Promise<Result<string, Error>> {
     const { fileId, url } = file
@@ -94,12 +100,101 @@ export class ProcessPdfService {
       return this.processMixedPagePdf({ buffer: downloadedFile.buffer, textData, fileId, options })
     }
 
+    if (options.mode === 'enhanced') {
+      return this.processEnhancedPdf({
+        buffer: downloadedFile.buffer,
+        extractedText,
+        totalPages,
+        fileId,
+        options,
+        onEnhancedMetadata: options.onEnhancedMetadata,
+      })
+    }
+
     return this.processLegacyPdf({
       buffer: downloadedFile.buffer,
       extractedText,
       totalPages,
       fileId,
     })
+  }
+
+  async executeEnhanced(file: FileInput, options: Omit<ProcessPdfOptions, 'mode'> = {}) {
+    return this.execute(file, { ...options, mode: 'enhanced' })
+  }
+
+  private async processEnhancedPdf({
+    buffer,
+    extractedText,
+    totalPages,
+    fileId,
+    options,
+    onEnhancedMetadata,
+  }: {
+    buffer: Buffer
+    extractedText: string
+    totalPages: number
+    fileId: string
+    options: ProcessPdfOptions
+    onEnhancedMetadata?: ProcessPdfOptions['onEnhancedMetadata']
+  }): Promise<Result<string, Error>> {
+    if (totalPages === 0) return okResult(sanitizePdfText(extractedText))
+
+    const { value: ocrResult, error } = await this.ocrOrchestrator.processWithEnhancedOcr({
+      buffer,
+      totalPages,
+      fileId,
+      maxOcrPagesPerPdf: options.maxOcrPagesPerPdf,
+      ocrPageBudget: options.ocrPageBudget,
+    })
+    if (error) {
+      if (error instanceof PdfLimitError) return errResult(error)
+      return extractedText.trim().length > 0
+        ? okResult(sanitizePdfText(extractedText))
+        : errResult(error)
+    }
+    if (!ocrResult.ocrText.trim() && extractedText.trim().length > 0) {
+      return okResult(sanitizePdfText(extractedText))
+    }
+
+    logger.debug('Enhanced all-page OCR completed', {
+      fileId,
+      totalPages,
+      chunksProcessed: ocrResult.chunksProcessed,
+      processingTime: ocrResult.processingTime,
+      pages: ocrResult.pages.map(page => ({
+        pageNumber: page.pageNumber,
+        meanConfidence: page.meanConfidence,
+        wordCount: page.wordCount,
+        selectedAttempt: page.selectedAttempt,
+        legalSignals: page.legalSignals,
+        warnings: page.warnings,
+      })),
+    })
+    const pagesByNumber = new Map(ocrResult.pages.map(page => [page.pageNumber, page]))
+    onEnhancedMetadata?.({
+      fileId,
+      pageQuality: Array.from({ length: ocrResult.totalPages }, (_, index) => {
+        const pageNumber = index + 1
+        const page = pagesByNumber.get(pageNumber)
+        const noTextWarning = !page?.text.trim() ? ['no-text-detected'] : []
+        const warnings = [...new Set([...(page?.warnings ?? []), ...noTextWarning])]
+
+        return {
+          pageNumber,
+          qualityScore: page?.meanConfidence ?? 0,
+          confidence: page?.meanConfidence ?? 0,
+          classification: warnings.length > 0 ? 'ocr-warning' : 'ocr-selected',
+          shouldOcr: true,
+          ocrDecisionReason: page?.selectedAttempt?.label,
+          wordCount: page?.wordCount ?? 0,
+          selectedAttempt: page?.selectedAttempt,
+          legalSignals: page?.legalSignals,
+          warnings,
+        }
+      }),
+    })
+    return okResult(combineTextResults(ocrResult.ocrText, fileId, ocrResult))
   }
 
   private processLegacyPdf({
@@ -248,8 +343,10 @@ export class ProcessPdfService {
     }
 
     const pages = normalizePages(textData)
-    const pageDiagnostics = pages.map(page => this.createMixedPageDiagnostics(page))
-    const pagesToOcr = pages.filter(page => this.shouldOcrPage(page))
+    const pageDiagnostics = pages.map(page =>
+      createMixedPageDiagnostics(this.textQualityAnalyzer, page)
+    )
+    const pagesToOcr = pages.filter(page => shouldOcrPage(this.textQualityAnalyzer, page))
 
     logMixedPageDiagnostics(fileId, textData.totalPages, pageDiagnostics)
 
@@ -314,40 +411,6 @@ export class ProcessPdfService {
     })
 
     return okResult(sanitizePdfText(mergedText))
-  }
-
-  private shouldOcrPage(page: PdfPageText): boolean {
-    if (page.hasVisualContent) {
-      return true
-    }
-
-    const analysis = this.textQualityAnalyzer.analyzePage(page.text)
-    return !analysis.shouldSkipOcr && (!analysis.isHighQuality || analysis.hasOcrIndicators)
-  }
-
-  private createMixedPageDiagnostics(page: PdfPageText): MixedPageDiagnostics {
-    const textDiagnostics = this.textQualityAnalyzer.analyzePageDiagnostics(page.text)
-    const { qualityAnalysis } = textDiagnostics
-
-    if (page.hasVisualContent) {
-      return createMixedPageDiagnosticsEntry({
-        page,
-        textDiagnostics,
-        shouldOcr: true,
-        ocrDecisionReason: 'visual-content',
-      })
-    }
-
-    const shouldOcr =
-      !qualityAnalysis.shouldSkipOcr &&
-      (!qualityAnalysis.isHighQuality || qualityAnalysis.hasOcrIndicators)
-
-    return createMixedPageDiagnosticsEntry({
-      page,
-      textDiagnostics,
-      shouldOcr,
-      ocrDecisionReason: getPageOcrDecisionReason(shouldOcr, qualityAnalysis),
-    })
   }
 
   private async runOcrWithFallback({
