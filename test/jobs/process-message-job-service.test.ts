@@ -7,6 +7,8 @@ import type { JsonJobStoreService } from '../../src/core/services/jobs/json-job-
 process.env.BASE_URL = 'http://localhost:3000';
 process.env.OPENAI_API_KEY = 'test-openai-key';
 process.env.OPENAI_MODEL_TEXT = 'gpt-test';
+process.env.TOKEN = 'main-token';
+process.env.JOBS_TOKEN = 'jobs-token';
 process.env.JOBS_MAX_CONCURRENCY = '1';
 process.env.JOBS_MAX_QUEUE_SIZE = '10';
 process.env.JOB_STALE_AFTER_MS = '10000';
@@ -14,6 +16,7 @@ process.env.JOB_STALE_AFTER_MS = '10000';
 type MockProcessOptions = {
   includeReadableErrorBlocks?: boolean;
   pdfMode?: 'legacy' | 'mixed-page';
+  enhancedOcr?: boolean;
   limits?: Record<string, number | undefined>;
 };
 
@@ -166,5 +169,38 @@ describe('ProcessMessageJobService', () => {
     expect(options?.pdfMode).toBeUndefined();
 
     await waitForAsync(async () => (await store.get(job.id)).status === 'completed');
+  });
+
+  test('persists the enhanced OCR profile and preserves the base result', async () => {
+    const job = await service.create({
+      host: 'localhost:3000',
+      protocol: 'http',
+      profile: 'enhanced-ocr',
+      messages: [{ conversationId: 'conv-1', body: { files: [] } }],
+    });
+
+    await waitForAsync(async () => (await store.get(job.id)).status === 'completed');
+
+    const completed = await store.get(job.id);
+    expect(completed.profile).toBe('enhanced-ocr');
+    expect(completed.result).toEqual({
+      conversationId: 'conv-1',
+      processedFiles: ['file-1'],
+      failedFiles: [],
+      filename: 'conv-1.txt',
+      downloadUrl: 'http://localhost:3000/conv-1.txt',
+    });
+    expect(completed.enhancedResult).toEqual({
+      profile: 'enhanced-ocr',
+      summary: {
+        fileCount: 0,
+        pageCount: 0,
+        totalWordCount: 0,
+        warningCount: 0,
+      },
+      files: [],
+    });
+    expect(processor.calls[0][1]).toMatchObject({ enhancedOcr: true });
+    expect(processor.calls[0][1]?.pdfMode).toBeUndefined();
   });
 });

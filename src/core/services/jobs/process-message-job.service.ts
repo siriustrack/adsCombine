@@ -1,7 +1,11 @@
 import { env } from '@config/env'
 import { processMessagesService } from '@core/services/messages/pdf-utils'
 import logger from '@lib/logger'
-import type { CreateProcessMessageJobInput, ProcessMessageJobRecord } from './job.types'
+import type {
+  CreateProcessMessageJobInput,
+  EnhancedOcrJobResult,
+  ProcessMessageJobRecord,
+} from './job.types'
 import { JsonJobStoreService } from './json-job-store.service'
 
 const MAINTENANCE_INTERVAL_MS = 60_000
@@ -49,6 +53,7 @@ export class ProcessMessageJobService {
       request: input.messages,
       host: input.host,
       protocol: input.protocol,
+      profile: input.profile,
       createdAt: now,
       updatedAt: now,
     }
@@ -103,6 +108,7 @@ export class ProcessMessageJobService {
           },
           {
             includeReadableErrorBlocks: true,
+            enhancedOcr: job.profile === 'enhanced-ocr',
             limits: {
               maxFileBytes: env.EXTRACTION_MAX_FILE_BYTES,
               maxFiles: env.MAX_FILES_PER_JOB,
@@ -114,9 +120,18 @@ export class ProcessMessageJobService {
         )
       )
 
+      const { enhancedResult: _enhancedResult, ...baseResult } = result
       await this.store.update(jobId, {
         status: 'completed',
-        result,
+        result: baseResult,
+        enhancedResult:
+          job.profile === 'enhanced-ocr'
+            ? {
+                profile: 'enhanced-ocr',
+                summary: createEnhancedSummary(_enhancedResult?.files ?? []),
+                files: _enhancedResult?.files ?? [],
+              }
+            : undefined,
         finishedAt: new Date().toISOString(),
       })
     } catch (error) {
@@ -198,6 +213,26 @@ export class ProcessMessageJobService {
     }
 
     this.queue.splice(0, this.queue.length, ...keptJobs)
+  }
+}
+
+function createEnhancedSummary(
+  files: EnhancedOcrJobResult['files']
+): EnhancedOcrJobResult['summary'] {
+  const pages = files.flatMap(file => file.pageQuality ?? [])
+  const confidences = pages.flatMap(page =>
+    page.confidence === undefined ? [] : [page.confidence]
+  )
+
+  return {
+    fileCount: files.length,
+    pageCount: pages.length,
+    averageConfidence:
+      confidences.length > 0
+        ? confidences.reduce((total, confidence) => total + confidence, 0) / confidences.length
+        : undefined,
+    totalWordCount: pages.reduce((total, page) => total + (page.wordCount ?? 0), 0),
+    warningCount: pages.reduce((total, page) => total + (page.warnings?.length ?? 0), 0),
   }
 }
 
