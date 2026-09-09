@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { envSchema } from '../../src/config/env'
+import { createVisualFallbackConfig } from '../../src/core/services/messages/pdf-utils/visual-fallback.service'
 
 const requiredEnvironment = {
   BASE_URL: 'https://api.example.com',
@@ -25,11 +26,47 @@ describe('visual fallback environment limits', () => {
   test('preserves the existing defaults', () => {
     const parsed = envSchema.parse(requiredEnvironment)
 
+    expect(parsed.VISUAL_FALLBACK_PROVIDER).toBe('gemini')
+    expect(parsed.VISUAL_FALLBACK_MODEL).toBeUndefined()
+    expect(createVisualFallbackConfig(parsed).model).toBe('gemini-2.5-flash')
     expect(parsed.VISUAL_FALLBACK_TIMEOUT_MS).toBe(15_000)
     expect(parsed.VISUAL_FALLBACK_MAX_RETRIES).toBe(1)
     expect(parsed.VISUAL_FALLBACK_CONCURRENCY).toBe(1)
     expect(parsed.VISUAL_FALLBACK_MAX_PAGES_PER_PDF).toBe(2)
     expect(parsed.MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB).toBe(4)
+  })
+
+  test('selects the DeepSeek default model only when the DeepSeek provider is selected', () => {
+    const parsed = envSchema.parse({
+      ...requiredEnvironment,
+      VISUAL_FALLBACK_PROVIDER: 'deepseek',
+      DEEPSEEK_API_KEY: 'test-deepseek-key',
+    })
+
+    expect(parsed.VISUAL_FALLBACK_PROVIDER).toBe('deepseek')
+    expect(parsed.VISUAL_FALLBACK_MODEL).toBeUndefined()
+    expect(parsed.DEEPSEEK_API_KEY).toBe('test-deepseek-key')
+    expect(createVisualFallbackConfig(parsed)).toMatchObject({
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash-vision-exp',
+      enabled: false,
+    })
+  })
+
+  test('requires the selected provider key before enabling visual fallback', () => {
+    const parsed = envSchema.parse({
+      ...requiredEnvironment,
+      VISUAL_FALLBACK_ENABLED: 'true',
+      VISUAL_FALLBACK_PROVIDER: 'deepseek',
+    })
+
+    expect(createVisualFallbackConfig(parsed).enabled).toBe(false)
+  })
+
+  test('rejects unsupported visual fallback providers', () => {
+    expect(
+      envSchema.safeParse({ ...requiredEnvironment, VISUAL_FALLBACK_PROVIDER: 'other' }).success
+    ).toBe(false)
   })
 
   test.each([
