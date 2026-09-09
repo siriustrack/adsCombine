@@ -55,6 +55,7 @@ function createService(
     {
       enabled: true,
       shadowMode: false,
+      provider: 'gemini',
       model: 'gemini-2.5-flash',
       timeoutMs: 20,
       maxRetries: 1,
@@ -92,6 +93,7 @@ describe('VisualFallbackService', () => {
       {
         enabled: false,
         shadowMode: true,
+        provider: 'gemini',
         model: 'gemini-2.5-flash',
         timeoutMs: 20,
         maxRetries: 0,
@@ -154,6 +156,28 @@ describe('VisualFallbackService', () => {
     })
     expect(result.byPage.get(1)?.provenance?.imageSha256).toHaveLength(64)
     expect(result.byPage.get(1)?.provenance?.candidateSha256).toHaveLength(64)
+  })
+
+  test('records DeepSeek provenance without persisting candidate text', async () => {
+    const { service } = createService(
+      {
+        async transcribe() {
+          return { status: 'transcribed', transcription: 'visual candidate' }
+        },
+      },
+      { provider: 'deepseek' }
+    )
+
+    const result = await service.execute({
+      buffer: Buffer.from('pdf'),
+      fileName: 'matricula.pdf',
+      pages: [page({ legalSignals: { ...page().legalSignals, corruptedSymbols: 1 } })],
+    })
+
+    expect(result.byPage.get(1)).toMatchObject({
+      provenance: { provider: 'deepseek', model: 'gemini-2.5-flash' },
+    })
+    expect(result.byPage.get(1)).not.toHaveProperty('candidateText')
   })
 
   test('does not select non-matrícula PDFs or pages based on average confidence alone', async () => {
@@ -307,6 +331,7 @@ describe('VisualFallbackService', () => {
       {
         enabled: true,
         shadowMode: true,
+        provider: 'gemini',
         model: 'gemini-2.5-flash',
         timeoutMs: 20,
         maxRetries: 0,

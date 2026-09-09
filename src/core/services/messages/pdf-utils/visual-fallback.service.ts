@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
-import { env } from '@config/env'
+import { env, type envSchema } from '@config/env'
 import pLimit from 'p-limit'
+import type z from 'zod'
+import { DeepSeekVisualTranscriptionProvider } from './deepseek-visual-transcription.provider'
 import { GeminiVisualTranscriptionProvider } from './gemini-visual-transcription.provider'
 import { PdfPageRendererService } from './pdf-page-renderer.service'
 import type {
@@ -8,6 +10,7 @@ import type {
   VisualFallbackConfig,
   VisualFallbackMetadata,
   VisualFallbackOcrPage,
+  VisualFallbackProvider,
   VisualFallbackReason,
   VisualTranscriptionProvider,
 } from './visual-fallback.types'
@@ -38,16 +41,46 @@ type CreateMetadataOptions = {
   provenance?: VisualFallbackMetadata['provenance']
 }
 
-function defaultConfig(): VisualFallbackConfig {
+type VisualFallbackEnvironment = Pick<
+  z.infer<typeof envSchema>,
+  | 'DEEPSEEK_API_KEY'
+  | 'GEMINI_API_KEY'
+  | 'MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB'
+  | 'VISUAL_FALLBACK_CONCURRENCY'
+  | 'VISUAL_FALLBACK_ENABLED'
+  | 'VISUAL_FALLBACK_MAX_PAGES_PER_PDF'
+  | 'VISUAL_FALLBACK_MAX_RETRIES'
+  | 'VISUAL_FALLBACK_MODEL'
+  | 'VISUAL_FALLBACK_PROVIDER'
+  | 'VISUAL_FALLBACK_SHADOW_MODE'
+  | 'VISUAL_FALLBACK_TIMEOUT_MS'
+>
+
+export function createVisualFallbackConfig(
+  environment: VisualFallbackEnvironment
+): VisualFallbackConfig {
+  const provider = environment.VISUAL_FALLBACK_PROVIDER
   return {
-    enabled: env.VISUAL_FALLBACK_ENABLED && Boolean(env.GEMINI_API_KEY),
-    shadowMode: env.VISUAL_FALLBACK_SHADOW_MODE,
-    model: env.VISUAL_FALLBACK_MODEL,
-    timeoutMs: env.VISUAL_FALLBACK_TIMEOUT_MS,
-    maxRetries: env.VISUAL_FALLBACK_MAX_RETRIES,
-    concurrency: env.VISUAL_FALLBACK_CONCURRENCY,
-    maxPagesPerPdf: env.VISUAL_FALLBACK_MAX_PAGES_PER_PDF,
+    enabled:
+      environment.VISUAL_FALLBACK_ENABLED &&
+      Boolean(provider === 'gemini' ? environment.GEMINI_API_KEY : environment.DEEPSEEK_API_KEY),
+    shadowMode: environment.VISUAL_FALLBACK_SHADOW_MODE,
+    provider,
+    model:
+      environment.VISUAL_FALLBACK_MODEL ??
+      (provider === 'deepseek' ? 'deepseek-v4-flash-vision-exp' : 'gemini-2.5-flash'),
+    timeoutMs: environment.VISUAL_FALLBACK_TIMEOUT_MS,
+    maxRetries: environment.VISUAL_FALLBACK_MAX_RETRIES,
+    concurrency: environment.VISUAL_FALLBACK_CONCURRENCY,
+    maxPagesPerPdf: environment.VISUAL_FALLBACK_MAX_PAGES_PER_PDF,
   }
+}
+
+function defaultProvider(provider: VisualFallbackProvider): VisualTranscriptionProvider {
+  if (provider === 'deepseek') {
+    return new DeepSeekVisualTranscriptionProvider(env.DEEPSEEK_API_KEY ?? '')
+  }
+  return new GeminiVisualTranscriptionProvider(env.GEMINI_API_KEY ?? '')
 }
 
 function isMatriculaPdf(fileName: string): boolean {
@@ -112,11 +145,15 @@ function createMetadata({
 export class VisualFallbackService {
   constructor(
     private readonly renderer: PdfPageRenderer = new PdfPageRendererService(),
-    private readonly provider: VisualTranscriptionProvider = new GeminiVisualTranscriptionProvider(
-      env.GEMINI_API_KEY ?? ''
-    ),
-    private readonly config: VisualFallbackConfig = defaultConfig()
-  ) {}
+    provider?: VisualTranscriptionProvider,
+    config: VisualFallbackConfig = createVisualFallbackConfig(env)
+  ) {
+    this.config = config
+    this.provider = provider ?? defaultProvider(config.provider)
+  }
+
+  private readonly provider: VisualTranscriptionProvider
+  private readonly config: VisualFallbackConfig
 
   async execute(input: VisualFallbackInput): Promise<VisualFallbackResult> {
     const byPage = createInitialMetadata(input.pages)
@@ -186,7 +223,7 @@ export class VisualFallbackService {
           }
 
           const provenance = {
-            provider: 'gemini' as const,
+            provider: this.config.provider,
             model: this.config.model,
             imageSha256: hash(renderedPage.image),
             candidateSha256: hash(candidate),

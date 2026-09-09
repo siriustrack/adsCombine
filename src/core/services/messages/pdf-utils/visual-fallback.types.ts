@@ -16,11 +16,13 @@ export type VisualFallbackReason =
   | 'missing-measure'
 
 export type VisualFallbackProvenance = {
-  provider: 'gemini'
+  provider: VisualFallbackProvider
   model: string
   imageSha256: string
   candidateSha256: string
 }
+
+export type VisualFallbackProvider = 'gemini' | 'deepseek'
 
 export type VisualFallbackMetadata = {
   state: VisualFallbackState
@@ -67,6 +69,7 @@ export interface PdfPageRenderer {
 export type VisualFallbackConfig = {
   enabled: boolean
   shadowMode: boolean
+  provider: VisualFallbackProvider
   model: string
   timeoutMs: number
   maxRetries: number
