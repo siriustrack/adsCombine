@@ -54,12 +54,18 @@ export class SourceUrlPolicy {
       url.protocol !== 'https:' ||
       url.username ||
       url.password ||
-      !this.allowedPrefixes.some(prefix => url.href.startsWith(prefix.href))
+      !this.matchesAllowedPrefix(url)
     ) {
       throw new SourceUrlPolicyError()
     }
 
     return url
+  }
+
+  private matchesAllowedPrefix(url: URL): boolean {
+    if (this.allowedPrefixes.length === 0) return true
+
+    return this.allowedPrefixes.some(prefix => url.href.startsWith(prefix.href))
   }
 
   private async resolvePublicAddresses(hostname: string): Promise<string[]> {

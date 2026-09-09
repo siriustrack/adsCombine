@@ -20,6 +20,16 @@ describe('SourceUrlPolicy', () => {
     await expect(createPolicy().assertSafeUrl(url)).resolves.toEqual(new URL(url))
   })
 
+  test('accepts any public HTTPS source URL when no allowlist prefix is configured', async () => {
+    const policy = new SourceUrlPolicy({
+      allowedPrefixes: [],
+      resolveHostname: async () => ['8.8.8.8'],
+    })
+    const url = 'https://external-customer-storage.example.com/files/source.pdf?token=signed'
+
+    await expect(policy.assertSafeUrl(url)).resolves.toEqual(new URL(url))
+  })
+
   test.each([
     'http://project.supabase.co/storage/v1/object/public/documents/source.pdf',
     'https://user:password@project.supabase.co/storage/v1/object/public/documents/source.pdf',
