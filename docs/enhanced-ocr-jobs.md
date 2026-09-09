@@ -73,23 +73,25 @@ Selective Gemini visual fallback, job queue parameters, OCR hard limits, and sou
 | `MIXED_PAGE_OCR_DIRECT_MAX_PAGES` | integer | `10` | positive integer, max `50` | Maximum pages directly processed under mixed native and image mode. |
 | `MIXED_PAGE_MIN_NATIVE_CHARS_PER_PAGE` | integer | `80` | positive integer | Minimum native characters per page required to consider native text valid. |
 
-### Gemini Visual Fallback Configuration
+### Provider-Agnostic Visual Fallback Configuration
 
 | Environment Variable | Type | Default | Max Limit / Validation | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| `VISUAL_FALLBACK_ENABLED` | boolean | `false` | boolean (`1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`) | Master toggle for selective visual fallback. Requires `GEMINI_API_KEY` to be set. |
+| `VISUAL_FALLBACK_ENABLED` | boolean | `false` | boolean (`1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`) | Master toggle for selective visual fallback. Requires the API key for the selected provider. |
 | `VISUAL_FALLBACK_SHADOW_MODE` | boolean | `true` | boolean | When `true`, records visual state as `ocr_plus_visual_candidate` with SHA-256 hashes without active reconciliation (candidate text is never persisted). |
-| `VISUAL_FALLBACK_MODEL` | string | `"gemini-2.5-flash"` | min 1 char | Gemini model ID used for visual page transcription. |
-| `VISUAL_FALLBACK_TIMEOUT_MS` | integer | `15000` | positive integer, max `120000` (120s) | Per-page timeout in milliseconds for Gemini API requests. |
-| `VISUAL_FALLBACK_MAX_RETRIES` | integer | `1` | min `0`, max `3` | Maximum retry attempts for failed Gemini API requests. |
+| `VISUAL_FALLBACK_PROVIDER` | `gemini` \| `deepseek` | `gemini` | enum | Visual transcription provider. Existing deployments remain on Gemini when omitted. |
+| `VISUAL_FALLBACK_MODEL` | string | provider-specific | min 1 char | Optional model override. Defaults to `gemini-2.5-flash` for Gemini and `deepseek-v4-flash-vision-exp` for DeepSeek. |
+| `VISUAL_FALLBACK_TIMEOUT_MS` | integer | `15000` | positive integer, max `120000` (120s) | Per-page timeout in milliseconds for visual provider requests. |
+| `VISUAL_FALLBACK_MAX_RETRIES` | integer | `1` | min `0`, max `3` | Maximum retry attempts for failed visual provider requests. |
 | `VISUAL_FALLBACK_CONCURRENCY` | integer | `1` | positive integer, max `4` | Maximum concurrent visual fallback page requests per job. |
 | `VISUAL_FALLBACK_MAX_PAGES_PER_PDF` | integer | `2` | positive integer, max `10` | Maximum risky pages selected for visual fallback per single PDF file. |
 | `MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB` | integer | `4` | positive integer, max `20` | Maximum budget of total visual fallback pages across all files in a single job. |
 | `GEMINI_API_KEY` | string (secret) | `undefined` | min 1 char | Google Gemini API key. Must use a paid tier account for sensitive legal documents. |
+| `DEEPSEEK_API_KEY` | string (secret) | `undefined` | min 1 char | Required only when `VISUAL_FALLBACK_PROVIDER=deepseek`; sent as a Bearer token to DeepSeek. |
 
 ---
 
-## 3. Selective Gemini Visual Fallback Architecture
+## 3. Selective Visual Fallback Architecture
 
 Visual fallback operates as a secondary, highly targeted enhancement step for scanned legal documents (matrículas imobiliárias).
 
@@ -106,11 +108,16 @@ Visual fallback operates as a secondary, highly targeted enhancement step for sc
    - Global job cap: `MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB` (default `4`, max `20`).
 
 ### Immutable OCR Policy
-Standard OCR transcription output is **immutable**. Visual fallback never modifies, overwrites, or truncates the primary OCR text directly. Candidate visual text is never saved or persisted. Only SHA-256 hashes (`imageSha256` and `candidateSha256`), provider (`gemini`), model, states, and ranges are stored alongside standard page metrics inside `visualFallback`.
+Standard OCR transcription output is **immutable**. Visual fallback never modifies, overwrites, or truncates the primary OCR text directly. Candidate visual text is never saved or persisted. Only SHA-256 hashes (`imageSha256` and `candidateSha256`), provider (`gemini` or `deepseek`), model, states, and ranges are stored alongside standard page metrics inside `visualFallback`.
+
+### Provider Selection and DeepSeek Bounds
+- **Gemini (default)**: Set `GEMINI_API_KEY`; omitting `VISUAL_FALLBACK_PROVIDER` preserves the existing Gemini behavior and default model `gemini-2.5-flash`.
+- **DeepSeek Vision**: Set `VISUAL_FALLBACK_PROVIDER=deepseek` and `DEEPSEEK_API_KEY`. The adapter uses `https://api.deepseek.com/chat/completions` via `fetch`, with an OpenAI-compatible user message containing one PNG `data:` URL and `detail: "auto"`; output is capped with `max_tokens=8192`.
+- **DeepSeek payload limits**: A rendered inline image is rejected above 32 MiB, and the serialized request body is rejected above 48 MiB before an outbound request. The adapter accepts and validates only structured JSON responses.
 
 ### Shadow Rollout Semantics (`VISUAL_FALLBACK_SHADOW_MODE`)
-- **Shadow Mode (`true` - Default)**: Visual fallback renders the page, requests a transcription from Gemini, and records state `ocr_plus_visual_candidate` with `imageSha256` and `candidateSha256` in `visualFallback` (candidate visual text itself is never saved or persisted). No active text comparison or reconciliation is performed. This enables benchmarking Gemini accuracy safely in production.
-- **Active Mode (`false`)**: Normalizes standard OCR text and Gemini candidate text in memory (`normalizeForComparison`):
+- **Shadow Mode (`true` - Default)**: Visual fallback renders the page, requests a transcription from the selected provider, and records state `ocr_plus_visual_candidate` with `imageSha256` and `candidateSha256` in `visualFallback` (candidate visual text itself is never saved or persisted). No active text comparison or reconciliation is performed. This enables provider benchmarking safely in production.
+- **Active Mode (`false`)**: Normalizes standard OCR text and the selected provider candidate text in memory (`normalizeForComparison`):
   - **Identical**: State becomes `reconciled`.
   - **Different**: State becomes `conflict`.
 
@@ -119,11 +126,11 @@ Standard OCR transcription output is **immutable**. Visual fallback never modifi
 | State | Description |
 | :--- | :--- |
 | `ocr_only` | Page was not evaluated by visual fallback (non-matrícula PDF or no risk signals detected). |
-| `fallback_pending` | Visual fallback rendering or Gemini request is currently in progress. |
+| `fallback_pending` | Visual fallback rendering or selected provider request is currently in progress. |
 | `fallback_failed` | Visual fallback failed due to rendering error, timeout (default 15s, max 120s), max retries exceeded (default 1, max 3), or API failure. |
 | `ocr_plus_visual_candidate` | Visual candidate generated successfully in shadow mode (`VISUAL_FALLBACK_SHADOW_MODE=true`). Candidate text is not saved. |
-| `reconciled` | Active mode (`VISUAL_FALLBACK_SHADOW_MODE=false`), Gemini candidate text matches standard OCR text. |
-| `conflict` | Active mode (`VISUAL_FALLBACK_SHADOW_MODE=false`), Gemini candidate text differs from standard OCR text. |
+| `reconciled` | Active mode (`VISUAL_FALLBACK_SHADOW_MODE=false`), provider candidate text matches standard OCR text. |
+| `conflict` | Active mode (`VISUAL_FALLBACK_SHADOW_MODE=false`), provider candidate text differs from standard OCR text. |
 
 ---
 
@@ -139,12 +146,12 @@ To guard against SSRF (Server-Side Request Forgery) and unauthorized resource ac
 
 ---
 
-## 5. Enterprise Data Privacy & Gemini Paid Tier Requirement
+## 5. Enterprise Data Privacy & Provider Account Requirement
 
 When handling matrículas imobiliárias and legal contracts containing sensitive personal and financial data:
 
-- **Mandatory Paid Tier Account**: `GEMINI_API_KEY` MUST belong to a **paid tier Google Cloud / Gemini API account**.
-- **Data Privacy Guarantee**: Google Cloud paid tier enterprise terms guarantee that submitted PDF images and candidate transcriptions are not retained or used for AI model training.
+- **Mandatory Approved Account**: The selected provider key (`GEMINI_API_KEY` or `DEEPSEEK_API_KEY`) MUST belong to an account approved for sensitive legal documents.
+- **Data Privacy Review**: Verify the selected provider's current contractual data retention and training terms before processing customer documents.
 - **Free Tier Prohibition**: Public developer or free-tier API keys MUST NOT be used for processing customer documents.
 
 ---
@@ -152,7 +159,7 @@ When handling matrículas imobiliárias and legal contracts containing sensitive
 ## 6. Operational Kill Switch, Rollback, & Zero Migration
 
 ### Operational Kill Switch
-If Gemini services experience degradation or rate limits, operators can disable visual fallback instantly:
+If the selected visual provider experiences degradation or rate limits, operators can disable visual fallback instantly:
 1. Set `VISUAL_FALLBACK_ENABLED=false` in environment configuration.
 2. Restart or reload the `adsCombine` service.
 3. Jobs will immediately skip visual fallback processing (`ocr_only`) without interrupting standard OCR execution.
@@ -166,7 +173,7 @@ If Gemini services experience degradation or rate limits, operators can disable 
 
 ## 7. Security Protocols & Secret Rotation
 
-- **Never Commit Secrets**: `GEMINI_API_KEY`, `JOBS_TOKEN`, `OPENAI_API_KEY`, and other secrets must remain strictly in environment variables and never committed to source control or public files.
+- **Never Commit Secrets**: `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, `JOBS_TOKEN`, `OPENAI_API_KEY`, and other secrets must remain strictly in environment variables and never committed to source control or public files.
 - **Secret Rotation Protocol**: If any API key is exposed in logs, git commit history, or unencrypted storage, operators MUST immediately:
   1. Revoke the compromised API key in the provider console (e.g., Google Cloud Console).
   2. Generate a new API key.
