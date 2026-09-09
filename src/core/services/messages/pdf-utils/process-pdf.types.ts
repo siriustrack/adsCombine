@@ -1,13 +1,19 @@
 import type { EnhancedPdfMetadata } from '../process-messages.types'
 import type { PdfPageText } from './pdf-text-extractor.service'
 import type { PageTextClassification, PageTextDiagnostics } from './text-quality-analyzer.service'
+import type { VisualFallbackMetadata } from './visual-fallback.types'
 
 export type ProcessPdfOptions = {
+  signal?: AbortSignal
   maxFileBytes?: number
   mode?: 'legacy' | 'mixed-page' | 'enhanced'
   maxPdfPages?: number
   maxOcrPagesPerPdf?: number
   ocrPageBudget?: {
+    reserve(pageCount: number): boolean
+    remaining(): number
+  }
+  visualFallbackPageBudget?: {
     reserve(pageCount: number): boolean
     remaining(): number
   }
@@ -29,6 +35,7 @@ export type MixedPageDiagnostics = {
   shouldOcr: boolean
   ocrDecisionReason: PageOcrDecisionReason
   textDiagnostics: PageTextDiagnostics
+  visualFallback?: VisualFallbackMetadata
 }
 
 export type PageClassificationCounts = Record<PageTextClassification, number>

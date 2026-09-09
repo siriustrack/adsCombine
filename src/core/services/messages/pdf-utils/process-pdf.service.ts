@@ -1,4 +1,5 @@
 // biome-ignore lint/style/noExcessiveLinesPerFile: PDF processing paths are intentionally kept together to share download, extraction, limits, and OCR fallbacks.
+import path from 'node:path'
 import { env } from '@config/env'
 import logger from '@lib/logger'
 import { redactUrl } from '@lib/redact-url'
@@ -23,11 +24,15 @@ import {
   validatePdfPageLimit,
 } from './process-pdf-helpers'
 import { TextQualityAnalyzer } from './text-quality-analyzer.service'
+import { VisualFallbackService } from './visual-fallback.service'
 
 export class ProcessPdfService {
   // biome-ignore lint/complexity/useMaxParams: constructor injection keeps PDF dependencies replaceable in focused tests.
   constructor(
-    private readonly fileDownloadService = new FileDownloadService(),
+    private readonly fileDownloadService: Pick<
+      FileDownloadService,
+      'downloadFile'
+    > = new FileDownloadService(),
     private readonly textExtractorService: Pick<
       PdfTextExtractorService,
       'extractTextFromPdf'
@@ -36,7 +41,11 @@ export class ProcessPdfService {
     private readonly ocrOrchestrator: Pick<
       OcrOrchestrator,
       'processWithOcr' | 'processPagesWithOcr' | 'processWithEnhancedOcr'
-    > = new OcrOrchestrator()
+    > = new OcrOrchestrator(),
+    private readonly visualFallbackService: Pick<
+      VisualFallbackService,
+      'execute'
+    > = new VisualFallbackService()
   ) {}
 
   async execute(file: FileInput, options: ProcessPdfOptions = {}): Promise<Result<string, Error>> {
@@ -106,6 +115,7 @@ export class ProcessPdfService {
         extractedText,
         totalPages,
         fileId,
+        fileName: this.getFileName(file),
         options,
         onEnhancedMetadata: options.onEnhancedMetadata,
       })
@@ -128,6 +138,7 @@ export class ProcessPdfService {
     extractedText,
     totalPages,
     fileId,
+    fileName,
     options,
     onEnhancedMetadata,
   }: {
@@ -135,6 +146,7 @@ export class ProcessPdfService {
     extractedText: string
     totalPages: number
     fileId: string
+    fileName: string
     options: ProcessPdfOptions
     onEnhancedMetadata?: ProcessPdfOptions['onEnhancedMetadata']
   }): Promise<Result<string, Error>> {
@@ -171,7 +183,31 @@ export class ProcessPdfService {
         warnings: page.warnings,
       })),
     })
+    const finalOcrText = sanitizePdfText(ocrResult.ocrText)
+    let nextSourceOffset = 0
     const pagesByNumber = new Map(ocrResult.pages.map(page => [page.pageNumber, page]))
+    const visualFallback = await this.visualFallbackService.execute({
+      buffer,
+      fileName,
+      pages: ocrResult.pages.map(page => {
+        const normalizedPageText = sanitizePdfText(page.text)
+        const start = normalizedPageText
+          ? finalOcrText.indexOf(normalizedPageText, nextSourceOffset)
+          : -1
+        const sourceRange =
+          start >= 0 ? { start, end: start + normalizedPageText.length } : undefined
+        if (sourceRange !== undefined) nextSourceOffset = sourceRange.end
+
+        return {
+          pageNumber: page.pageNumber,
+          text: page.text,
+          ...(sourceRange !== undefined ? { sourceRange } : {}),
+          legalSignals: page.legalSignals,
+        }
+      }),
+      pageBudget: options.visualFallbackPageBudget,
+      signal: options.signal,
+    })
     onEnhancedMetadata?.({
       fileId,
       pageQuality: Array.from({ length: ocrResult.totalPages }, (_, index) => {
@@ -191,10 +227,29 @@ export class ProcessPdfService {
           selectedAttempt: page?.selectedAttempt,
           legalSignals: page?.legalSignals,
           warnings,
+          ...(visualFallback.enabled
+            ? { visualFallback: visualFallback.byPage.get(pageNumber) }
+            : {}),
         }
       }),
     })
     return okResult(combineTextResults(ocrResult.ocrText, fileId, ocrResult))
+  }
+
+  private getFileName(file: FileInput): string {
+    const explicitFileName = file.fileName?.trim()
+    if (explicitFileName) return explicitFileName
+
+    return this.getDecodedUrlFileName(file.url)
+  }
+
+  private getDecodedUrlFileName(url: string): string {
+    const fileName = path.basename(new URL(url).pathname)
+    try {
+      return decodeURIComponent(fileName)
+    } catch {
+      return fileName
+    }
   }
 
   private processLegacyPdf({

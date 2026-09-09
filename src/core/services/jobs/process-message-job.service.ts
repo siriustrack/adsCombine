@@ -99,7 +99,7 @@ export class ProcessMessageJobService {
         startedAt,
       })
 
-      const result = await this.runWithJobTimeout(
+      const result = await this.runWithJobTimeout(signal =>
         this.processor.execute(
           {
             messages: job.request,
@@ -107,6 +107,7 @@ export class ProcessMessageJobService {
             protocol: job.protocol,
           },
           {
+            signal,
             includeReadableErrorBlocks: true,
             enhancedOcr: job.profile === 'enhanced-ocr',
             limits: {
@@ -115,6 +116,7 @@ export class ProcessMessageJobService {
               maxPdfPages: env.MAX_PDF_PAGES,
               maxOcrPagesPerPdf: env.MAX_OCR_PAGES_PER_PDF,
               maxTotalOcrPagesPerJob: env.MAX_TOTAL_OCR_PAGES_PER_JOB,
+              maxTotalVisualFallbackPagesPerJob: env.MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB,
             },
           }
         )
@@ -146,16 +148,19 @@ export class ProcessMessageJobService {
     }
   }
 
-  private async runWithJobTimeout<T>(promise: Promise<T>): Promise<T> {
+  private async runWithJobTimeout<T>(processor: (signal: AbortSignal) => Promise<T>): Promise<T> {
     let timer!: ReturnType<typeof setTimeout>
+    const controller = new AbortController()
     const timeoutPromise = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
-        reject(new Error(`Job excedeu o tempo limite de ${env.JOB_STALE_AFTER_MS}ms`))
+        const error = new Error(`Job excedeu o tempo limite de ${env.JOB_STALE_AFTER_MS}ms`)
+        controller.abort(error)
+        reject(error)
       }, env.JOB_STALE_AFTER_MS)
     })
 
     try {
-      return await Promise.race([promise, timeoutPromise])
+      return await Promise.race([processor(controller.signal), timeoutPromise])
     } finally {
       clearTimeout(timer)
     }

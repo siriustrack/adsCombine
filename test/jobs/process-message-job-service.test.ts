@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { env } from '../../src/config/env';
 import type { ProcessMessagesResponse } from '../../src/core/services/messages/process-messages.service';
 import { ProcessMessageJobService } from '../../src/core/services/jobs/process-message-job.service';
 import type { ProcessMessageJobRecord } from '../../src/core/services/jobs/job.types';
@@ -14,6 +15,7 @@ process.env.JOBS_MAX_QUEUE_SIZE = '10';
 process.env.JOB_STALE_AFTER_MS = '10000';
 
 type MockProcessOptions = {
+  signal?: AbortSignal;
   includeReadableErrorBlocks?: boolean;
   pdfMode?: 'legacy' | 'mixed-page';
   enhancedOcr?: boolean;
@@ -81,6 +83,15 @@ class MockProcessor {
     };
   }
 }
+
+const originalJobTimeout = env.JOB_STALE_AFTER_MS;
+
+afterEach(() => {
+  Object.defineProperty(env, 'JOB_STALE_AFTER_MS', {
+    value: originalJobTimeout,
+    configurable: true,
+  });
+});
 
 function waitFor(predicate: () => boolean): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -202,5 +213,32 @@ describe('ProcessMessageJobService', () => {
     });
     expect(processor.calls[0][1]).toMatchObject({ enhancedOcr: true });
     expect(processor.calls[0][1]?.pdfMode).toBeUndefined();
+  });
+
+  test('aborts processing when the job timeout expires', async () => {
+    Object.defineProperty(env, 'JOB_STALE_AFTER_MS', { value: 5, configurable: true });
+    let signal: AbortSignal | undefined;
+    const abortingProcessor = {
+      async execute(_input: ProcessorCall[0], options?: MockProcessOptions): Promise<ProcessMessagesResponse> {
+        signal = options?.signal;
+        return new Promise((_, reject) => {
+          signal?.addEventListener('abort', () => reject(signal?.reason), { once: true });
+        });
+      },
+    };
+    const abortingService = new ProcessMessageJobService(
+      store as unknown as JsonJobStoreService,
+      abortingProcessor as unknown as ConstructorParameters<typeof ProcessMessageJobService>[1]
+    );
+
+    const job = await abortingService.create({
+      host: 'localhost:3000',
+      protocol: 'http',
+      messages: [{ conversationId: 'conv-1', body: { files: [] } }],
+    });
+
+    await waitFor(() => signal !== undefined);
+    await waitForAsync(async () => (await store.get(job.id)).status === 'expired');
+    expect(signal?.aborted).toBe(true);
   });
 });

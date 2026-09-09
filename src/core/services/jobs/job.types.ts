@@ -1,4 +1,5 @@
 import type { ProcessMessage } from 'api/controllers/messages.controllers'
+import type { VisualFallbackMetadata } from '../messages/pdf-utils/visual-fallback.types'
 
 export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed' | 'expired'
 
@@ -37,6 +38,7 @@ export type EnhancedOcrPageQuality = {
     garbledSpans: number
   }
   warnings?: string[]
+  visualFallback?: VisualFallbackMetadata
 }
 
 export type EnhancedOcrFileResult = {

@@ -3,7 +3,6 @@ import fs from 'node:fs'
 import path, { join } from 'node:path'
 import { PROCESSING_TIMEOUTS } from '@config/constants'
 import { env } from '@config/env'
-import { httpClient } from '@config/http'
 import { openaiClient, openaiConfig } from '@config/openai'
 import logger from '@lib/logger'
 import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types'
@@ -15,7 +14,7 @@ import pLimit from 'p-limit'
 import { sanitize } from 'utils/sanitize'
 import { sanitizeText } from 'utils/textSanitizer'
 import WordExtractor from 'word-extractor'
-import { FileSizeLimitError } from './pdf-utils/file-download.service'
+import { FileDownloadService, FileSizeLimitError } from './pdf-utils/file-download.service'
 import { ProcessPdfService } from './pdf-utils/process-pdf.service'
 import type {
   EnhancedPdfMetadata,
@@ -31,6 +30,7 @@ export interface FileInput {
   fileId: string
   url: string
   mimeType: string
+  fileName?: string
 }
 
 export class OcrPageBudget {
@@ -70,7 +70,11 @@ export class ProcessMessagesService {
       ProcessPdfService,
       'execute' | 'executeEnhanced'
     > = new ProcessPdfService(),
-    private readonly wordExtractor = new WordExtractor()
+    private readonly wordExtractor = new WordExtractor(),
+    private readonly fileDownloadService: Pick<
+      FileDownloadService,
+      'downloadFile'
+    > = new FileDownloadService()
   ) {}
 
   async execute(
@@ -89,8 +93,14 @@ export class ProcessMessagesService {
     const failedFiles: { fileId: string; error: string }[] = []
     const extractedTexts: string[] = []
     const enhancedPdfMetadata: EnhancedPdfMetadata[] = []
+    const requestedFiles = messages.flatMap(message => message.body.files ?? [])
+    const requestExceedsFileLimit =
+      options.limits?.maxFiles !== undefined && requestedFiles.length > options.limits.maxFiles
     const ocrPageBudget = options.limits?.maxTotalOcrPagesPerJob
       ? new OcrPageBudget(options.limits.maxTotalOcrPagesPerJob)
+      : undefined
+    const visualFallbackPageBudget = options.limits?.maxTotalVisualFallbackPagesPerJob
+      ? new OcrPageBudget(options.limits.maxTotalVisualFallbackPagesPerJob)
       : undefined
 
     for (const message of messages) {
@@ -98,8 +108,8 @@ export class ProcessMessagesService {
       const { files } = body
 
       if (files && files.length > 0) {
-        if (options.limits?.maxFiles && files.length > options.limits.maxFiles) {
-          const errorMessage = `A requisição contém ${files.length} arquivos, acima do limite configurado de ${options.limits.maxFiles}.`
+        if (requestExceedsFileLimit) {
+          const errorMessage = `A requisição contém ${requestedFiles.length} arquivos, acima do limite configurado de ${options.limits?.maxFiles}.`
           failedFiles.push(...files.map(file => ({ fileId: file.fileId, error: errorMessage })))
 
           if (options.includeReadableErrorBlocks) {
@@ -119,6 +129,7 @@ export class ProcessMessagesService {
               extractedTexts,
               options,
               ocrPageBudget,
+              visualFallbackPageBudget,
               enhancedPdfMetadata,
             })
           )
@@ -161,11 +172,19 @@ export class ProcessMessagesService {
     extractedTexts,
     options,
     ocrPageBudget,
+    visualFallbackPageBudget,
     enhancedPdfMetadata,
   }: ProcessAndHandleFileOptions & {
     enhancedPdfMetadata: EnhancedPdfMetadata[]
+    visualFallbackPageBudget?: OcrPageBudget
   }): Promise<{ success: boolean; fileId: string; error?: string }> {
-    const result = await this.processFile({ file, options, ocrPageBudget, enhancedPdfMetadata })
+    const result = await this.processFile({
+      file,
+      options,
+      ocrPageBudget,
+      enhancedPdfMetadata,
+      visualFallbackPageBudget,
+    })
 
     if (result.error) {
       logger.error('Failed to process file', {
@@ -193,24 +212,27 @@ export class ProcessMessagesService {
     file,
     options = {},
     ocrPageBudget,
+    visualFallbackPageBudget,
     enhancedPdfMetadata,
   }: ProcessFileOptions): Promise<Result<string, Error>> {
     const fileType = file.mimeType.split('/')[1]
 
     if (file.mimeType.startsWith('audio/')) {
-      return this.processAudio(file)
+      return this.processAudio(file, options.limits?.maxFileBytes)
     }
 
     const fileTypeMap: Record<string, () => Promise<Result<string, Error>>> = {
-      plain: () => this.processTxt(file),
+      plain: () => this.processTxt(file, options.limits?.maxFileBytes),
       pdf: () =>
         this.processWithTimeout({
-          processor: async () => {
+          processor: async signal => {
             const pdfOptions = {
+              signal,
               maxFileBytes: options.limits?.maxFileBytes,
               maxPdfPages: options.limits?.maxPdfPages,
               maxOcrPagesPerPdf: options.limits?.maxOcrPagesPerPdf,
               ocrPageBudget,
+              visualFallbackPageBudget,
               onEnhancedMetadata: (metadata: EnhancedPdfMetadata) => {
                 enhancedPdfMetadata?.push(metadata)
               },
@@ -228,14 +250,17 @@ export class ProcessMessagesService {
           timeout: PROCESSING_TIMEOUTS.PDF_GLOBAL,
           fileId: file.fileId,
           fileType: 'pdf',
+          signal: options.signal,
         }),
-      jpeg: () => this.processImage(file),
-      jpg: () => this.processImage(file),
-      png: () => this.processImage(file),
-      'vnd.openxmlformats-officedocument.wordprocessingml.document': () => this.processDocx(file),
-      msword: () => this.processDoc(file), // .doc files are not supported
-      'vnd.openxmlformats-officedocument.spreadsheetml.sheet': () => this.processXlsx(file),
-      'vnd.ms-excel': () => this.processXlsx(file), // Added support for .xls files
+      jpeg: () => this.processImage(file, options.limits?.maxFileBytes),
+      jpg: () => this.processImage(file, options.limits?.maxFileBytes),
+      png: () => this.processImage(file, options.limits?.maxFileBytes),
+      'vnd.openxmlformats-officedocument.wordprocessingml.document': () =>
+        this.processDocx(file, options.limits?.maxFileBytes),
+      msword: () => this.processDoc(file, options.limits?.maxFileBytes), // .doc files are not supported
+      'vnd.openxmlformats-officedocument.spreadsheetml.sheet': () =>
+        this.processXlsx(file, options.limits?.maxFileBytes),
+      'vnd.ms-excel': () => this.processXlsx(file, options.limits?.maxFileBytes), // Added support for .xls files
     }
 
     const processor = fileTypeMap[fileType]
@@ -256,23 +281,55 @@ export class ProcessMessagesService {
     timeout,
     fileId,
     fileType,
+    signal,
   }: ProcessWithTimeoutOptions<T>): Promise<Result<T, Error>> {
     const timeoutError = `${fileType.toUpperCase()} processing timed out after ${timeout / 1000} seconds`
     const userErrorMessage = `O processamento deste arquivo ${fileType.toUpperCase()} excedeu o tempo limite de ${
       timeout / 1000
     } segundos.`
     let timer: ReturnType<typeof setTimeout> | undefined
+    const controller = new AbortController()
+    let removeAbortListener: (() => void) | undefined
+
+    if (signal?.aborted) {
+      return errResult(
+        signal.reason instanceof Error
+          ? signal.reason
+          : new Error(`${fileType.toUpperCase()} processing aborted`)
+      )
+    }
+
+    const abortPromise = signal
+      ? new Promise<T>((_, reject) => {
+          const abort = () => {
+            const error =
+              signal.reason instanceof Error
+                ? signal.reason
+                : new Error(`${fileType.toUpperCase()} processing aborted`)
+            controller.abort(error)
+            reject(error)
+          }
+          signal.addEventListener('abort', abort, { once: true })
+          removeAbortListener = () => signal.removeEventListener('abort', abort)
+        })
+      : undefined
 
     const { value, error } = await wrapPromiseResult<T, Error>(
       Promise.race([
-        processor(),
+        processor(controller.signal),
         new Promise<T>((_, reject) => {
-          timer = setTimeout(() => reject(new Error(timeoutError)), timeout)
+          timer = setTimeout(() => {
+            const error = new Error(timeoutError)
+            controller.abort(error)
+            reject(error)
+          }, timeout)
         }),
+        ...(abortPromise ? [abortPromise] : []),
       ]).finally(() => {
         if (timer) {
           clearTimeout(timer)
         }
+        removeAbortListener?.()
       })
     )
 
@@ -333,13 +390,12 @@ export class ProcessMessagesService {
     return `## Transcricao do arquivo: ${fileName}:\n\n[${code}]\nEste arquivo não foi processado integralmente.\nMotivo: ${error.message}\nOriente o usuário a reduzir, dividir ou reenviar uma versão compatível do arquivo, se necessário.`
   }
 
-  private async processTxt(file: FileInput): Promise<Result<string, Error>> {
-    const { fileId, url } = file
+  private async processTxt(file: FileInput, maxFileBytes?: number): Promise<Result<string, Error>> {
+    const { fileId } = file
 
     return this.processWithTimeout({
       processor: async () => {
-        const response = await httpClient.get(url, { responseType: 'arraybuffer' })
-        const textContent = (response.data as Buffer).toString('utf-8')
+        const textContent = (await this.downloadSourceFile(file, maxFileBytes)).toString('utf-8')
         return sanitize(textContent)
       },
       timeout: PROCESSING_TIMEOUTS.TXT,
@@ -348,13 +404,15 @@ export class ProcessMessagesService {
     })
   }
 
-  private async processImage(file: FileInput): Promise<Result<string, Error>> {
-    const { fileId, url } = file
+  private async processImage(
+    file: FileInput,
+    maxFileBytes?: number
+  ): Promise<Result<string, Error>> {
+    const { fileId } = file
 
     return this.processWithTimeout({
       processor: async () => {
-        const response = await httpClient.get(url, { responseType: 'arraybuffer' })
-        const imageBuffer = response.data as Buffer
+        const imageBuffer = await this.downloadSourceFile(file, maxFileBytes)
         const base64Image = imageBuffer.toString('base64')
 
         const aiResponse = await openaiClient.chat.completions.create(
@@ -387,11 +445,14 @@ export class ProcessMessagesService {
     })
   }
 
-  private async processDocx({ fileId, url }: FileInput): Promise<Result<string, Error>> {
+  private async processDocx(
+    file: FileInput,
+    maxFileBytes?: number
+  ): Promise<Result<string, Error>> {
+    const { fileId } = file
     return this.processWithTimeout({
       processor: async () => {
-        const response = await httpClient.get(url, { responseType: 'arraybuffer' })
-        const buffer = response.data as Buffer
+        const buffer = await this.downloadSourceFile(file, maxFileBytes)
         const result = await mammoth.extractRawText({ buffer })
         return sanitize(result.value)
       },
@@ -401,13 +462,12 @@ export class ProcessMessagesService {
     })
   }
 
-  private async processDoc(file: FileInput): Promise<Result<string, Error>> {
-    const { fileId, url } = file
+  private async processDoc(file: FileInput, maxFileBytes?: number): Promise<Result<string, Error>> {
+    const { fileId } = file
 
     return this.processWithTimeout({
       processor: async () => {
-        const response = await httpClient.get(url, { responseType: 'arraybuffer' })
-        const buffer = response.data as Buffer
+        const buffer = await this.downloadSourceFile(file, maxFileBytes)
         const doc = await this.wordExtractor.extract(buffer)
         return sanitize(doc.getBody())
       },
@@ -417,13 +477,15 @@ export class ProcessMessagesService {
     })
   }
 
-  private async processXlsx(file: FileInput): Promise<Result<string, Error>> {
-    const { fileId, url } = file
+  private async processXlsx(
+    file: FileInput,
+    maxFileBytes?: number
+  ): Promise<Result<string, Error>> {
+    const { fileId } = file
 
     return this.processWithTimeout({
       processor: async () => {
-        const response = await httpClient.get(url, { responseType: 'arraybuffer' })
-        const buffer = response.data as Buffer
+        const buffer = await this.downloadSourceFile(file, maxFileBytes)
         const xlsxResult = processXLSXFile(
           buffer.buffer.slice(
             buffer.byteOffset,
@@ -438,20 +500,22 @@ export class ProcessMessagesService {
     })
   }
 
-  private async processAudio(file: FileInput): Promise<Result<string, Error>> {
-    const { fileId, url } = file
+  private async processAudio(
+    file: FileInput,
+    maxFileBytes?: number
+  ): Promise<Result<string, Error>> {
+    const { fileId } = file
 
     return this.processWithTimeout({
       processor: async () => {
-        const response = await httpClient.get(url, { responseType: 'arraybuffer' })
-        const buffer = response.data as Buffer
+        const buffer = await this.downloadSourceFile(file, maxFileBytes)
 
         const arrayBuffer = buffer.buffer.slice(
           buffer.byteOffset,
           buffer.byteOffset + buffer.byteLength
         ) as ArrayBuffer
 
-        const fileName = path.basename(new URL(url).pathname) || 'audio'
+        const fileName = path.basename(new URL(file.url).pathname) || 'audio'
         const audioFile = new File([arrayBuffer], fileName, {
           type: file.mimeType,
         }) as Uploadable
@@ -472,5 +536,13 @@ export class ProcessMessagesService {
       fileId,
       fileType: 'audio',
     })
+  }
+
+  private async downloadSourceFile(file: FileInput, maxFileBytes?: number): Promise<Buffer> {
+    const { value, error } = await this.fileDownloadService.downloadFile(file.url, file.fileId, {
+      maxBytes: maxFileBytes,
+    })
+    if (error) throw error
+    return value.buffer
   }
 }

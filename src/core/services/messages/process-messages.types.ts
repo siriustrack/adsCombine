@@ -1,4 +1,5 @@
 import type { FileInfo } from 'api/controllers/messages.controllers'
+import type { VisualFallbackMetadata } from './pdf-utils/visual-fallback.types'
 
 export type EnhancedPdfMetadata = {
   fileId: string
@@ -29,10 +30,12 @@ export type EnhancedPdfMetadata = {
       garbledSpans: number
     }
     warnings?: string[]
+    visualFallback?: VisualFallbackMetadata
   }>
 }
 
 export type ProcessMessagesOptions = {
+  signal?: AbortSignal
   includeReadableErrorBlocks?: boolean
   pdfMode?: 'legacy' | 'mixed-page'
   enhancedOcr?: boolean
@@ -42,6 +45,7 @@ export type ProcessMessagesOptions = {
     maxPdfPages?: number
     maxOcrPagesPerPdf?: number
     maxTotalOcrPagesPerJob?: number
+    maxTotalVisualFallbackPagesPerJob?: number
   }
 }
 
@@ -55,20 +59,23 @@ export type ProcessAndHandleFileOptions = {
   extractedTexts: string[]
   options: ProcessMessagesOptions
   ocrPageBudget?: OcrPageBudget
+  visualFallbackPageBudget?: OcrPageBudget
 }
 
 export type ProcessFileOptions = {
   file: FileInfo
   options: ProcessMessagesOptions
   ocrPageBudget?: OcrPageBudget
+  visualFallbackPageBudget?: OcrPageBudget
   enhancedPdfMetadata?: EnhancedPdfMetadata[]
 }
 
 export type ProcessWithTimeoutOptions<T> = {
-  processor: () => Promise<T>
+  processor: (signal: AbortSignal) => Promise<T>
   timeout: number
   fileId: string
   fileType: string
+  signal?: AbortSignal
 }
 
 export type SaveProcessedTextOptions = {

@@ -10,7 +10,10 @@ process.env.TOKEN = 'main-token';
 process.env.JOBS_TOKEN = 'jobs-token';
 
 type NeverResolvingPdfService = {
-  execute: () => Promise<{ value?: string; error?: Error }>;
+  execute: (
+    file: unknown,
+    options?: { signal?: AbortSignal }
+  ) => Promise<{ value?: string; error?: Error }>;
 };
 
 type ProcessMessagesServiceInstance = {
@@ -42,8 +45,19 @@ describe('ProcessMessagesService PDF timeout', () => {
     );
     const service = new ProcessMessagesService();
     const serviceInternals = service as unknown as ProcessMessagesServiceInstance;
+    let aborted = false;
     serviceInternals.processPdfService = {
-      execute: () => new Promise(() => {}),
+      execute: (_file, options) =>
+        new Promise((_, reject) => {
+          options?.signal?.addEventListener(
+            'abort',
+            () => {
+              aborted = true;
+              reject(new Error('PDF processing aborted'));
+            },
+            { once: true }
+          );
+        }),
     };
 
     const response = await service.execute({
@@ -72,5 +86,6 @@ describe('ProcessMessagesService PDF timeout', () => {
         error: 'O processamento deste arquivo PDF excedeu o tempo limite de 0.005 segundos.',
       },
     ]);
+    expect(aborted).toBe(true);
   });
 });

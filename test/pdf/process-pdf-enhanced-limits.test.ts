@@ -1,10 +1,11 @@
 import { describe, expect, test } from 'bun:test'
-import { ProcessPdfService } from '../../src/core/services/messages/pdf-utils/process-pdf.service'
 import {
-  validateEnhancedOcrLimits,
   type EnhancedOcrLimits,
+  validateEnhancedOcrLimits,
 } from '../../src/core/services/messages/pdf-utils/ocr-orchestrator.service'
+import { ProcessPdfService } from '../../src/core/services/messages/pdf-utils/process-pdf.service'
 import { PdfLimitError } from '../../src/core/services/messages/pdf-utils/process-pdf.types'
+import type { VisualFallbackService } from '../../src/core/services/messages/pdf-utils/visual-fallback.service'
 
 process.env.BASE_URL = 'http://localhost:3000'
 process.env.OPENAI_API_KEY = 'test-openai-key'
@@ -12,7 +13,11 @@ process.env.OPENAI_MODEL_TEXT = 'gpt-test'
 process.env.TOKEN = 'main-token'
 process.env.JOBS_TOKEN = 'jobs-token'
 
-function createEnhancedPdfService(totalPages: number, extractedText = '') {
+function createEnhancedPdfService(
+  totalPages: number,
+  extractedText = '',
+  visualFallbackService?: Pick<VisualFallbackService, 'execute'>
+) {
   let enhancedCalls = 0
   const service = new ProcessPdfService(
     {
@@ -46,10 +51,7 @@ function createEnhancedPdfService(totalPages: number, extractedText = '') {
       async processPagesWithOcr() {
         throw new Error('selected-page OCR must not run')
       },
-      async processWithEnhancedOcr({
-        maxOcrPagesPerPdf,
-        ocrPageBudget,
-      }: EnhancedOcrLimits = {}) {
+      async processWithEnhancedOcr({ maxOcrPagesPerPdf, ocrPageBudget }: EnhancedOcrLimits = {}) {
         const limits = { maxOcrPagesPerPdf, ocrPageBudget }
         const limitError = validateEnhancedOcrLimits(totalPages, limits)
         if (limitError) return { value: undefined, error: limitError }
@@ -71,7 +73,8 @@ function createEnhancedPdfService(totalPages: number, extractedText = '') {
           error: undefined,
         }
       },
-    }
+    },
+    visualFallbackService
   )
 
   return { service, getEnhancedCalls: () => enhancedCalls }
@@ -139,5 +142,57 @@ describe('ProcessPdfService enhanced OCR limits', () => {
 
     expect(result.error).toBeNull()
     expect(metadataPages).toBe(3)
+  })
+
+  test('keeps enhanced metadata backward-compatible while visual fallback is disabled', async () => {
+    const { service } = createEnhancedPdfService(1)
+    let metadata: Record<string, unknown> | undefined
+
+    const result = await service.executeEnhanced(file, {
+      onEnhancedMetadata: value => {
+        metadata = value.pageQuality?.[0]
+      },
+    })
+
+    expect(result.error).toBeNull()
+    expect(metadata).toBeDefined()
+    expect(metadata).not.toHaveProperty('visualFallback')
+  })
+
+  test('decodes matrícula filenames before visual fallback eligibility', async () => {
+    let fileName: string | undefined
+    const { service } = createEnhancedPdfService(1, '', {
+      async execute(input) {
+        fileName = input.fileName
+        return { byPage: new Map(), selectedPageCount: 0, enabled: false }
+      },
+    })
+
+    const result = await service.executeEnhanced({
+      ...file,
+      url: 'https://example.com/matr%C3%ADcula-12345.pdf',
+    })
+
+    expect(result.error).toBeNull()
+    expect(fileName).toBe('matrícula-12345.pdf')
+  })
+
+  test('prefers the request filename for visual fallback eligibility over a signed URL path', async () => {
+    let fileName: string | undefined
+    const { service } = createEnhancedPdfService(1, '', {
+      async execute(input) {
+        fileName = input.fileName
+        return { byPage: new Map(), selectedPageCount: 0, enabled: false }
+      },
+    })
+
+    const result = await service.executeEnhanced({
+      ...file,
+      fileName: 'matrícula-12345.pdf',
+      url: 'https://storage.example.com/signed/3d9a0b4c?signature=secret',
+    })
+
+    expect(result.error).toBeNull()
+    expect(fileName).toBe('matrícula-12345.pdf')
   })
 })

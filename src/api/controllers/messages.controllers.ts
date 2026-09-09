@@ -1,4 +1,6 @@
-import { deleteTextsService, processMessagesService } from '@core/services/messages/pdf-utils'
+import { env } from '@config/env'
+import { DeleteTextsService } from '@core/services/messages/delete-texts.services'
+import { ProcessMessagesService } from '@core/services/messages/process-messages.service'
 import { wrapPromiseResult } from '@lib/result.types'
 import type { Request, Response } from 'express'
 import { type ZodError, z } from 'zod'
@@ -9,6 +11,7 @@ const FileInfoSchema = z
     fileId: z.string(),
     url: z.url(),
     mimeType: z.string(),
+    fileName: z.string().optional(),
   })
   .loose()
 
@@ -36,6 +39,11 @@ const DeleteTextsBodySchema = z
 export type DeleteTextsBody = z.infer<typeof DeleteTextsBodySchema>
 
 export class MessagesController {
+  constructor(
+    private processor?: Pick<ProcessMessagesService, 'execute'>,
+    private readonly deleteTextsProcessor = new DeleteTextsService()
+  ) {}
+
   processMessagesHandler = async (req: Request, res: Response) => {
     const rawMessages = Array.isArray(req.body) ? req.body : [req.body]
 
@@ -52,7 +60,16 @@ export class MessagesController {
 
     const messageContext = { messages, host: req.get('host')!, protocol: req.protocol }
 
-    const response = await processMessagesService.execute(messageContext)
+    const response = await this.getProcessor().execute(messageContext, {
+      limits: {
+        maxFileBytes: env.EXTRACTION_MAX_FILE_BYTES,
+        maxFiles: env.MAX_FILES_PER_JOB,
+        maxPdfPages: env.MAX_PDF_PAGES,
+        maxOcrPagesPerPdf: env.MAX_OCR_PAGES_PER_PDF,
+        maxTotalOcrPagesPerJob: env.MAX_TOTAL_OCR_PAGES_PER_JOB,
+        maxTotalVisualFallbackPagesPerJob: env.MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB,
+      },
+    })
 
     return res.status(200).json(response)
   }
@@ -62,8 +79,13 @@ export class MessagesController {
 
     logger.info('Received /delete-texts request', body)
 
-    const response = await deleteTextsService.execute(body)
+    const response = await this.deleteTextsProcessor.execute(body)
 
     return res.status(response.status).json(response)
+  }
+
+  private getProcessor(): Pick<ProcessMessagesService, 'execute'> {
+    this.processor ??= new ProcessMessagesService()
+    return this.processor
   }
 }
