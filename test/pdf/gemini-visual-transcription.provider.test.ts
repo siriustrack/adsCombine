@@ -21,6 +21,30 @@ function setFetchMock(
 }
 
 describe('GeminiVisualTranscriptionProvider', () => {
+  test('uses a document-neutral prompt and appends only approved profile hints', async () => {
+    let requestBody: { contents?: Array<{ parts?: Array<{ text?: string }> }> } | undefined
+    setFetchMock(async (_input, init) => {
+      requestBody = JSON.parse(String(init?.body))
+      return successfulResponse(JSON.stringify({ status: 'abstain' }))
+    })
+
+    await new GeminiVisualTranscriptionProvider('test-key').transcribe({
+      image: Buffer.from('page'),
+      pageNumber: 1,
+      model: 'gemini-2.5-flash',
+      signal: new AbortController().signal,
+      documentProfile: {
+        kind: 'matricula',
+        transcriptionHints: ['Preserve marcadores R. e AV. exatamente como visíveis.'],
+      },
+    })
+
+    const prompt = requestBody?.contents?.[0]?.parts?.[0]?.text ?? ''
+    expect(prompt).toContain('página do documento')
+    expect(prompt).toContain('Preserve marcadores R. e AV.')
+    expect(prompt).not.toContain('página de matrícula imobiliária')
+  })
+
   test('caps Gemini structured output tokens', async () => {
     let requestBody: Record<string, unknown> | undefined
     setFetchMock(async (_input, init) => {

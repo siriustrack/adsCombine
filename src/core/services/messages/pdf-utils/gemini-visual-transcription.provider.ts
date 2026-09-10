@@ -20,12 +20,15 @@ const MAX_OUTPUT_TOKENS = 8_192
 const MAX_STRUCTURED_RESPONSE_BYTES = 65_536
 const MAX_TRANSCRIPTION_BYTES = 32_768
 
-const literalTranscriptionPrompt = [
-  'Transcreva literalmente somente o texto visível desta página de matrícula imobiliária.',
-  'Não interprete, corrija, complete, normalize, resuma ou deduza efeitos jurídicos.',
-  'Preserve números, pontuação, quebras relevantes e unidades como aparecem na imagem.',
-  'Se não puder transcrever com segurança, responda com status "abstain".',
-].join(' ')
+function literalTranscriptionPrompt(transcriptionHints: readonly string[] = []): string {
+  return [
+    'Transcreva literalmente somente o texto visível desta página do documento.',
+    'Não interprete, corrija, complete, normalize, resuma ou deduza informações.',
+    'Preserve números, pontuação, quebras relevantes e unidades como aparecem na imagem.',
+    ...transcriptionHints,
+    'Se não puder transcrever com segurança, responda com status "abstain".',
+  ].join(' ')
+}
 
 export class GeminiVisualTranscriptionProvider implements VisualTranscriptionProvider {
   constructor(private readonly apiKey: string) {}
@@ -34,6 +37,7 @@ export class GeminiVisualTranscriptionProvider implements VisualTranscriptionPro
     image,
     model,
     signal,
+    documentProfile,
   }: Parameters<
     VisualTranscriptionProvider['transcribe']
   >[0]): Promise<VisualTranscriptionResponse> {
@@ -47,7 +51,7 @@ export class GeminiVisualTranscriptionProvider implements VisualTranscriptionPro
           contents: [
             {
               parts: [
-                { text: literalTranscriptionPrompt },
+                { text: literalTranscriptionPrompt(documentProfile?.transcriptionHints) },
                 { inlineData: { mimeType: 'image/png', data: image.toString('base64') } },
               ],
             },

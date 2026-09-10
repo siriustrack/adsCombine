@@ -13,12 +13,15 @@ const MAX_REQUEST_BODY_BYTES = 48 * 1024 * 1024
 const MAX_STRUCTURED_RESPONSE_BYTES = 65_536
 const MAX_TRANSCRIPTION_BYTES = 32_768
 
-const literalTranscriptionPrompt = [
-  'Transcreva literalmente somente o texto visível desta página de matrícula imobiliária.',
-  'Não interprete, corrija, complete, normalize, resuma ou deduza efeitos jurídicos.',
-  'Preserve números, pontuação, quebras relevantes e unidades como aparecem na imagem.',
-  'Se não puder transcrever com segurança, responda com status "abstain".',
-].join(' ')
+function literalTranscriptionPrompt(transcriptionHints: readonly string[] = []): string {
+  return [
+    'Transcreva literalmente somente o texto visível desta página do documento.',
+    'Não interprete, corrija, complete, normalize, resuma ou deduza informações.',
+    'Preserve números, pontuação, quebras relevantes e unidades como aparecem na imagem.',
+    ...transcriptionHints,
+    'Se não puder transcrever com segurança, responda com status "abstain".',
+  ].join(' ')
+}
 
 export class DeepSeekVisualTranscriptionProvider implements VisualTranscriptionProvider {
   constructor(private readonly apiKey: string) {}
@@ -27,6 +30,7 @@ export class DeepSeekVisualTranscriptionProvider implements VisualTranscriptionP
     image,
     model,
     signal,
+    documentProfile,
   }: Parameters<
     VisualTranscriptionProvider['transcribe']
   >[0]): Promise<VisualTranscriptionResponse> {
@@ -43,7 +47,7 @@ export class DeepSeekVisualTranscriptionProvider implements VisualTranscriptionP
         {
           role: 'user',
           content: [
-            { type: 'text', text: literalTranscriptionPrompt },
+            { type: 'text', text: literalTranscriptionPrompt(documentProfile?.transcriptionHints) },
             {
               type: 'image_url',
               image_url: {
