@@ -14,7 +14,11 @@ afterEach(async () => {
   await rm(join(process.cwd(), 'public', 'texts', conversationId), { recursive: true, force: true })
 })
 
-function createService(resolveHostname: (hostname: string) => Promise<string[]>, status = 200) {
+function createService(
+  resolveHostname: (hostname: string) => Promise<string[]>,
+  status = 200,
+  responseBody = 'text'
+) {
   let requestCount = 0
   const downloader = new FileDownloadService(
     new SourceUrlPolicy({
@@ -30,8 +34,8 @@ function createService(resolveHostname: (hostname: string) => Promise<string[]>,
           headers:
             status === 302
               ? { location: `${redirectPrefix}public/private.txt` }
-              : { 'content-length': '4' },
-          data: Buffer.from('text'),
+              : { 'content-length': String(Buffer.byteLength(responseBody, 'utf8')) },
+          data: Buffer.from(responseBody),
         }
       },
     }
@@ -115,6 +119,28 @@ describe('ProcessMessagesService source downloads', () => {
       }),
     ])
     expect(requestCount()).toBe(0)
+  })
+
+  test('returns processed transcription text inline with the authenticated job result payload', async () => {
+    const { service } = createService(async () => ['8.8.8.8'])
+
+    const result = await service.execute(createRequest(`${primaryPrefix}public/source.txt`))
+
+    expect(result.processedFiles).toEqual(['text-1'])
+    expect(result.downloadUrl).toContain('/texts/source-download-policy-test/')
+    expect(result.transcriptionText).toContain('## Transcricao do arquivo: source.txt:')
+    expect(result.transcriptionText).toContain('text')
+  })
+
+  test('omits inline transcription text when the authenticated job result would exceed the safe payload limit', async () => {
+    const largeTranscriptionText = 'a'.repeat(1_000_001)
+    const { service } = createService(async () => ['8.8.8.8'], 200, largeTranscriptionText)
+
+    const result = await service.execute(createRequest(`${primaryPrefix}public/source.txt`))
+
+    expect(result.processedFiles).toEqual(['text-1'])
+    expect(result.downloadUrl).toContain('/texts/source-download-policy-test/')
+    expect(result.transcriptionText).toBeUndefined()
   })
 
   test('rejects a non-PDF redirect that resolves to a private address before requesting it', async () => {

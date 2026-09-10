@@ -26,6 +26,8 @@ import type {
 } from './process-messages.types'
 import { processXLSXFile, xlsxToText } from './xlsx/xlsx-processor'
 
+const MAX_INLINE_TRANSCRIPTION_BYTES = 1_000_000
+
 export interface FileInput {
   fileId: string
   url: string
@@ -58,6 +60,7 @@ export type ProcessMessagesResponse = {
   failedFiles: { fileId: string; error: string }[]
   filename: string
   downloadUrl: string
+  transcriptionText?: string
   enhancedResult?: {
     summary?: string
     files: EnhancedPdfMetadata[]
@@ -375,12 +378,20 @@ export class ProcessMessagesService {
 
     const downloadUrl = `${protocol}://${host}/texts/${conversationId}/${filename}`
 
+    const inlineTranscriptionText =
+      Buffer.byteLength(sanitizedText, 'utf8') <= MAX_INLINE_TRANSCRIPTION_BYTES
+        ? sanitizedText
+        : undefined
+
     return {
       conversationId,
       processedFiles,
       failedFiles,
       filename,
       downloadUrl,
+      ...(inlineTranscriptionText !== undefined
+        ? { transcriptionText: inlineTranscriptionText }
+        : {}),
     }
   }
 

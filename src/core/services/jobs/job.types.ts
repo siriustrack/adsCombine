@@ -9,6 +9,7 @@ export type ProcessMessageJobResult = {
   failedFiles: Array<{ fileId: string; error: string }>
   filename: string
   downloadUrl: string
+  transcriptionText?: string
 }
 
 export type EnhancedOcrPageQuality = {
