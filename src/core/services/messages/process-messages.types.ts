@@ -79,7 +79,7 @@ export type ProcessWithTimeoutOptions<T> = {
 }
 
 export type SaveProcessedTextOptions = {
-  allExtractedText: string
+  sanitizedText: string
   conversationId: string
   protocol: string
   host: string

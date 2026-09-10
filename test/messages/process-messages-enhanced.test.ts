@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { rm } from 'node:fs/promises'
+import { readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ProcessPdfService } from '../../src/core/services/messages/pdf-utils/process-pdf.service'
 import { ProcessMessagesService } from '../../src/core/services/messages/process-messages.service'
@@ -33,7 +33,11 @@ function createPdfServiceSeam() {
             qualityScore: 94,
             confidence: 94,
             wordCount: 12,
-            selectedAttempt: { label: 'rotated', psm: 6, rotation: { angle: 90, baselineLabel: 'orig', scoreGain: 20 } },
+            selectedAttempt: {
+              label: 'rotated',
+              psm: 6,
+              rotation: { angle: 90, baselineLabel: 'orig', scoreGain: 20 },
+            },
             legalSignals: {
               registryMarkers: 1,
               legalMarkers: 2,
@@ -66,7 +70,9 @@ function createRequest() {
       {
         conversationId,
         body: {
-          files: [{ fileId: 'file-1', url: 'https://example.com/file.pdf', mimeType: 'application/pdf' }],
+          files: [
+            { fileId: 'file-1', url: 'https://example.com/file.pdf', mimeType: 'application/pdf' },
+          ],
         },
       },
     ],
@@ -85,7 +91,9 @@ describe('ProcessMessagesService enhanced OCR delegation', () => {
       files: [
         expect.objectContaining({
           fileId: 'file-1',
-          pageQuality: [expect.objectContaining({ confidence: 94, wordCount: 12, warnings: ['low contrast'] })],
+          pageQuality: [
+            expect.objectContaining({ confidence: 94, wordCount: 12, warnings: ['low contrast'] }),
+          ],
         }),
       ],
     })
@@ -106,7 +114,9 @@ describe('ProcessMessagesService enhanced OCR delegation', () => {
     seam.service.executeEnhanced = async (_file, options) => {
       options?.onEnhancedMetadata?.({
         fileId: 'file-1',
-        pageQuality: [{ pageNumber: 1, confidence: 0, wordCount: 0, warnings: ['no-text-detected'] }],
+        pageQuality: [
+          { pageNumber: 1, confidence: 0, wordCount: 0, warnings: ['no-text-detected'] },
+        ],
       })
       return { value: '', error: undefined }
     }
@@ -117,5 +127,79 @@ describe('ProcessMessagesService enhanced OCR delegation', () => {
     expect(response.enhancedResult?.files[0].pageQuality).toEqual([
       expect.objectContaining({ confidence: 0, wordCount: 0, warnings: ['no-text-detected'] }),
     ])
+  })
+
+  test('rebases repeated UTF-16 ranges by file and raw occurrence order', async () => {
+    const repeatedPage = 'Página visual repetida'
+    const body = `Introdução 🧾\n${repeatedPage}\n${repeatedPage}`
+    const pdfService: Pick<ProcessPdfService, 'execute' | 'executeEnhanced'> = {
+      async execute() {
+        throw new Error('standard OCR must not run')
+      },
+      async executeEnhanced(file, options) {
+        if (file.fileId === 'file-1') await Bun.sleep(10)
+        const firstStart = body.indexOf(repeatedPage)
+        const secondStart = body.indexOf(repeatedPage, firstStart + repeatedPage.length)
+        const visualFallback = (start: number) => ({
+          state: 'reconciled' as const,
+          reasons: ['fragmented-number-or-measure' as const],
+          offsetEncoding: 'utf16_code_units' as const,
+          sourceRange: { start, end: start + repeatedPage.length },
+          riskySpans: [
+            { start, end: start + repeatedPage.length },
+            { start, end: start + repeatedPage.length },
+          ],
+          policyVersion: 'safe-visual-v1' as const,
+          selectedTextSource: 'visual' as const,
+        })
+        options?.onEnhancedMetadata?.({
+          fileId: file.fileId,
+          pageQuality: [
+            { pageNumber: 1, visualFallback: visualFallback(firstStart) },
+            { pageNumber: 2, visualFallback: visualFallback(secondStart) },
+          ],
+        })
+        return { value: body, error: undefined }
+      },
+    }
+    const service = new ProcessMessagesService(pdfService)
+    const request = createRequest()
+    request.messages[0].body.files = [
+      { fileId: 'file-1', url: 'https://example.com/a/contrato.pdf', mimeType: 'application/pdf' },
+      { fileId: 'file-2', url: 'https://example.com/b/contrato.pdf', mimeType: 'application/pdf' },
+    ]
+
+    const response = await service.execute(request, { enhancedOcr: true })
+    const transcriptionText = response.transcriptionText ?? ''
+    const persistedText = await readFile(
+      join(process.cwd(), 'public', 'texts', conversationId, response.filename),
+      'utf8'
+    )
+
+    expect(persistedText).toBe(transcriptionText)
+    expect(response.processedFiles).toEqual(['file-1', 'file-2'])
+    expect(response.enhancedResult?.files.map(metadata => metadata.fileId)).toEqual([
+      'file-1',
+      'file-2',
+    ])
+    const metadataRanges = (response.enhancedResult?.files ?? []).map(metadata =>
+      metadata.pageQuality?.map(page => page.visualFallback?.sourceRange)
+    )
+    expect(metadataRanges[0]?.[0]?.start).toBeLessThan(metadataRanges[0]?.[1]?.start ?? 0)
+    expect(metadataRanges[0]?.[1]?.start).toBeLessThan(metadataRanges[1]?.[0]?.start ?? 0)
+    for (const metadata of response.enhancedResult?.files ?? []) {
+      for (const page of metadata.pageQuality ?? []) {
+        const visualFallback = page.visualFallback
+        expect(
+          transcriptionText.slice(
+            visualFallback?.sourceRange?.start,
+            visualFallback?.sourceRange?.end
+          )
+        ).toBe(repeatedPage)
+        expect(
+          visualFallback?.riskySpans?.map(range => transcriptionText.slice(range.start, range.end))
+        ).toEqual([repeatedPage, repeatedPage])
+      }
+    }
   })
 })

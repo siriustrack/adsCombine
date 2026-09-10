@@ -27,6 +27,132 @@ import type {
 import { processXLSXFile, xlsxToText } from './xlsx/xlsx-processor'
 
 const MAX_INLINE_TRANSCRIPTION_BYTES = 1_000_000
+const FILE_SEPARATOR = '\n\n---\n\n'
+
+type SourceRange = { start: number; end: number }
+
+type RebaseMetadataInput = {
+  metadata: EnhancedPdfMetadata
+  rawBody: string
+  finalText: string
+  fileUrl: string
+  segmentSearchStart: number
+}
+
+type RebaseMetadataResult = {
+  metadata: EnhancedPdfMetadata
+  nextSegmentSearchStart: number
+}
+
+type EnhancedOccurrence = {
+  metadata: EnhancedPdfMetadata
+  rawBody: string
+  fileUrl: string
+}
+
+type ProcessedFileOutcome = {
+  success: boolean
+  fileId: string
+  error?: string
+  extractedText?: string
+  enhancedOccurrence?: EnhancedOccurrence
+}
+
+function rangeKey(range: SourceRange): string {
+  return `${range.start}:${range.end}`
+}
+
+function createOrderedRangeMap(
+  metadata: EnhancedPdfMetadata,
+  rawBody: string,
+  sanitizedBody: string
+): ReadonlyMap<string, SourceRange> {
+  const ranges: SourceRange[] = []
+  for (const page of metadata.pageQuality ?? []) {
+    if (page.visualFallback?.sourceRange) ranges.push(page.visualFallback.sourceRange)
+    ranges.push(...(page.visualFallback?.riskySpans ?? []))
+  }
+  ranges.sort((left, right) => left.start - right.start || left.end - right.end)
+
+  const mappedRanges = new Map<string, SourceRange>()
+  let searchStart = 0
+  for (const range of ranges) {
+    const key = rangeKey(range)
+    if (mappedRanges.has(key)) continue
+    const selectedText = sanitizeText(rawBody.slice(range.start, range.end))
+    if (!selectedText) continue
+    const start = sanitizedBody.indexOf(selectedText, searchStart)
+    if (start < 0) continue
+    mappedRanges.set(key, { start, end: start + selectedText.length })
+    searchStart = start + selectedText.length
+  }
+  return mappedRanges
+}
+
+function rebaseVisualMetadata({
+  metadata,
+  rawBody,
+  finalText,
+  fileUrl,
+  segmentSearchStart,
+}: RebaseMetadataInput): RebaseMetadataResult {
+  const fileName = path.basename(new URL(fileUrl).pathname)
+  const header = `## Transcricao do arquivo: ${fileName}:\n\n`
+  const sanitizedSegment = sanitizeText(header + rawBody)
+  const segmentStart = finalText.indexOf(sanitizedSegment, segmentSearchStart)
+  const sanitizedBody = sanitizeText(rawBody)
+  const bodyStartWithinSegment = sanitizedSegment.indexOf(
+    sanitizedBody,
+    sanitizeText(header).length
+  )
+  if (segmentStart < 0 || bodyStartWithinSegment < 0) {
+    return { metadata, nextSegmentSearchStart: segmentSearchStart }
+  }
+  const bodyStart = segmentStart + bodyStartWithinSegment
+  const orderedRangeMap = createOrderedRangeMap(metadata, rawBody, sanitizedBody)
+
+  return {
+    metadata: {
+      ...metadata,
+      pageQuality: metadata.pageQuality?.map(page => {
+        const visualFallback = page.visualFallback
+        if (!visualFallback) return page
+        const sourceRange = visualFallback.sourceRange
+          ? orderedRangeMap.get(rangeKey(visualFallback.sourceRange))
+          : undefined
+        const riskySpans = visualFallback.riskySpans
+          ?.map(range => orderedRangeMap.get(rangeKey(range)))
+          .filter((range): range is SourceRange => range !== undefined)
+        const rebasedVisualFallback = { ...visualFallback }
+        delete rebasedVisualFallback.sourceRange
+        delete rebasedVisualFallback.riskySpans
+        return {
+          ...page,
+          visualFallback: {
+            ...rebasedVisualFallback,
+            ...(sourceRange
+              ? {
+                  sourceRange: {
+                    start: bodyStart + sourceRange.start,
+                    end: bodyStart + sourceRange.end,
+                  },
+                }
+              : {}),
+            ...(riskySpans
+              ? {
+                  riskySpans: riskySpans.map(range => ({
+                    start: bodyStart + range.start,
+                    end: bodyStart + range.end,
+                  })),
+                }
+              : {}),
+          },
+        }
+      }),
+    },
+    nextSegmentSearchStart: segmentStart + sanitizedSegment.length,
+  }
+}
 
 export interface FileInput {
   fileId: string
@@ -95,7 +221,7 @@ export class ProcessMessagesService {
     const processedFiles: string[] = []
     const failedFiles: { fileId: string; error: string }[] = []
     const extractedTexts: string[] = []
-    const enhancedPdfMetadata: EnhancedPdfMetadata[] = []
+    const enhancedOccurrences: EnhancedOccurrence[] = []
     const requestedFiles = messages.flatMap(message => message.body.files ?? [])
     const requestExceedsFileLimit =
       options.limits?.maxFiles !== undefined && requestedFiles.length > options.limits.maxFiles
@@ -129,17 +255,17 @@ export class ProcessMessagesService {
           limit(() =>
             this.processAndHandleFile({
               file,
-              extractedTexts,
               options,
               ocrPageBudget,
               visualFallbackPageBudget,
-              enhancedPdfMetadata,
             })
           )
         )
         const results = await Promise.all(promises)
 
         results.forEach(result => {
+          if (result.extractedText !== undefined) extractedTexts.push(result.extractedText)
+          if (result.enhancedOccurrence) enhancedOccurrences.push(result.enhancedOccurrence)
           if (result.success) {
             processedFiles.push(result.fileId)
           } else {
@@ -149,8 +275,9 @@ export class ProcessMessagesService {
       }
     }
 
+    const sanitizedText = sanitizeText(extractedTexts.join(FILE_SEPARATOR).trim())
     const response = await this.saveProcessedText({
-      allExtractedText: extractedTexts.join('\n\n---\n\n'),
+      sanitizedText,
       conversationId: messages[0].conversationId,
       protocol,
       host,
@@ -159,10 +286,21 @@ export class ProcessMessagesService {
     })
 
     if (options.enhancedOcr) {
+      const rebasedMetadata: EnhancedPdfMetadata[] = []
+      let segmentSearchStart = 0
+      for (const occurrence of enhancedOccurrences) {
+        const rebased = rebaseVisualMetadata({
+          ...occurrence,
+          finalText: sanitizedText,
+          segmentSearchStart,
+        })
+        rebasedMetadata.push(rebased.metadata)
+        segmentSearchStart = rebased.nextSegmentSearchStart
+      }
       return {
         ...response,
         enhancedResult: {
-          files: enhancedPdfMetadata,
+          files: rebasedMetadata,
         },
       }
     }
@@ -172,15 +310,13 @@ export class ProcessMessagesService {
 
   private async processAndHandleFile({
     file,
-    extractedTexts,
     options,
     ocrPageBudget,
     visualFallbackPageBudget,
-    enhancedPdfMetadata,
-  }: ProcessAndHandleFileOptions & {
-    enhancedPdfMetadata: EnhancedPdfMetadata[]
+  }: Omit<ProcessAndHandleFileOptions, 'extractedTexts'> & {
     visualFallbackPageBudget?: OcrPageBudget
-  }): Promise<{ success: boolean; fileId: string; error?: string }> {
+  }): Promise<ProcessedFileOutcome> {
+    const enhancedPdfMetadata: EnhancedPdfMetadata[] = []
     const result = await this.processFile({
       file,
       options,
@@ -196,9 +332,15 @@ export class ProcessMessagesService {
       })
 
       if (options.includeReadableErrorBlocks) {
-        extractedTexts.push(
-          this.createReadableErrorBlock(path.basename(new URL(file.url).pathname), result.error)
-        )
+        return {
+          success: false,
+          fileId: file.fileId,
+          error: result.error.message,
+          extractedText: this.createReadableErrorBlock(
+            path.basename(new URL(file.url).pathname),
+            result.error
+          ),
+        }
       }
 
       return { success: false, fileId: file.fileId, error: result.error.message }
@@ -206,9 +348,21 @@ export class ProcessMessagesService {
 
     const fileName = path.basename(new URL(file.url).pathname)
     const header = `## Transcricao do arquivo: ${fileName}:\n\n`
-    extractedTexts.push(header + result.value)
 
-    return { success: true, fileId: file.fileId }
+    return {
+      success: true,
+      fileId: file.fileId,
+      extractedText: header + result.value,
+      ...(options.enhancedOcr && enhancedPdfMetadata[0]
+        ? {
+            enhancedOccurrence: {
+              metadata: enhancedPdfMetadata[0],
+              rawBody: result.value,
+              fileUrl: file.url,
+            },
+          }
+        : {}),
+    }
   }
 
   private async processFile({
@@ -354,7 +508,7 @@ export class ProcessMessagesService {
   }
 
   private async saveProcessedText({
-    allExtractedText,
+    sanitizedText,
     conversationId,
     protocol,
     host,
@@ -373,7 +527,6 @@ export class ProcessMessagesService {
     }
 
     const filePath = path.join(TEXTS_DIR, conversationId, filename)
-    const sanitizedText = sanitizeText(allExtractedText.trim())
     await fs.promises.writeFile(filePath, sanitizedText)
 
     const downloadUrl = `${protocol}://${host}/texts/${conversationId}/${filename}`
