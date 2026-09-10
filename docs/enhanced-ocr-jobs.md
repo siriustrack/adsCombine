@@ -78,7 +78,7 @@ Selective Gemini visual fallback, job queue parameters, OCR hard limits, and sou
 | Environment Variable | Type | Default | Max Limit / Validation | Description |
 | :--- | :--- | :--- | :--- | :--- |
 | `VISUAL_FALLBACK_ENABLED` | boolean | `false` | boolean (`1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`) | Master toggle for selective visual fallback. Requires the API key for the selected provider. |
-| `VISUAL_FALLBACK_SHADOW_MODE` | boolean | `true` | boolean | When `true`, records visual state as `ocr_plus_visual_candidate` with SHA-256 hashes without active reconciliation (candidate text is never persisted). |
+| `VISUAL_FALLBACK_SHADOW_MODE` | boolean | `true` | boolean | When `true`, evaluates the `safe-visual-v1` decision as `shadowDecision` but always retains OCR text. Candidate text is never persisted. |
 | `VISUAL_FALLBACK_PROVIDER` | `gemini` \| `deepseek` | `gemini` | enum | Visual transcription provider. Existing deployments remain on Gemini when omitted. |
 | `VISUAL_FALLBACK_MODEL` | string | provider-specific | min 1 char | Optional model override. Defaults to `gemini-2.5-flash` for Gemini and `deepseek-v4-flash-vision-exp` for DeepSeek. |
 | `VISUAL_FALLBACK_TIMEOUT_MS` | integer | `15000` | positive integer, max `120000` (120s) | Per-page timeout in milliseconds for visual provider requests. |
@@ -93,22 +93,26 @@ Selective Gemini visual fallback, job queue parameters, OCR hard limits, and sou
 
 ## 3. Selective Visual Fallback Architecture
 
-Visual fallback operates as a secondary, highly targeted enhancement step for scanned legal documents (matrículas imobiliárias).
+Visual fallback operates as a secondary, highly targeted enhancement step for scanned documents. Its eligibility is document-neutral; an optional document profile can add non-interpretive transcription hints without excluding generic documents.
 
 ### Selective Execution Strategy
-1. **Matrícula-Only Filter (`isMatriculaPdf`)**: Processing occurs strictly for PDF files where the filename matches `/matr[ií]cula/iu`. Non-matrícula documents bypass visual fallback completely (`ocr_only`).
-2. **Page Degradation Detection (`selectRiskReasons`)**: Only pages with quality risk signals are selected:
+1. **Signal-Based Eligibility (`selectRiskReasons`)**: Filenames and OCR confidence alone never select a page. Any document can be eligible when existing bounded degradation signals indicate risk:
    - `corrupted-symbols`: Unreadable or corrupted character spans.
    - `fragmented-number-or-measure`: Disrupted numeric values or measure units.
    - `garbled-spans`: Low-confidence or distorted text blocks.
    - `missing-measure`: Area/superfície mentioned in page text but zero square-meter markers found.
    - `missing-legal-marker`: Fragmented numbers present with registry markers but zero legal markers.
+2. **Optional Document Profile**: A matrícula filename may supply the provider with fixed, non-interpretive hints to preserve visible `R.` and `AV.` markers. This profile changes neither page eligibility nor reconciliation thresholds.
 3. **Strict Page Budget Enforcement**:
    - Per-PDF cap: `VISUAL_FALLBACK_MAX_PAGES_PER_PDF` (default `2`, max `10`).
    - Global job cap: `MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB` (default `4`, max `20`).
 
-### Immutable OCR Policy
-Standard OCR transcription output is **immutable**. Visual fallback never modifies, overwrites, or truncates the primary OCR text directly. Candidate visual text is never saved or persisted. Only SHA-256 hashes (`imageSha256` and `candidateSha256`), provider (`gemini` or `deepseek`), model, states, and ranges are stored alongside standard page metrics inside `visualFallback`.
+### Ephemeral Candidate and Safe Promotion Policy
+Raw visual candidate text is **ephemeral and immutable outside the in-memory reconciliation boundary**: it is never returned in public metadata, logged, or persisted. Only approved pages may use candidate text while constructing the final enhanced transcription. Public metadata contains hashes, provenance, `policyVersion`, decision reason, selected source, comparison metrics, states, and ranges—never candidate text.
+
+`safe-visual-v1` is deterministic and conservative. It first normalizes NFC, line endings, whitespace, and soft hyphens. Equal normalized text retains OCR. Promotion requires OCR confidence of at least 70 for alignment, similarity of at least 0.99, edit distance at most 20, length ratio from 0.95 through 1.05, unchanged protected content, and an exact non-whitespace content match where the visual text only reduces spacing or fragmentation. Changes to numbers, dates, currency, fractions, CPF/CNPJ, measurements, matrícula identifiers, `R.`/`AV.` markers, negation-sensitive text, or any other alphanumeric content produce `conflict`. Confidence below 90 is never, by itself, a promotion or eligibility signal.
+
+Accepted page text is assembled in page order. `sourceRange` and `riskySpans` are finally rebased after headers, file separators, and final sanitization, so UTF-16 offsets address the exact returned and persisted transcription.
 
 ### Provider Selection and DeepSeek Bounds
 - **Gemini (default)**: Set `GEMINI_API_KEY`; omitting `VISUAL_FALLBACK_PROVIDER` preserves the existing Gemini behavior and default model `gemini-2.5-flash`.
@@ -116,21 +120,19 @@ Standard OCR transcription output is **immutable**. Visual fallback never modifi
 - **DeepSeek payload limits**: A rendered inline image is rejected above 32 MiB, and the serialized request body is rejected above 48 MiB before an outbound request. The adapter accepts and validates only structured JSON responses.
 
 ### Shadow Rollout Semantics (`VISUAL_FALLBACK_SHADOW_MODE`)
-- **Shadow Mode (`true` - Default)**: Visual fallback renders the page, requests a transcription from the selected provider, and records state `ocr_plus_visual_candidate` with `imageSha256` and `candidateSha256` in `visualFallback` (candidate visual text itself is never saved or persisted). No active text comparison or reconciliation is performed. This enables provider benchmarking safely in production.
-- **Active Mode (`false`)**: Normalizes standard OCR text and the selected provider candidate text in memory (`normalizeForComparison`):
-  - **Identical**: State becomes `reconciled`.
-  - **Different**: State becomes `conflict`.
+- **Shadow Mode (`true` - Default)**: Visual fallback renders the page once, requests one transcription, evaluates the hypothetical `safe-visual-v1` decision, and records it as `shadowDecision`. State remains `ocr_plus_visual_candidate`, `selectedTextSource` remains `ocr`, and final text is never changed.
+- **Active Mode (`false`)**: The same policy returns `retain_ocr`, `promote_visual`, or `conflict`. Only `promote_visual` places page text in the internal accepted-page map; all other decisions retain OCR.
 
 ### Visual Fallback State Reference
 
 | State | Description |
 | :--- | :--- |
-| `ocr_only` | Page was not evaluated by visual fallback (non-matrícula PDF or no risk signals detected). |
+| `ocr_only` | Page was not evaluated because no bounded risk signals were detected. |
 | `fallback_pending` | Visual fallback rendering or selected provider request is currently in progress. |
 | `fallback_failed` | Visual fallback failed due to rendering error, timeout (default 15s, max 120s), max retries exceeded (default 1, max 3), or API failure. |
 | `ocr_plus_visual_candidate` | Visual candidate generated successfully in shadow mode (`VISUAL_FALLBACK_SHADOW_MODE=true`). Candidate text is not saved. |
-| `reconciled` | Active mode (`VISUAL_FALLBACK_SHADOW_MODE=false`), provider candidate text matches standard OCR text. |
-| `conflict` | Active mode (`VISUAL_FALLBACK_SHADOW_MODE=false`), provider candidate text differs from standard OCR text. |
+| `reconciled` | Active mode retained equal OCR text or safely promoted a structural-only repair under `safe-visual-v1`; inspect `selectedTextSource`. |
+| `conflict` | Active mode rejected a candidate that changed protected/content-bearing text or failed conservative alignment thresholds. |
 
 ---
 
