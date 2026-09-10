@@ -1,4 +1,5 @@
 import type { EnhancedOcrSignals } from './enhanced-ocr.types'
+import type { VisualComparison, VisualReconciliationDecision } from './visual-reconciliation.policy'
 
 export type VisualFallbackState =
   | 'ocr_only'
@@ -31,6 +32,11 @@ export type VisualFallbackMetadata = {
   sourceRange?: { start: number; end: number }
   riskySpans?: Array<{ start: number; end: number }>
   provenance?: VisualFallbackProvenance
+  policyVersion?: 'safe-visual-v1'
+  decisionReason?: string
+  selectedTextSource?: 'ocr' | 'visual'
+  shadowDecision?: VisualReconciliationDecision
+  comparison?: VisualComparison
 }
 
 export type VisualFallbackOcrPage = {
@@ -38,6 +44,12 @@ export type VisualFallbackOcrPage = {
   text: string
   sourceRange?: { start: number; end: number }
   legalSignals?: EnhancedOcrSignals
+  meanConfidence?: number
+}
+
+export type VisualDocumentProfile = {
+  kind: 'matricula'
+  transcriptionHints: readonly string[]
 }
 
 export type RenderedPdfPage = {
@@ -55,6 +67,7 @@ export interface VisualTranscriptionProvider {
     pageNumber: number
     model: string
     signal: AbortSignal
+    documentProfile?: VisualDocumentProfile
   }): Promise<VisualTranscriptionResponse>
 }
 

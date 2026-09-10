@@ -180,7 +180,7 @@ describe('VisualFallbackService', () => {
     expect(result.byPage.get(1)).not.toHaveProperty('candidateText')
   })
 
-  test('does not select non-matrícula PDFs or pages based on average confidence alone', async () => {
+  test('selects risky generic PDFs but not pages based on average confidence alone', async () => {
     let calls = 0
     const { service, renderedPages } = createService({
       async transcribe() {
@@ -189,19 +189,44 @@ describe('VisualFallbackService', () => {
       },
     })
 
-    const result = await service.execute({
+    const genericRisk = await service.execute({
       buffer: Buffer.from('pdf'),
       fileName: 'contrato.pdf',
-      pages: [page({ meanConfidence: 1 })],
+      pages: [page({ legalSignals: { ...page().legalSignals, corruptedSymbols: 1 } })],
     })
 
-    expect(renderedPages).toEqual([])
-    expect(calls).toBe(0)
-    expect(result.byPage.get(1)).toEqual({
-      state: 'ocr_only',
-      reasons: [],
-      offsetEncoding: 'utf16_code_units',
+    expect(renderedPages).toEqual([[1]])
+    expect(calls).toBe(1)
+    expect(genericRisk.byPage.get(1)).toMatchObject({
+      state: 'conflict',
+      reasons: ['corrupted-symbols'],
     })
+
+    const confidenceOnly = await service.execute({
+      buffer: Buffer.from('pdf'),
+      fileName: 'generic.pdf',
+      pages: [page({ meanConfidence: 85.12 }), page({ pageNumber: 2, meanConfidence: 87.47 })],
+    })
+    expect(calls).toBe(1)
+    expect(confidenceOnly.selectedPageCount).toBe(0)
+  })
+
+  test('keeps matrícula as an optional transcription profile without gating eligibility', async () => {
+    let profileKind: string | undefined
+    const { service } = createService({
+      async transcribe({ documentProfile }) {
+        profileKind = documentProfile?.kind
+        return { status: 'abstain' }
+      },
+    })
+
+    await service.execute({
+      buffer: Buffer.from('pdf'),
+      fileName: 'matrícula-123.pdf',
+      pages: [page({ legalSignals: { ...page().legalSignals, corruptedSymbols: 1 } })],
+    })
+
+    expect(profileKind).toBe('matricula')
   })
 
   test('bounds selected pages, keeps OCR unchanged in shadow mode, and never uses provider confidence', async () => {
@@ -236,6 +261,12 @@ describe('VisualFallbackService', () => {
     expect(renderedPages).toEqual([[1]])
     expect(providerCalls).toEqual([{ pageNumber: 1, model: 'gemini-2.5-flash' }])
     expect(result.byPage.get(1)).toMatchObject({ state: 'ocr_plus_visual_candidate' })
+    expect(result.byPage.get(1)).toMatchObject({
+      policyVersion: 'safe-visual-v1',
+      selectedTextSource: 'ocr',
+      shadowDecision: 'conflict',
+    })
+    expect(result.acceptedVisualTextByPage.size).toBe(0)
     expect(result.byPage.get(2)).toEqual({
       state: 'ocr_only',
       reasons: [],
@@ -376,5 +407,6 @@ describe('VisualFallbackService', () => {
       riskySpans: [{ start: 0, end: text.length }],
     })
     expect(result.byPage.get(1)).not.toHaveProperty('candidateText')
+    expect(result.acceptedVisualTextByPage.size).toBe(0)
   })
 })

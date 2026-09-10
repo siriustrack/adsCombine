@@ -7,6 +7,8 @@ import { GeminiVisualTranscriptionProvider } from './gemini-visual-transcription
 import { PdfPageRendererService } from './pdf-page-renderer.service'
 import type {
   PdfPageRenderer,
+  RenderedPdfPage,
+  VisualDocumentProfile,
   VisualFallbackConfig,
   VisualFallbackMetadata,
   VisualFallbackOcrPage,
@@ -14,6 +16,7 @@ import type {
   VisualFallbackReason,
   VisualTranscriptionProvider,
 } from './visual-fallback.types'
+import { reconcileVisualText } from './visual-reconciliation.policy'
 
 export type { VisualTranscriptionProvider } from './visual-fallback.types'
 
@@ -26,10 +29,12 @@ type VisualFallbackInput = {
     reserve(pageCount: number): boolean
     remaining(): number
   }
+  documentProfile?: VisualDocumentProfile
 }
 
 type VisualFallbackResult = {
   byPage: Map<number, VisualFallbackMetadata>
+  acceptedVisualTextByPage: ReadonlyMap<number, string>
   selectedPageCount: number
   enabled: boolean
 }
@@ -39,6 +44,32 @@ type CreateMetadataOptions = {
   state: VisualFallbackMetadata['state']
   reasons: VisualFallbackReason[]
   provenance?: VisualFallbackMetadata['provenance']
+  decisionReason?: string
+  selectedTextSource?: VisualFallbackMetadata['selectedTextSource']
+  shadowDecision?: VisualFallbackMetadata['shadowDecision']
+  comparison?: VisualFallbackMetadata['comparison']
+  policyVersion?: VisualFallbackMetadata['policyVersion']
+}
+
+type TranscriptionAttemptInput = {
+  image: Buffer
+  pageNumber: number
+  signal?: AbortSignal
+  documentProfile?: VisualDocumentProfile
+}
+
+type SelectedPage = {
+  page: VisualFallbackOcrPage
+  reasons: VisualFallbackReason[]
+}
+
+type ProcessSelectedPageInput = {
+  selection: SelectedPage
+  renderedPage?: RenderedPdfPage
+  byPage: Map<number, VisualFallbackMetadata>
+  acceptedVisualTextByPage: Map<number, string>
+  signal?: AbortSignal
+  documentProfile?: VisualDocumentProfile
 }
 
 type VisualFallbackEnvironment = Pick<
@@ -83,8 +114,12 @@ function defaultProvider(provider: VisualFallbackProvider): VisualTranscriptionP
   return new GeminiVisualTranscriptionProvider(env.GEMINI_API_KEY ?? '')
 }
 
-function isMatriculaPdf(fileName: string): boolean {
-  return /matr[ií]cula/iu.test(fileName)
+function inferDocumentProfile(fileName: string): VisualDocumentProfile | undefined {
+  if (!/matr[ií]cula/iu.test(fileName)) return undefined
+  return {
+    kind: 'matricula',
+    transcriptionHints: ['Preserve marcadores R. e AV. exatamente como visíveis.'],
+  }
 }
 
 function selectRiskReasons(page: VisualFallbackOcrPage): VisualFallbackReason[] {
@@ -111,10 +146,6 @@ function hash(value: Buffer | string): string {
   return createHash('sha256').update(value).digest('hex')
 }
 
-function normalizeForComparison(text: string): string {
-  return text.replace(/\s+/g, ' ').trim()
-}
-
 function createInitialMetadata(
   pages: VisualFallbackOcrPage[]
 ): Map<number, VisualFallbackMetadata> {
@@ -128,6 +159,11 @@ function createMetadata({
   state,
   reasons,
   provenance,
+  decisionReason,
+  selectedTextSource,
+  shadowDecision,
+  comparison,
+  policyVersion,
 }: CreateMetadataOptions): VisualFallbackMetadata {
   const unresolved =
     state === 'fallback_pending' || state === 'fallback_failed' || state === 'conflict'
@@ -139,6 +175,11 @@ function createMetadata({
     ...(page.sourceRange !== undefined ? { sourceRange: page.sourceRange } : {}),
     ...(unresolved && page.sourceRange !== undefined ? { riskySpans: [page.sourceRange] } : {}),
     ...(provenance !== undefined ? { provenance } : {}),
+    ...(policyVersion !== undefined ? { policyVersion } : {}),
+    ...(decisionReason !== undefined ? { decisionReason } : {}),
+    ...(selectedTextSource !== undefined ? { selectedTextSource } : {}),
+    ...(shadowDecision !== undefined ? { shadowDecision } : {}),
+    ...(comparison !== undefined ? { comparison } : {}),
   }
 }
 
@@ -157,24 +198,44 @@ export class VisualFallbackService {
 
   async execute(input: VisualFallbackInput): Promise<VisualFallbackResult> {
     const byPage = createInitialMetadata(input.pages)
-    if (!this.config.enabled || !isMatriculaPdf(input.fileName)) {
-      return { byPage, selectedPageCount: 0, enabled: this.config.enabled }
+    const acceptedVisualTextByPage = new Map<number, string>()
+    if (!this.config.enabled) {
+      return { byPage, acceptedVisualTextByPage, selectedPageCount: 0, enabled: false }
     }
-    if (input.signal?.aborted) return { byPage, selectedPageCount: 0, enabled: true }
+    if (input.signal?.aborted) {
+      return { byPage, acceptedVisualTextByPage, selectedPageCount: 0, enabled: true }
+    }
 
-    let selectedPages = input.pages
+    const riskyPages = input.pages
       .map(page => ({ page, reasons: selectRiskReasons(page) }))
       .filter(({ reasons }) => reasons.length > 0)
-      .slice(0, this.config.maxPagesPerPdf)
+    let selectedPages = riskyPages.slice(0, this.config.maxPagesPerPdf)
 
     if (input.pageBudget) {
-      selectedPages = selectedPages.slice(0, input.pageBudget.remaining())
+      const eligibleBeforeBudget = selectedPages
+      selectedPages = eligibleBeforeBudget.slice(0, input.pageBudget.remaining())
       if (selectedPages.length > 0 && !input.pageBudget.reserve(selectedPages.length)) {
         selectedPages = []
       }
+      const selectedNumbers = new Set(selectedPages.map(({ page }) => page.pageNumber))
+      for (const { page, reasons } of eligibleBeforeBudget) {
+        if (!selectedNumbers.has(page.pageNumber)) {
+          byPage.set(
+            page.pageNumber,
+            createMetadata({
+              page,
+              state: 'fallback_failed',
+              reasons,
+              decisionReason: 'budget_exhausted',
+            })
+          )
+        }
+      }
     }
 
-    if (selectedPages.length === 0) return { byPage, selectedPageCount: 0, enabled: true }
+    if (selectedPages.length === 0) {
+      return { byPage, acceptedVisualTextByPage, selectedPageCount: 0, enabled: true }
+    }
 
     for (const { page, reasons } of selectedPages) {
       byPage.set(page.pageNumber, createMetadata({ page, state: 'fallback_pending', reasons }))
@@ -191,7 +252,12 @@ export class VisualFallbackService {
       for (const { page, reasons } of selectedPages) {
         byPage.set(page.pageNumber, createMetadata({ page, state: 'fallback_failed', reasons }))
       }
-      return { byPage, selectedPageCount: selectedPages.length, enabled: true }
+      return {
+        byPage,
+        acceptedVisualTextByPage,
+        selectedPageCount: selectedPages.length,
+        enabled: true,
+      }
     }
 
     const selectionByPage = new Map(
@@ -202,39 +268,17 @@ export class VisualFallbackService {
     )
     const limit = pLimit(this.config.concurrency)
     await Promise.all(
-      selectedPages.map(({ page, reasons }) =>
-        limit(async () => {
-          if (input.signal?.aborted) return
-          const renderedPage = renderedByPage.get(page.pageNumber)
-          if (!renderedPage) {
-            byPage.set(page.pageNumber, createMetadata({ page, state: 'fallback_failed', reasons }))
-            return
-          }
-
-          const candidate = await this.transcribeWithRetries(
-            renderedPage.image,
-            page.pageNumber,
-            input.signal
-          )
-          if (input.signal?.aborted) return
-          if (!candidate) {
-            byPage.set(page.pageNumber, createMetadata({ page, state: 'fallback_failed', reasons }))
-            return
-          }
-
-          const provenance = {
-            provider: this.config.provider,
-            model: this.config.model,
-            imageSha256: hash(renderedPage.image),
-            candidateSha256: hash(candidate),
-          }
-          const state = this.config.shadowMode
-            ? 'ocr_plus_visual_candidate'
-            : normalizeForComparison(page.text) === normalizeForComparison(candidate)
-              ? 'reconciled'
-              : 'conflict'
-          byPage.set(page.pageNumber, createMetadata({ page, state, reasons, provenance }))
-        })
+      selectedPages.map(selection =>
+        limit(() =>
+          this.processSelectedPage({
+            selection,
+            renderedPage: renderedByPage.get(selection.page.pageNumber),
+            byPage,
+            acceptedVisualTextByPage,
+            signal: input.signal,
+            documentProfile: input.documentProfile ?? inferDocumentProfile(input.fileName),
+          })
+        )
       )
     )
 
@@ -244,14 +288,82 @@ export class VisualFallbackService {
       }
     }
 
-    return { byPage, selectedPageCount: selectionByPage.size, enabled: true }
+    return {
+      byPage,
+      acceptedVisualTextByPage,
+      selectedPageCount: selectionByPage.size,
+      enabled: true,
+    }
   }
 
-  private async transcribeWithRetries(
-    image: Buffer,
-    pageNumber: number,
-    signal?: AbortSignal
-  ): Promise<string | undefined> {
+  private async processSelectedPage({
+    selection: { page, reasons },
+    renderedPage,
+    byPage,
+    acceptedVisualTextByPage,
+    signal,
+    documentProfile,
+  }: ProcessSelectedPageInput): Promise<void> {
+    if (signal?.aborted) return
+    if (!renderedPage) {
+      byPage.set(page.pageNumber, createMetadata({ page, state: 'fallback_failed', reasons }))
+      return
+    }
+
+    const candidate = await this.transcribeWithRetries({
+      image: renderedPage.image,
+      pageNumber: page.pageNumber,
+      signal,
+      documentProfile,
+    })
+    if (signal?.aborted) return
+    if (!candidate) {
+      byPage.set(page.pageNumber, createMetadata({ page, state: 'fallback_failed', reasons }))
+      return
+    }
+
+    const reconciliation = reconcileVisualText({
+      ocrText: page.text,
+      visualText: candidate,
+      ocrConfidence: page.meanConfidence,
+    })
+    const selectedTextSource =
+      !this.config.shadowMode && reconciliation.decision === 'promote_visual' ? 'visual' : 'ocr'
+    if (selectedTextSource === 'visual') {
+      acceptedVisualTextByPage.set(page.pageNumber, candidate)
+    }
+    const state = this.config.shadowMode
+      ? 'ocr_plus_visual_candidate'
+      : reconciliation.decision === 'conflict'
+        ? 'conflict'
+        : 'reconciled'
+    byPage.set(
+      page.pageNumber,
+      createMetadata({
+        page,
+        state,
+        reasons,
+        provenance: {
+          provider: this.config.provider,
+          model: this.config.model,
+          imageSha256: hash(renderedPage.image),
+          candidateSha256: hash(candidate),
+        },
+        policyVersion: reconciliation.policyVersion,
+        decisionReason: reconciliation.decisionReason,
+        selectedTextSource,
+        ...(this.config.shadowMode ? { shadowDecision: reconciliation.decision } : {}),
+        comparison: reconciliation.comparison,
+      })
+    )
+  }
+
+  private async transcribeWithRetries({
+    image,
+    pageNumber,
+    signal,
+    documentProfile,
+  }: TranscriptionAttemptInput): Promise<string | undefined> {
     for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
       if (signal?.aborted) return undefined
       const controller = new AbortController()
@@ -264,6 +376,7 @@ export class VisualFallbackService {
           pageNumber,
           model: this.config.model,
           signal: controller.signal,
+          ...(documentProfile !== undefined ? { documentProfile } : {}),
         })
         if (signal?.aborted) return undefined
         if (response.status === 'abstain') return undefined
