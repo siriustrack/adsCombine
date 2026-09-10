@@ -164,7 +164,12 @@ describe('ProcessPdfService enhanced OCR limits', () => {
     const { service } = createEnhancedPdfService(1, '', {
       async execute(input) {
         fileName = input.fileName
-        return { byPage: new Map(), selectedPageCount: 0, enabled: false }
+        return {
+          byPage: new Map(),
+          acceptedVisualTextByPage: new Map(),
+          selectedPageCount: 0,
+          enabled: false,
+        }
       },
     })
 
@@ -182,7 +187,12 @@ describe('ProcessPdfService enhanced OCR limits', () => {
     const { service } = createEnhancedPdfService(1, '', {
       async execute(input) {
         fileName = input.fileName
-        return { byPage: new Map(), selectedPageCount: 0, enabled: false }
+        return {
+          byPage: new Map(),
+          acceptedVisualTextByPage: new Map(),
+          selectedPageCount: 0,
+          enabled: false,
+        }
       },
     })
 
@@ -194,5 +204,86 @@ describe('ProcessPdfService enhanced OCR limits', () => {
 
     expect(result.error).toBeNull()
     expect(fileName).toBe('matrícula-12345.pdf')
+  })
+
+  test('builds final enhanced text and UTF-16 ranges from approved page selections in page order', async () => {
+    let metadata: Array<Record<string, unknown>> | undefined
+    const visualText = 'Página dois visual 🧾'
+    const service = new ProcessPdfService(
+      {
+        async downloadFile() {
+          return { value: { buffer: Buffer.from('pdf'), contentLength: 3 }, error: undefined }
+        },
+      },
+      {
+        async extractTextFromPdf() {
+          return {
+            value: { text: '', totalPages: 2, pages: [] },
+            error: undefined,
+          }
+        },
+      },
+      undefined,
+      {
+        async processWithOcr() {
+          throw new Error('legacy OCR must not run')
+        },
+        async processPagesWithOcr() {
+          throw new Error('selected-page OCR must not run')
+        },
+        async processWithEnhancedOcr() {
+          return {
+            value: {
+              ocrText: 'Página um OCR\n\nPágina dois OCR',
+              totalPages: 2,
+              pages: [
+                { pageNumber: 2, text: 'Página dois OCR', meanConfidence: 85.12, warnings: [] },
+                { pageNumber: 1, text: 'Página um OCR', meanConfidence: 99, warnings: [] },
+              ],
+              chunksProcessed: 1,
+              processingTime: 1,
+            },
+            error: undefined,
+          }
+        },
+      },
+      {
+        async execute() {
+          return {
+            byPage: new Map([
+              [
+                2,
+                {
+                  state: 'reconciled' as const,
+                  reasons: [],
+                  offsetEncoding: 'utf16_code_units' as const,
+                  policyVersion: 'safe-visual-v1' as const,
+                  decisionReason: 'safe_structural_repair',
+                  selectedTextSource: 'visual' as const,
+                },
+              ],
+            ]),
+            acceptedVisualTextByPage: new Map([[2, visualText]]),
+            selectedPageCount: 1,
+            enabled: true,
+          }
+        },
+      }
+    )
+
+    const result = await service.executeEnhanced(file, {
+      onEnhancedMetadata: value => {
+        metadata = value.pageQuality as Array<Record<string, unknown>>
+      },
+    })
+
+    expect(result.value).toBe(`Página um OCR\n\n${visualText}`)
+    expect(metadata?.[0]).not.toHaveProperty('visualFallback')
+    expect(metadata?.[1]?.visualFallback).toMatchObject({
+      sourceRange: {
+        start: 'Página um OCR\n\n'.length,
+        end: `Página um OCR\n\n${visualText}`.length,
+      },
+    })
   })
 })

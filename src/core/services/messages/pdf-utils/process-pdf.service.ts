@@ -25,6 +25,30 @@ import {
 } from './process-pdf-helpers'
 import { TextQualityAnalyzer } from './text-quality-analyzer.service'
 import { VisualFallbackService } from './visual-fallback.service'
+import type { VisualFallbackMetadata } from './visual-fallback.types'
+
+function withFinalSourceRange(
+  metadata: VisualFallbackMetadata,
+  sourceRange: { start: number; end: number } | undefined
+): VisualFallbackMetadata {
+  const unresolved =
+    metadata.state === 'fallback_pending' ||
+    metadata.state === 'fallback_failed' ||
+    metadata.state === 'conflict'
+  return {
+    ...metadata,
+    ...(sourceRange !== undefined ? { sourceRange } : {}),
+    ...(unresolved && sourceRange !== undefined ? { riskySpans: [sourceRange] } : {}),
+  }
+}
+
+function selectPublicVisualMetadata(
+  metadata: VisualFallbackMetadata | undefined,
+  sourceRange: { start: number; end: number } | undefined
+): VisualFallbackMetadata | undefined {
+  if (!metadata || metadata.state === 'ocr_only') return undefined
+  return withFinalSourceRange(metadata, sourceRange)
+}
 
 export class ProcessPdfService {
   // biome-ignore lint/complexity/useMaxParams: constructor injection keeps PDF dependencies replaceable in focused tests.
@@ -183,13 +207,16 @@ export class ProcessPdfService {
         warnings: page.warnings,
       })),
     })
-    const finalOcrText = sanitizePdfText(ocrResult.ocrText)
+    const orderedOcrPages = [...ocrResult.pages].sort(
+      (left, right) => left.pageNumber - right.pageNumber
+    )
+    const finalOcrText = sanitizePdfText(orderedOcrPages.map(page => page.text).join('\n\n'))
     let nextSourceOffset = 0
     const pagesByNumber = new Map(ocrResult.pages.map(page => [page.pageNumber, page]))
     const visualFallback = await this.visualFallbackService.execute({
       buffer,
       fileName,
-      pages: ocrResult.pages.map(page => {
+      pages: orderedOcrPages.map(page => {
         const normalizedPageText = sanitizePdfText(page.text)
         const start = normalizedPageText
           ? finalOcrText.indexOf(normalizedPageText, nextSourceOffset)
@@ -203,11 +230,31 @@ export class ProcessPdfService {
           text: page.text,
           ...(sourceRange !== undefined ? { sourceRange } : {}),
           legalSignals: page.legalSignals,
+          meanConfidence: page.meanConfidence,
         }
       }),
       pageBudget: options.visualFallbackPageBudget,
       signal: options.signal,
+      ...(options.documentProfile !== undefined
+        ? { documentProfile: options.documentProfile }
+        : {}),
     })
+    const acceptedVisualTextByPage = visualFallback.acceptedVisualTextByPage ?? new Map()
+    const selectedPages = orderedOcrPages.map(page => ({
+      pageNumber: page.pageNumber,
+      text: sanitizePdfText(acceptedVisualTextByPage.get(page.pageNumber) ?? page.text),
+    }))
+    const finalEnhancedText = sanitizePdfText(selectedPages.map(page => page.text).join('\n\n'))
+    const finalRangesByPage = new Map<number, { start: number; end: number }>()
+    let finalOffset = 0
+    for (const page of selectedPages) {
+      if (!page.text) continue
+      const start = finalEnhancedText.indexOf(page.text, finalOffset)
+      if (start < 0) continue
+      const sourceRange = { start, end: start + page.text.length }
+      finalRangesByPage.set(page.pageNumber, sourceRange)
+      finalOffset = sourceRange.end
+    }
     onEnhancedMetadata?.({
       fileId,
       pageQuality: Array.from({ length: ocrResult.totalPages }, (_, index) => {
@@ -215,6 +262,12 @@ export class ProcessPdfService {
         const page = pagesByNumber.get(pageNumber)
         const noTextWarning = !page?.text.trim() ? ['no-text-detected'] : []
         const warnings = [...new Set([...(page?.warnings ?? []), ...noTextWarning])]
+        const visualMetadata = visualFallback.enabled
+          ? selectPublicVisualMetadata(
+              visualFallback.byPage.get(pageNumber),
+              finalRangesByPage.get(pageNumber)
+            )
+          : undefined
 
         return {
           pageNumber,
@@ -227,13 +280,11 @@ export class ProcessPdfService {
           selectedAttempt: page?.selectedAttempt,
           legalSignals: page?.legalSignals,
           warnings,
-          ...(visualFallback.enabled
-            ? { visualFallback: visualFallback.byPage.get(pageNumber) }
-            : {}),
+          ...(visualMetadata !== undefined ? { visualFallback: visualMetadata } : {}),
         }
       }),
     })
-    return okResult(combineTextResults(ocrResult.ocrText, fileId, ocrResult))
+    return okResult(combineTextResults(finalEnhancedText, fileId, ocrResult))
   }
 
   private getFileName(file: FileInput): string {

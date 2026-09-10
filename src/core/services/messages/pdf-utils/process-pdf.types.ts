@@ -1,7 +1,7 @@
 import type { EnhancedPdfMetadata } from '../process-messages.types'
 import type { PdfPageText } from './pdf-text-extractor.service'
 import type { PageTextClassification, PageTextDiagnostics } from './text-quality-analyzer.service'
-import type { VisualFallbackMetadata } from './visual-fallback.types'
+import type { VisualDocumentProfile, VisualFallbackMetadata } from './visual-fallback.types'
 
 export type ProcessPdfOptions = {
   signal?: AbortSignal
@@ -18,6 +18,7 @@ export type ProcessPdfOptions = {
     remaining(): number
   }
   onEnhancedMetadata?: (metadata: EnhancedPdfMetadata) => void
+  documentProfile?: VisualDocumentProfile
 }
 
 export type PageOcrDecisionReason =
