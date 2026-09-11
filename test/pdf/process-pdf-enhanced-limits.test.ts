@@ -1,86 +1,11 @@
 import { describe, expect, test } from 'bun:test'
-import {
-  type EnhancedOcrLimits,
-  validateEnhancedOcrLimits,
-} from '../../src/core/services/messages/pdf-utils/ocr-orchestrator.service'
+import { validateEnhancedOcrLimits } from '../../src/core/services/messages/pdf-utils/ocr-orchestrator.service'
 import { ProcessPdfService } from '../../src/core/services/messages/pdf-utils/process-pdf.service'
 import { PdfLimitError } from '../../src/core/services/messages/pdf-utils/process-pdf.types'
-import type { VisualFallbackService } from '../../src/core/services/messages/pdf-utils/visual-fallback.service'
-
-process.env.BASE_URL = 'http://localhost:3000'
-process.env.OPENAI_API_KEY = 'test-openai-key'
-process.env.OPENAI_MODEL_TEXT = 'gpt-test'
-process.env.TOKEN = 'main-token'
-process.env.JOBS_TOKEN = 'jobs-token'
-
-function createEnhancedPdfService(
-  totalPages: number,
-  extractedText = '',
-  visualFallbackService?: Pick<VisualFallbackService, 'execute'>
-) {
-  let enhancedCalls = 0
-  const service = new ProcessPdfService(
-    {
-      async downloadFile() {
-        return { value: { buffer: Buffer.from('pdf'), contentLength: 3 }, error: undefined }
-      },
-    },
-    {
-      async extractTextFromPdf(_buffer, _fileId, _options = {}) {
-        return {
-          value: {
-            text: extractedText,
-            totalPages,
-            pages: Array.from({ length: totalPages }, (_, index) => ({
-              pageNumber: index + 1,
-              text: '',
-              embeddedImageCount: 0,
-              tableCount: 0,
-              hasVisualContent: false,
-            })),
-          },
-          error: undefined,
-        }
-      },
-    },
-    undefined,
-    {
-      async processWithOcr() {
-        throw new Error('legacy OCR must not run')
-      },
-      async processPagesWithOcr() {
-        throw new Error('selected-page OCR must not run')
-      },
-      async processWithEnhancedOcr({ maxOcrPagesPerPdf, ocrPageBudget }: EnhancedOcrLimits = {}) {
-        const limits = { maxOcrPagesPerPdf, ocrPageBudget }
-        const limitError = validateEnhancedOcrLimits(totalPages, limits)
-        if (limitError) return { value: undefined, error: limitError }
-        enhancedCalls++
-        return {
-          value: {
-            ocrText: 'enhanced text',
-            totalPages,
-            pages: Array.from({ length: totalPages }, (_, index) => ({
-              pageNumber: index + 1,
-              text: 'enhanced text',
-              meanConfidence: 90,
-              wordCount: 2,
-              warnings: [],
-            })),
-            chunksProcessed: 1,
-            processingTime: 1,
-          },
-          error: undefined,
-        }
-      },
-    },
-    visualFallbackService
-  )
-
-  return { service, getEnhancedCalls: () => enhancedCalls }
-}
-
-const file = { fileId: 'file-1', url: 'https://example.com/file.pdf', mimeType: 'application/pdf' }
+import {
+  createEnhancedPdfService,
+  enhancedPdfFile as file,
+} from './process-pdf-enhanced.test-support'
 
 describe('ProcessPdfService enhanced OCR limits', () => {
   test('rejects enhanced all-page OCR above maxOcrPagesPerPdf before OCR begins', async () => {
@@ -285,5 +210,126 @@ describe('ProcessPdfService enhanced OCR limits', () => {
         end: `Página um OCR\n\n${visualText}`.length,
       },
     })
+  })
+
+  test('rebases V2 local UTF-16 uncertainty ranges cumulatively for repeated pages', async () => {
+    const candidate = '🧾 Registro R.23'
+    const localStart = candidate.indexOf('R.23')
+    let metadata: Array<Record<string, unknown>> | undefined
+    const service = new ProcessPdfService(
+      {
+        async downloadFile() {
+          return { value: { buffer: Buffer.from('pdf'), contentLength: 3 }, error: undefined }
+        },
+      },
+      {
+        async extractTextFromPdf() {
+          return { value: { text: '', totalPages: 2, pages: [] }, error: undefined }
+        },
+      },
+      undefined,
+      {
+        async processWithOcr() {
+          throw new Error('legacy OCR must not run')
+        },
+        async processPagesWithOcr() {
+          throw new Error('selected-page OCR must not run')
+        },
+        async processWithEnhancedOcr() {
+          return {
+            value: {
+              ocrText: '🧾 Registro R.22\n\n🧾 Registro R.22',
+              totalPages: 2,
+              pages: [
+                { pageNumber: 1, text: '🧾 Registro R.22', warnings: [] },
+                { pageNumber: 2, text: '🧾 Registro R.22', warnings: [] },
+              ],
+              chunksProcessed: 1,
+              processingTime: 1,
+            },
+            error: undefined,
+          }
+        },
+      },
+      {
+        async execute() {
+          const visualFallback = () => ({
+            schemaVersion: 'visual-fallback/v2' as const,
+            policyVersion: 'gemini-whole-page-critical-v2' as const,
+            alignmentVersion: 'critical-token-alignment-v1' as const,
+            outcome: 'selected' as const,
+            state: 'reconciled' as const,
+            reasons: [],
+            offsetEncoding: 'utf16_code_units' as const,
+            sourceRange: { start: 0, end: candidate.length },
+            criticalUncertainties: [
+              {
+                start: localStart,
+                end: localStart + 4,
+                scope: 'token' as const,
+                categories: ['registry_marker' as const],
+                divergences: ['different_value' as const],
+              },
+            ],
+            selectedTextSource: 'visual' as const,
+            decisionReason: 'gemini_whole_page_selected' as const,
+            provenance: {
+              provider: 'gemini' as const,
+              model: 'gemini-test',
+              imageSha256: 'a'.repeat(64),
+              candidateSha256: 'b'.repeat(64),
+            },
+          })
+          return {
+            byPage: new Map([
+              [1, visualFallback()],
+              [2, visualFallback()],
+            ]),
+            acceptedVisualTextByPage: new Map([
+              [1, candidate],
+              [2, candidate],
+            ]),
+            selectedPageCount: 2,
+            enabled: true,
+          }
+        },
+      }
+    )
+
+    const result = await service.executeEnhanced(file, {
+      onEnhancedMetadata: value => {
+        metadata = value.pageQuality as Array<Record<string, unknown>>
+      },
+    })
+
+    expect(result.value).toBe(`${candidate}\n\n${candidate}`)
+    const ranges = metadata?.map(page => {
+      const visual = page.visualFallback as {
+        criticalUncertainties: Array<{
+          start: number
+          end: number
+          scope: string
+          categories: string[]
+          divergences: string[]
+        }>
+      }
+      return visual.criticalUncertainties[0]
+    })
+    expect(ranges).toEqual([
+      {
+        start: localStart,
+        end: localStart + 4,
+        scope: 'token',
+        categories: ['registry_marker'],
+        divergences: ['different_value'],
+      },
+      {
+        start: candidate.length + 2 + localStart,
+        end: candidate.length + 2 + localStart + 4,
+        scope: 'token',
+        categories: ['registry_marker'],
+        divergences: ['different_value'],
+      },
+    ])
   })
 })

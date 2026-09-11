@@ -26,11 +26,125 @@ import {
 import { TextQualityAnalyzer } from './text-quality-analyzer.service'
 import { VisualFallbackService } from './visual-fallback.service'
 import type { VisualFallbackMetadata } from './visual-fallback.types'
+import {
+  CRITICAL_TOKEN_ALIGNMENT_VERSION,
+  GEMINI_WHOLE_PAGE_CRITICAL_POLICY_VERSION,
+  VISUAL_FALLBACK_V2_SCHEMA_VERSION,
+} from './visual-fallback.types'
+
+type SourceRange = { start: number; end: number }
+
+function isV2Metadata(
+  metadata: VisualFallbackMetadata
+): metadata is Extract<VisualFallbackMetadata, { policyVersion: 'gemini-whole-page-critical-v2' }> {
+  return metadata.policyVersion === GEMINI_WHOLE_PAGE_CRITICAL_POLICY_VERSION
+}
+
+function isValidLocalRange(range: SourceRange, text: string): boolean {
+  const splitsSurrogatePair = (offset: number) =>
+    offset > 0 &&
+    offset < text.length &&
+    /[\uD800-\uDBFF]/u.test(text[offset - 1]) &&
+    /[\uDC00-\uDFFF]/u.test(text[offset])
+  return (
+    Number.isInteger(range.start) &&
+    Number.isInteger(range.end) &&
+    range.start >= 0 &&
+    range.end > range.start &&
+    range.end <= text.length &&
+    !splitsSurrogatePair(range.start) &&
+    !splitsSurrogatePair(range.end)
+  )
+}
+
+function canSelectAcceptedVisualText(
+  candidate: string,
+  metadata: VisualFallbackMetadata | undefined
+): boolean {
+  if (!metadata) return false
+  if (!isV2Metadata(metadata)) return true
+  return (
+    metadata.schemaVersion === VISUAL_FALLBACK_V2_SCHEMA_VERSION &&
+    metadata.alignmentVersion === CRITICAL_TOKEN_ALIGNMENT_VERSION &&
+    metadata.outcome === 'selected' &&
+    metadata.selectedTextSource === 'visual' &&
+    candidate.length > 0 &&
+    metadata.sourceRange?.start === 0 &&
+    metadata.sourceRange.end === candidate.length &&
+    metadata.criticalUncertainties.every(
+      range =>
+        isValidLocalRange(range, candidate) &&
+        ['token', 'clause', 'page'].includes(range.scope) &&
+        range.categories.length > 0 &&
+        range.divergences.length > 0
+    )
+  )
+}
+
+function hasMatchingV2Ranges(metadata: VisualFallbackMetadata, text: string): boolean {
+  if (!isV2Metadata(metadata)) return true
+  if (metadata.sourceRange?.start !== 0 || metadata.sourceRange.end !== text.length) return false
+  if (
+    metadata.riskySpans?.some(range => !isValidLocalRange(range, text)) ||
+    (metadata.outcome === 'unavailable' &&
+      (metadata.riskySpans?.length !== 1 ||
+        metadata.riskySpans[0].start !== 0 ||
+        metadata.riskySpans[0].end !== text.length))
+  ) {
+    return false
+  }
+  if (metadata.outcome === 'unavailable') return true
+  return (metadata.criticalUncertainties ?? []).every(
+    range =>
+      isValidLocalRange(range, text) &&
+      ['token', 'clause', 'page'].includes(range.scope) &&
+      range.categories.length > 0 &&
+      range.divergences.length > 0
+  )
+}
+
+function composePages(pages: Array<{ pageNumber: number; text: string }>): {
+  text: string
+  rangesByPage: ReadonlyMap<number, SourceRange>
+} {
+  const parts: string[] = []
+  const rangesByPage = new Map<number, SourceRange>()
+  let offset = 0
+  for (const page of pages) {
+    const text = sanitizePdfText(page.text)
+    if (!text) continue
+    if (parts.length > 0) offset += 2
+    const sourceRange = { start: offset, end: offset + text.length }
+    parts.push(text)
+    rangesByPage.set(page.pageNumber, sourceRange)
+    offset = sourceRange.end
+  }
+  return { text: parts.join('\n\n'), rangesByPage }
+}
 
 function withFinalSourceRange(
   metadata: VisualFallbackMetadata,
   sourceRange: { start: number; end: number } | undefined
 ): VisualFallbackMetadata {
+  if (isV2Metadata(metadata) && sourceRange !== undefined) {
+    if (metadata.outcome === 'unavailable') {
+      return { ...metadata, sourceRange, riskySpans: [sourceRange] }
+    }
+    const criticalUncertainties = (metadata.criticalUncertainties ?? []).map(range => ({
+      ...range,
+      start: sourceRange.start + range.start,
+      end: sourceRange.start + range.end,
+    }))
+    return {
+      ...metadata,
+      sourceRange,
+      criticalUncertainties,
+      riskySpans:
+        metadata.outcome === 'rejected'
+          ? [sourceRange]
+          : criticalUncertainties.map(({ start, end }) => ({ start, end })),
+    }
+  }
   const unresolved =
     metadata.state === 'fallback_pending' ||
     metadata.state === 'fallback_failed' ||
@@ -210,20 +324,15 @@ export class ProcessPdfService {
     const orderedOcrPages = [...ocrResult.pages].sort(
       (left, right) => left.pageNumber - right.pageNumber
     )
-    const finalOcrText = sanitizePdfText(orderedOcrPages.map(page => page.text).join('\n\n'))
-    let nextSourceOffset = 0
+    const composedOcr = composePages(
+      orderedOcrPages.map(page => ({ pageNumber: page.pageNumber, text: page.text }))
+    )
     const pagesByNumber = new Map(ocrResult.pages.map(page => [page.pageNumber, page]))
     const visualFallback = await this.visualFallbackService.execute({
       buffer,
       fileName,
       pages: orderedOcrPages.map(page => {
-        const normalizedPageText = sanitizePdfText(page.text)
-        const start = normalizedPageText
-          ? finalOcrText.indexOf(normalizedPageText, nextSourceOffset)
-          : -1
-        const sourceRange =
-          start >= 0 ? { start, end: start + normalizedPageText.length } : undefined
-        if (sourceRange !== undefined) nextSourceOffset = sourceRange.end
+        const sourceRange = composedOcr.rangesByPage.get(page.pageNumber)
 
         return {
           pageNumber: page.pageNumber,
@@ -240,21 +349,31 @@ export class ProcessPdfService {
         : {}),
     })
     const acceptedVisualTextByPage = visualFallback.acceptedVisualTextByPage ?? new Map()
-    const selectedPages = orderedOcrPages.map(page => ({
-      pageNumber: page.pageNumber,
-      text: sanitizePdfText(acceptedVisualTextByPage.get(page.pageNumber) ?? page.text),
-    }))
-    const finalEnhancedText = sanitizePdfText(selectedPages.map(page => page.text).join('\n\n'))
-    const finalRangesByPage = new Map<number, { start: number; end: number }>()
-    let finalOffset = 0
-    for (const page of selectedPages) {
-      if (!page.text) continue
-      const start = finalEnhancedText.indexOf(page.text, finalOffset)
-      if (start < 0) continue
-      const sourceRange = { start, end: start + page.text.length }
-      finalRangesByPage.set(page.pageNumber, sourceRange)
-      finalOffset = sourceRange.end
+    for (const page of orderedOcrPages) {
+      const candidate = acceptedVisualTextByPage.get(page.pageNumber)
+      const metadata = visualFallback.byPage.get(page.pageNumber)
+      if (candidate && !canSelectAcceptedVisualText(candidate, metadata)) {
+        return errResult(new Error('Invalid V2 selected visual metadata or ranges'))
+      }
+      const persistedPageText = sanitizePdfText(candidate ?? page.text)
+      if (metadata && !hasMatchingV2Ranges(metadata, persistedPageText)) {
+        return errResult(new Error('Invalid V2 visual metadata range integrity'))
+      }
     }
+    const selectedPages = orderedOcrPages.map(page => {
+      const candidate = acceptedVisualTextByPage.get(page.pageNumber)
+      const visualMetadata = visualFallback.byPage.get(page.pageNumber)
+      return {
+        pageNumber: page.pageNumber,
+        text:
+          candidate && canSelectAcceptedVisualText(candidate, visualMetadata)
+            ? candidate
+            : page.text,
+      }
+    })
+    const composedFinal = composePages(selectedPages)
+    const finalEnhancedText = composedFinal.text
+    const finalRangesByPage = composedFinal.rangesByPage
     onEnhancedMetadata?.({
       fileId,
       pageQuality: Array.from({ length: ocrResult.totalPages }, (_, index) => {
