@@ -2,11 +2,58 @@ import { describe, expect, test } from 'bun:test'
 import {
   CRITICAL_TOKEN_ALIGNMENT_VERSION,
   GEMINI_WHOLE_PAGE_CRITICAL_POLICY_VERSION,
-  reconcileGeminiWholePage,
+  reconcileGeminiWholePage as reconcileGeminiWholePagePolicy,
   VISUAL_FALLBACK_V2_SCHEMA_VERSION,
 } from '../../src/core/services/messages/pdf-utils/gemini-whole-page-critical.policy'
 
+type ReconciliationInput = Parameters<typeof reconcileGeminiWholePagePolicy>[0]
+
+function reconcileGeminiWholePage(input: ReconciliationInput) {
+  return reconcileGeminiWholePagePolicy({ maxAlignmentCells: 10_000_000, ...input })
+}
+
 describe('gemini-whole-page-critical-v2 reconciliation policy', () => {
+  test.each([1_000, 1_150, 1_500])(
+    'aligns a complete %i-word legal page within the production budget',
+    wordCount => {
+      const text = Array.from({ length: wordCount }, () => 'clausula.').join(' ')
+
+      expect(
+        reconcileGeminiWholePage({
+          ocrText: text,
+          visualText: text,
+          maxAlignmentCells: 10_000_000,
+        })
+      ).toMatchObject({ status: 'selected', text })
+    }
+  )
+
+  test('rejects a 1,600-word page that exceeds the production alignment budget', () => {
+    const text = Array.from({ length: 1_600 }, () => 'clausula.').join(' ')
+
+    expect(
+      reconcileGeminiWholePage({
+        ocrText: text,
+        visualText: text,
+        maxAlignmentCells: 10_000_000,
+      })
+    ).toMatchObject({ status: 'rejected', reason: 'alignment_budget_exceeded' })
+  })
+
+  test.each([undefined, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+    'fails closed for invalid alignment budget %s',
+    maxAlignmentCells => {
+      expect(
+        reconcileGeminiWholePage({
+          ocrText: 'Matrícula nº 12.345.',
+          visualText: 'Matrícula nº 12.345.',
+          maxAlignmentCells,
+        })
+      ).toMatchObject({ status: 'rejected', reason: 'alignment_budget_exceeded' })
+    }
+  )
+
+
   test('selects the complete sanitized Gemini page and maps changed critical values exactly', () => {
     const visualText = '🧾 Matrícula nº 12.346, lavrada em 11/09/2026 por R$ 408.737,00.'
     const result = reconcileGeminiWholePage({
@@ -105,6 +152,7 @@ describe('gemini-whole-page-critical-v2 reconciliation policy', () => {
     const result = reconcileGeminiWholePage({
       ocrText: Array.from({ length: 800 }, (_, index) => `ocr${index}`).join(' '),
       visualText: Array.from({ length: 800 }, (_, index) => `gemini${index}`).join(' '),
+      maxAlignmentCells: 250_000,
     })
 
     expect(result).toMatchObject({ status: 'rejected', reason: 'alignment_budget_exceeded' })

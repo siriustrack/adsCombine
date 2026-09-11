@@ -14,7 +14,6 @@ export {
   VISUAL_FALLBACK_V2_SCHEMA_VERSION,
 } from './visual-fallback.types'
 
-const MAX_ALIGNMENT_CELLS = 250_000
 const REFUSAL_PATTERN =
   /^(?:desculpe|sinto muito|não posso|nao posso|i cannot|i can't|sorry)[\s,.:;-]/iu
 const CLEAR_TRUNCATION_PATTERN = /(?:\.{3}|…|\[(?:texto )?(?:cortado|truncado)\])\s*$/iu
@@ -129,10 +128,16 @@ function contextualWeight({
   return weight
 }
 
-function alignTokens(ocr: Token[], gemini: Token[]): Match[] | undefined {
+function alignTokens(ocr: Token[], gemini: Token[], maxCells?: number): Match[] | undefined {
   const columns = gemini.length + 1
-  if ((ocr.length + 1) * columns > MAX_ALIGNMENT_CELLS) return undefined
-  const scores = new Uint32Array((ocr.length + 1) * columns)
+  const cells = (ocr.length + 1) * columns
+  const invalidBudget =
+    typeof maxCells !== 'number' ||
+    !Number.isSafeInteger(maxCells) ||
+    maxCells <= 0 ||
+    cells > maxCells
+  if (invalidBudget) return undefined
+  const scores = new Uint32Array(cells)
   for (let leftIndex = 1; leftIndex <= ocr.length; leftIndex++) {
     for (let rightIndex = 1; rightIndex <= gemini.length; rightIndex++) {
       const offset = leftIndex * columns + rightIndex
@@ -362,6 +367,7 @@ function rangesAreValid(text: string, ranges: CriticalUncertaintyRange[]): boole
 export function reconcileGeminiWholePage(input: {
   ocrText: string
   visualText: string
+  maxAlignmentCells?: number
 }): GeminiWholePageReconciliation {
   if (!hasValidUtf16(input.visualText)) {
     return { status: 'rejected', reason: 'candidate_invalid_utf16' }
@@ -380,7 +386,7 @@ export function reconcileGeminiWholePage(input: {
 
   const ocr = tokenize(sanitizedOcr)
   const gemini = tokenize(text)
-  const matches = alignTokens(ocr, gemini)
+  const matches = alignTokens(ocr, gemini, input.maxAlignmentCells)
   if (!matches) return { status: 'rejected', reason: 'alignment_budget_exceeded' }
   const criticalUncertainties = createUncertaintyRanges({
     text,
