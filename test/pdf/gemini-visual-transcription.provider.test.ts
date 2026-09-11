@@ -7,9 +7,16 @@ afterEach(() => {
   globalThis.fetch = originalFetch
 })
 
-function successfulResponse(content: string) {
+function successfulResponse(content: string, finishReason: string | null = 'STOP') {
   return new Response(
-    JSON.stringify({ candidates: [{ content: { parts: [{ text: content }] } }] }),
+    JSON.stringify({
+      candidates: [
+        {
+          ...(finishReason === null ? {} : { finishReason }),
+          content: { parts: [{ text: content }] },
+        },
+      ],
+    }),
     { status: 200, headers: { 'content-type': 'application/json' } }
   )
 }
@@ -21,6 +28,41 @@ function setFetchMock(
 }
 
 describe('GeminiVisualTranscriptionProvider', () => {
+  test('accepts a structured transcription only after a STOP finish reason', async () => {
+    setFetchMock(async () =>
+      successfulResponse(JSON.stringify({ status: 'transcribed', transcription: 'texto completo' }))
+    )
+
+    await expect(
+      new GeminiVisualTranscriptionProvider('test-key').transcribe({
+        image: Buffer.from('page'),
+        pageNumber: 1,
+        model: 'gemini-2.5-flash',
+        signal: new AbortController().signal,
+      })
+    ).resolves.toEqual({ status: 'transcribed', transcription: 'texto completo' })
+  })
+
+  test.each([null, 'MAX_TOKENS', 'SAFETY', 'OTHER'])(
+    'rejects deterministic abnormal completion finishReason=%s',
+    async finishReason => {
+      setFetchMock(async () =>
+        successfulResponse(
+          JSON.stringify({ status: 'transcribed', transcription: 'conteúdo parcial' }),
+          finishReason
+        )
+      )
+
+      await expect(
+        new GeminiVisualTranscriptionProvider('test-key').transcribe({
+          image: Buffer.from('page'),
+          pageNumber: 1,
+          model: 'gemini-2.5-flash',
+          signal: new AbortController().signal,
+        })
+      ).rejects.toThrow('abnormal completion')
+    }
+  )
   test('uses a document-neutral prompt and appends only approved profile hints', async () => {
     let requestBody: { contents?: Array<{ parts?: Array<{ text?: string }> }> } | undefined
     setFetchMock(async (_input, init) => {

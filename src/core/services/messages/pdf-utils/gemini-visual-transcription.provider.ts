@@ -2,9 +2,13 @@ import type {
   VisualTranscriptionProvider,
   VisualTranscriptionResponse,
 } from './visual-fallback.types'
+import { VisualTranscriptionTerminalError } from './visual-fallback.types'
 
 type GeminiResponse = {
-  candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>
+  candidates?: Array<{
+    finishReason?: string
+    content?: { parts?: Array<{ text?: string }> }
+  }>
 }
 
 const transcriptionSchema = {
@@ -86,7 +90,13 @@ export class GeminiVisualTranscriptionProvider implements VisualTranscriptionPro
     } catch {
       throw new Error('Gemini visual transcription returned an invalid structured response')
     }
-    const text = payload.candidates?.[0]?.content?.parts?.find(part => part.text)?.text
+    const candidate = payload.candidates?.[0]
+    if (candidate?.finishReason !== 'STOP') {
+      throw new VisualTranscriptionTerminalError(
+        `Gemini visual transcription abnormal completion (${candidate?.finishReason ?? 'missing'})`
+      )
+    }
+    const text = candidate.content?.parts?.find(part => part.text)?.text
     if (!text || Buffer.byteLength(text) > MAX_STRUCTURED_RESPONSE_BYTES) {
       throw new Error('Gemini visual transcription returned no structured content')
     }
