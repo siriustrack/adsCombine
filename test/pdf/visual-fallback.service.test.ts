@@ -37,6 +37,7 @@ describe('VisualFallbackService', () => {
         timeoutMs: 20,
         maxRetries: 0,
         concurrency: 1,
+        maxAlignmentCells: 10_000_000,
         maxPagesPerPdf: 1,
       }
     )
@@ -306,6 +307,7 @@ describe('VisualFallbackService', () => {
         timeoutMs: 20,
         maxRetries: 0,
         concurrency: 1,
+        maxAlignmentCells: 10_000_000,
         maxPagesPerPdf: 1,
       }
     )

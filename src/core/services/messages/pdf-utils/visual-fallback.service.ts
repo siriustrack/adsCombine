@@ -375,6 +375,7 @@ export class VisualFallbackService {
         page,
         reasons,
         candidate,
+        maxAlignmentCells: this.config.maxAlignmentCells,
         shadowMode: this.config.shadowMode,
         provenance: {
           provider: this.config.provider,

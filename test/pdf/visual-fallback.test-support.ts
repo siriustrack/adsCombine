@@ -58,6 +58,7 @@ export function createVisualFallbackService(
       timeoutMs: 20,
       maxRetries: 1,
       concurrency: 1,
+      maxAlignmentCells: 10_000_000,
       maxPagesPerPdf: 2,
       ...options,
     }

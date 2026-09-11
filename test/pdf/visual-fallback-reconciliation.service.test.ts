@@ -35,6 +35,7 @@ function createService(transcription: string) {
       timeoutMs: 20,
       maxRetries: 0,
       concurrency: 1,
+      maxAlignmentCells: 10_000_000,
       maxPagesPerPdf: 2,
     }
   )
@@ -63,6 +64,7 @@ function createV2Service(
       timeoutMs: 20,
       maxRetries: 0,
       concurrency: 1,
+      maxAlignmentCells: 10_000_000,
       maxPagesPerPdf: 2,
       reconciliationPolicyVersion: 'gemini-whole-page-critical-v2',
     }

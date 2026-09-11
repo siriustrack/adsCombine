@@ -139,16 +139,22 @@ export function reconcileV2Candidate({
   page,
   reasons,
   candidate,
+  maxAlignmentCells,
   shadowMode,
   provenance,
 }: {
   page: VisualFallbackOcrPage
   reasons: VisualFallbackReason[]
   candidate: string
+  maxAlignmentCells: number
   shadowMode: boolean
   provenance: NonNullable<VisualFallbackV2Metadata['provenance']>
 }): { metadata: VisualFallbackV2Metadata; acceptedText?: string } {
-  const reconciliation = reconcileGeminiWholePage({ ocrText: page.text, visualText: candidate })
+  const reconciliation = reconcileGeminiWholePage({
+    ocrText: page.text,
+    visualText: candidate,
+    maxAlignmentCells,
+  })
   if (reconciliation.status === 'rejected') {
     return {
       metadata: createV2FullPageMetadata({
