@@ -85,8 +85,9 @@ Selective Gemini visual fallback, job queue parameters, OCR hard limits, and sou
 | `VISUAL_FALLBACK_TIMEOUT_MS` | integer | `15000` | positive integer, max `120000` (120s) | Per-page timeout in milliseconds for visual provider requests. |
 | `VISUAL_FALLBACK_MAX_RETRIES` | integer | `1` | min `0`, max `3` | Maximum retry attempts for failed visual provider requests. |
 | `VISUAL_FALLBACK_CONCURRENCY` | integer | `1` | positive integer, max `4` | Maximum concurrent visual fallback page requests per job. |
-| `VISUAL_FALLBACK_MAX_PAGES_PER_PDF` | integer | `2` | positive integer, max `10` | Maximum risky pages selected for visual fallback per single PDF file. |
-| `MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB` | integer | `4` | positive integer, max `20` | Maximum budget of total visual fallback pages across all files in a single job. |
+| `VISUAL_FALLBACK_MAX_ALIGNMENT_CELLS` | integer | `10000000` | positive integer, max `16000000` | Maximum LCS matrix cells allocated while aligning a V2 OCR page with its visual candidate. |
+| `VISUAL_FALLBACK_MAX_PAGES_PER_PDF` | integer | `6` | positive integer, max `10` | Maximum risky pages selected for visual fallback per single PDF file. |
+| `MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB` | integer | `6` | positive integer, max `20` | Maximum budget of total visual fallback pages across all files in a single job. |
 | `GEMINI_API_KEY` | string (secret) | `undefined` | min 1 char | Google Gemini API key. Must use a paid tier account for sensitive legal documents. |
 | `DEEPSEEK_API_KEY` | string (secret) | `undefined` | min 1 char | Required only when `VISUAL_FALLBACK_PROVIDER=deepseek`; sent as a Bearer token to DeepSeek. |
 
@@ -105,15 +106,15 @@ Visual fallback operates as a secondary, highly targeted enhancement step for sc
    - `missing-legal-marker`: Fragmented numbers present with registry markers but zero legal markers.
 2. **Optional Document Profile**: A matrícula filename may supply the provider with fixed, non-interpretive hints to preserve visible `R.` and `AV.` markers. This profile changes neither page eligibility nor reconciliation thresholds.
 3. **Strict Page Budget Enforcement**:
-   - Per-PDF cap: `VISUAL_FALLBACK_MAX_PAGES_PER_PDF` (default `2`, max `10`).
-   - Global job cap: `MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB` (default `4`, max `20`).
+   - Per-PDF cap: `VISUAL_FALLBACK_MAX_PAGES_PER_PDF` (default `6`, max `10`).
+   - Global job cap: `MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB` (default `6`, max `20`).
 
 ### Ephemeral Candidate and Versioned Reconciliation Policies
 Raw visual candidate text is **ephemeral and immutable outside the in-memory reconciliation boundary**: it is never returned in public metadata, logged, or persisted. Only approved pages may use candidate text while constructing the final enhanced transcription. Public metadata contains hashes, provenance, `policyVersion`, decision reason, selected source, comparison metrics, states, and ranges—never candidate text.
 
 `safe-visual-v1` is deterministic and conservative. It first normalizes NFC, line endings, whitespace, and soft hyphens. Equal normalized text retains OCR. Promotion requires OCR confidence of at least 70 for alignment, similarity of at least 0.99, edit distance at most 20, length ratio from 0.95 through 1.05, unchanged protected content, and an exact non-whitespace content match where the visual text only reduces spacing or fragmentation. Changes to numbers, dates, currency, fractions, CPF/CNPJ, measurements, matrícula identifiers, `R.`/`AV.` markers, negation-sensitive text, or any other alphanumeric content produce `conflict`. Confidence below 90 is never, by itself, a promotion or eligibility signal.
 
-`gemini-whole-page-critical-v2` is an explicit Gemini-only policy. For a valid candidate it selects the complete sanitized Gemini page; it never splices OCR and visual fragments. OCR remains an ephemeral, equal-status witness used to identify disputed critical content. Divergences involving dates, CPF/CNPJ, currency, fractions, measurements, registry identifiers, `R.`/`AV.` markers, negations, or isolated numbers become `criticalUncertainties` with token, clause, or page scope and UTF-16 `[start,end)` offsets. Outcomes are `selected`, `shadow`, `unavailable`, or `rejected` under schema `visual-fallback/v2` and alignment `critical-token-alignment-v1`.
+`gemini-whole-page-critical-v2` is an explicit Gemini-only policy. For a valid candidate it selects the complete sanitized Gemini page; it never splices OCR and visual fragments. OCR remains an ephemeral, equal-status witness used to identify disputed critical content. Divergences involving dates, CPF/CNPJ, currency, fractions, measurements, registry identifiers, `R.`/`AV.` markers, negations, or isolated numbers become `criticalUncertainties` with token, clause, or page scope and UTF-16 `[start,end)` offsets. Outcomes are `selected`, `shadow`, `unavailable`, or `rejected` under schema `visual-fallback/v2` and alignment `critical-token-alignment-v1`. Production uses `VISUAL_FALLBACK_MAX_ALIGNMENT_CELLS=10000000`, `VISUAL_FALLBACK_MAX_PAGES_PER_PDF=6`, `MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB=6`, and `VISUAL_FALLBACK_CONCURRENCY=1`.
 
 V2 uses no second adjudication/model strategy; configured retries may repeat the same provider request. Provider failures, abstention, budget exhaustion, invalid/truncated candidates, alignment-budget failure, or invalid range rebasing retain OCR and remain fail-closed. Any selected Gemini text and its uncertainty metadata are emitted atomically; invalid metadata never causes uncertainties to be silently dropped.
 
@@ -198,7 +199,7 @@ If the selected visual provider experiences degradation or rate limits, operator
 
 Operators should track the following health indicators in service logs:
 - **Visual Fallback Success Rate**: Percentage of processed pages reaching `reconciled` or `ocr_plus_visual_candidate` vs `fallback_failed`.
-- **Budget Rejections**: Logged events when job page count hits `MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB` (default 4).
+- **Budget Rejections**: Logged events when job page count hits `MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB` (default 6).
 - **V2 Reconciliation Health**: Distribution of `selected`, `shadow`, `unavailable`, and `rejected`, decision reasons, critical uncertainty count/scope, and alignment or rebase failures.
 - **Latency**: Visual provider and end-to-end job latency before and after V2 activation. V2 has no second adjudication/model strategy; configured retries may repeat the same provider request.
 - **Download Security Rejections**: Log entries generated when source URLs fail `SourceUrlPolicy` allowlist verification.
