@@ -1,10 +1,16 @@
 import { createHash } from 'node:crypto'
-import { env, type envSchema } from '@config/env'
+import { env } from '@config/env'
 import pLimit from 'p-limit'
-import type z from 'zod'
 import { DeepSeekVisualTranscriptionProvider } from './deepseek-visual-transcription.provider'
 import { GeminiVisualTranscriptionProvider } from './gemini-visual-transcription.provider'
 import { PdfPageRendererService } from './pdf-page-renderer.service'
+import { createVisualFallbackConfig } from './visual-fallback.config'
+import {
+  createInitialMetadata,
+  createV1Metadata,
+  createV2FullPageMetadata,
+  reconcileV2Candidate,
+} from './visual-fallback.metadata'
 import type {
   PdfPageRenderer,
   RenderedPdfPage,
@@ -16,8 +22,11 @@ import type {
   VisualFallbackReason,
   VisualTranscriptionProvider,
 } from './visual-fallback.types'
+import { GEMINI_WHOLE_PAGE_CRITICAL_POLICY_VERSION } from './visual-fallback.types'
 import { reconcileVisualText } from './visual-reconciliation.policy'
+import { transcribeWithRetries } from './visual-transcription-retry'
 
+export { createVisualFallbackConfig } from './visual-fallback.config'
 export type { VisualTranscriptionProvider } from './visual-fallback.types'
 
 type VisualFallbackInput = {
@@ -39,25 +48,6 @@ type VisualFallbackResult = {
   enabled: boolean
 }
 
-type CreateMetadataOptions = {
-  page: VisualFallbackOcrPage
-  state: VisualFallbackMetadata['state']
-  reasons: VisualFallbackReason[]
-  provenance?: VisualFallbackMetadata['provenance']
-  decisionReason?: string
-  selectedTextSource?: VisualFallbackMetadata['selectedTextSource']
-  shadowDecision?: VisualFallbackMetadata['shadowDecision']
-  comparison?: VisualFallbackMetadata['comparison']
-  policyVersion?: VisualFallbackMetadata['policyVersion']
-}
-
-type TranscriptionAttemptInput = {
-  image: Buffer
-  pageNumber: number
-  signal?: AbortSignal
-  documentProfile?: VisualDocumentProfile
-}
-
 type SelectedPage = {
   page: VisualFallbackOcrPage
   reasons: VisualFallbackReason[]
@@ -70,41 +60,6 @@ type ProcessSelectedPageInput = {
   acceptedVisualTextByPage: Map<number, string>
   signal?: AbortSignal
   documentProfile?: VisualDocumentProfile
-}
-
-type VisualFallbackEnvironment = Pick<
-  z.infer<typeof envSchema>,
-  | 'DEEPSEEK_API_KEY'
-  | 'GEMINI_API_KEY'
-  | 'MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB'
-  | 'VISUAL_FALLBACK_CONCURRENCY'
-  | 'VISUAL_FALLBACK_ENABLED'
-  | 'VISUAL_FALLBACK_MAX_PAGES_PER_PDF'
-  | 'VISUAL_FALLBACK_MAX_RETRIES'
-  | 'VISUAL_FALLBACK_MODEL'
-  | 'VISUAL_FALLBACK_PROVIDER'
-  | 'VISUAL_FALLBACK_SHADOW_MODE'
-  | 'VISUAL_FALLBACK_TIMEOUT_MS'
->
-
-export function createVisualFallbackConfig(
-  environment: VisualFallbackEnvironment
-): VisualFallbackConfig {
-  const provider = environment.VISUAL_FALLBACK_PROVIDER
-  return {
-    enabled:
-      environment.VISUAL_FALLBACK_ENABLED &&
-      Boolean(provider === 'gemini' ? environment.GEMINI_API_KEY : environment.DEEPSEEK_API_KEY),
-    shadowMode: environment.VISUAL_FALLBACK_SHADOW_MODE,
-    provider,
-    model:
-      environment.VISUAL_FALLBACK_MODEL ??
-      (provider === 'deepseek' ? 'deepseek-v4-flash-vision-exp' : 'gemini-2.5-flash'),
-    timeoutMs: environment.VISUAL_FALLBACK_TIMEOUT_MS,
-    maxRetries: environment.VISUAL_FALLBACK_MAX_RETRIES,
-    concurrency: environment.VISUAL_FALLBACK_CONCURRENCY,
-    maxPagesPerPdf: environment.VISUAL_FALLBACK_MAX_PAGES_PER_PDF,
-  }
 }
 
 function defaultProvider(provider: VisualFallbackProvider): VisualTranscriptionProvider {
@@ -146,40 +101,93 @@ function hash(value: Buffer | string): string {
   return createHash('sha256').update(value).digest('hex')
 }
 
-function createInitialMetadata(
-  pages: VisualFallbackOcrPage[]
-): Map<number, VisualFallbackMetadata> {
-  return new Map(
-    pages.map(page => [page.pageNumber, createMetadata({ page, state: 'ocr_only', reasons: [] })])
-  )
+function selectRiskyPages(pages: VisualFallbackOcrPage[]): SelectedPage[] {
+  return pages
+    .map(page => ({ page, reasons: selectRiskReasons(page) }))
+    .filter(({ reasons }) => reasons.length > 0)
 }
 
-function createMetadata({
-  page,
-  state,
-  reasons,
-  provenance,
-  decisionReason,
-  selectedTextSource,
-  shadowDecision,
-  comparison,
-  policyVersion,
-}: CreateMetadataOptions): VisualFallbackMetadata {
-  const unresolved =
-    state === 'fallback_pending' || state === 'fallback_failed' || state === 'conflict'
+function markV2UnavailablePages(
+  byPage: Map<number, VisualFallbackMetadata>,
+  pages: SelectedPage[],
+  reason: 'aborted' | 'budget_exhausted'
+): void {
+  for (const { page, reasons } of pages) {
+    byPage.set(
+      page.pageNumber,
+      createV2FullPageMetadata({ page, reasons, outcome: { kind: 'unavailable', reason } })
+    )
+  }
+}
 
-  return {
-    state,
-    reasons,
-    offsetEncoding: 'utf16_code_units',
-    ...(page.sourceRange !== undefined ? { sourceRange: page.sourceRange } : {}),
-    ...(unresolved && page.sourceRange !== undefined ? { riskySpans: [page.sourceRange] } : {}),
-    ...(provenance !== undefined ? { provenance } : {}),
-    ...(policyVersion !== undefined ? { policyVersion } : {}),
-    ...(decisionReason !== undefined ? { decisionReason } : {}),
-    ...(selectedTextSource !== undefined ? { selectedTextSource } : {}),
-    ...(shadowDecision !== undefined ? { shadowDecision } : {}),
-    ...(comparison !== undefined ? { comparison } : {}),
+function applyPageBudget({
+  pages,
+  pageBudget,
+  byPage,
+  isV2Policy,
+}: {
+  pages: SelectedPage[]
+  pageBudget: NonNullable<VisualFallbackInput['pageBudget']>
+  byPage: Map<number, VisualFallbackMetadata>
+  isV2Policy: boolean
+}): SelectedPage[] {
+  let selectedPages = pages.slice(0, pageBudget.remaining())
+  if (selectedPages.length > 0 && !pageBudget.reserve(selectedPages.length)) selectedPages = []
+  const selectedNumbers = new Set(selectedPages.map(({ page }) => page.pageNumber))
+
+  for (const { page, reasons } of pages) {
+    if (selectedNumbers.has(page.pageNumber)) continue
+    byPage.set(
+      page.pageNumber,
+      isV2Policy
+        ? createV2FullPageMetadata({
+            page,
+            reasons,
+            outcome: { kind: 'unavailable', reason: 'budget_exhausted' },
+          })
+        : createV1Metadata({
+            page,
+            state: 'fallback_failed',
+            reasons,
+            decisionReason: 'budget_exhausted',
+          })
+    )
+  }
+  return selectedPages
+}
+
+function markPendingPages(
+  byPage: Map<number, VisualFallbackMetadata>,
+  pages: SelectedPage[]
+): void {
+  for (const { page, reasons } of pages) {
+    byPage.set(page.pageNumber, createV1Metadata({ page, state: 'fallback_pending', reasons }))
+  }
+}
+
+function markFailedPages({
+  byPage,
+  pages,
+  isV2Policy,
+  reason,
+}: {
+  byPage: Map<number, VisualFallbackMetadata>
+  pages: SelectedPage[]
+  isV2Policy: boolean
+  reason: 'render_failed' | 'aborted'
+}): void {
+  for (const { page, reasons } of pages) {
+    if (reason === 'aborted' && byPage.get(page.pageNumber)?.state !== 'fallback_pending') continue
+    byPage.set(
+      page.pageNumber,
+      isV2Policy
+        ? createV2FullPageMetadata({
+            page,
+            reasons,
+            outcome: { kind: 'unavailable', reason },
+          })
+        : createV1Metadata({ page, state: 'fallback_failed', reasons })
+    )
   }
 }
 
@@ -196,50 +204,63 @@ export class VisualFallbackService {
   private readonly provider: VisualTranscriptionProvider
   private readonly config: VisualFallbackConfig
 
+  private isV2Policy(): boolean {
+    return this.config.reconciliationPolicyVersion === GEMINI_WHOLE_PAGE_CRITICAL_POLICY_VERSION
+  }
+
   async execute(input: VisualFallbackInput): Promise<VisualFallbackResult> {
     const byPage = createInitialMetadata(input.pages)
     const acceptedVisualTextByPage = new Map<number, string>()
+    if (this.isV2Policy() && this.config.provider !== 'gemini') {
+      return { byPage, acceptedVisualTextByPage, selectedPageCount: 0, enabled: false }
+    }
     if (!this.config.enabled) {
       return { byPage, acceptedVisualTextByPage, selectedPageCount: 0, enabled: false }
     }
-    if (input.signal?.aborted) {
+    if (input.signal?.aborted && !this.isV2Policy()) {
       return { byPage, acceptedVisualTextByPage, selectedPageCount: 0, enabled: true }
     }
+    if (input.signal?.aborted) {
+      const riskyPages = selectRiskyPages(input.pages)
+      const selectedPages = riskyPages.slice(0, this.config.maxPagesPerPdf)
+      markV2UnavailablePages(byPage, selectedPages, 'aborted')
+      markV2UnavailablePages(
+        byPage,
+        riskyPages.slice(this.config.maxPagesPerPdf),
+        'budget_exhausted'
+      )
+      return {
+        byPage,
+        acceptedVisualTextByPage,
+        selectedPageCount: selectedPages.length,
+        enabled: true,
+      }
+    }
 
-    const riskyPages = input.pages
-      .map(page => ({ page, reasons: selectRiskReasons(page) }))
-      .filter(({ reasons }) => reasons.length > 0)
+    const riskyPages = selectRiskyPages(input.pages)
     let selectedPages = riskyPages.slice(0, this.config.maxPagesPerPdf)
+    if (this.isV2Policy()) {
+      markV2UnavailablePages(
+        byPage,
+        riskyPages.slice(this.config.maxPagesPerPdf),
+        'budget_exhausted'
+      )
+    }
 
     if (input.pageBudget) {
-      const eligibleBeforeBudget = selectedPages
-      selectedPages = eligibleBeforeBudget.slice(0, input.pageBudget.remaining())
-      if (selectedPages.length > 0 && !input.pageBudget.reserve(selectedPages.length)) {
-        selectedPages = []
-      }
-      const selectedNumbers = new Set(selectedPages.map(({ page }) => page.pageNumber))
-      for (const { page, reasons } of eligibleBeforeBudget) {
-        if (!selectedNumbers.has(page.pageNumber)) {
-          byPage.set(
-            page.pageNumber,
-            createMetadata({
-              page,
-              state: 'fallback_failed',
-              reasons,
-              decisionReason: 'budget_exhausted',
-            })
-          )
-        }
-      }
+      selectedPages = applyPageBudget({
+        pages: selectedPages,
+        pageBudget: input.pageBudget,
+        byPage,
+        isV2Policy: this.isV2Policy(),
+      })
     }
 
     if (selectedPages.length === 0) {
       return { byPage, acceptedVisualTextByPage, selectedPageCount: 0, enabled: true }
     }
 
-    for (const { page, reasons } of selectedPages) {
-      byPage.set(page.pageNumber, createMetadata({ page, state: 'fallback_pending', reasons }))
-    }
+    markPendingPages(byPage, selectedPages)
 
     let renderedPages: Awaited<ReturnType<PdfPageRenderer['renderPages']>>
     try {
@@ -249,9 +270,12 @@ export class VisualFallbackService {
         input.signal
       )
     } catch {
-      for (const { page, reasons } of selectedPages) {
-        byPage.set(page.pageNumber, createMetadata({ page, state: 'fallback_failed', reasons }))
-      }
+      markFailedPages({
+        byPage,
+        pages: selectedPages,
+        isV2Policy: this.isV2Policy(),
+        reason: 'render_failed',
+      })
       return {
         byPage,
         acceptedVisualTextByPage,
@@ -282,11 +306,12 @@ export class VisualFallbackService {
       )
     )
 
-    for (const { page, reasons } of selectedPages) {
-      if (byPage.get(page.pageNumber)?.state === 'fallback_pending') {
-        byPage.set(page.pageNumber, createMetadata({ page, state: 'fallback_failed', reasons }))
-      }
-    }
+    markFailedPages({
+      byPage,
+      pages: selectedPages,
+      isV2Policy: this.isV2Policy(),
+      reason: 'aborted',
+    })
 
     return {
       byPage,
@@ -306,19 +331,62 @@ export class VisualFallbackService {
   }: ProcessSelectedPageInput): Promise<void> {
     if (signal?.aborted) return
     if (!renderedPage) {
-      byPage.set(page.pageNumber, createMetadata({ page, state: 'fallback_failed', reasons }))
+      byPage.set(
+        page.pageNumber,
+        this.isV2Policy()
+          ? createV2FullPageMetadata({
+              page,
+              reasons,
+              outcome: { kind: 'unavailable', reason: 'render_failed' },
+            })
+          : createV1Metadata({ page, state: 'fallback_failed', reasons })
+      )
       return
     }
 
-    const candidate = await this.transcribeWithRetries({
+    const transcription = await transcribeWithRetries({
       image: renderedPage.image,
       pageNumber: page.pageNumber,
       signal,
       documentProfile,
+      model: this.config.model,
+      maxRetries: this.config.maxRetries,
+      timeoutMs: this.config.timeoutMs,
+      provider: this.provider,
     })
     if (signal?.aborted) return
-    if (!candidate) {
-      byPage.set(page.pageNumber, createMetadata({ page, state: 'fallback_failed', reasons }))
+    if (transcription.status === 'unavailable') {
+      byPage.set(
+        page.pageNumber,
+        this.isV2Policy()
+          ? createV2FullPageMetadata({
+              page,
+              reasons,
+              outcome: { kind: 'unavailable', reason: transcription.reason },
+            })
+          : createV1Metadata({ page, state: 'fallback_failed', reasons })
+      )
+      return
+    }
+    const candidate = transcription.text
+
+    if (this.isV2Policy()) {
+      const reconciliation = reconcileV2Candidate({
+        page,
+        reasons,
+        candidate,
+        shadowMode: this.config.shadowMode,
+        provenance: {
+          provider: this.config.provider,
+          model: this.config.model,
+          imageSha256: hash(renderedPage.image),
+          candidateSha256: hash(candidate),
+        },
+      })
+      byPage.set(page.pageNumber, reconciliation.metadata)
+      if (reconciliation.acceptedText !== undefined) {
+        acceptedVisualTextByPage.set(page.pageNumber, reconciliation.acceptedText)
+      }
       return
     }
 
@@ -339,7 +407,7 @@ export class VisualFallbackService {
         : 'reconciled'
     byPage.set(
       page.pageNumber,
-      createMetadata({
+      createV1Metadata({
         page,
         state,
         reasons,
@@ -356,40 +424,5 @@ export class VisualFallbackService {
         comparison: reconciliation.comparison,
       })
     )
-  }
-
-  private async transcribeWithRetries({
-    image,
-    pageNumber,
-    signal,
-    documentProfile,
-  }: TranscriptionAttemptInput): Promise<string | undefined> {
-    for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
-      if (signal?.aborted) return undefined
-      const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs)
-      const abort = () => controller.abort(signal?.reason)
-      signal?.addEventListener('abort', abort, { once: true })
-      try {
-        const response = await this.provider.transcribe({
-          image,
-          pageNumber,
-          model: this.config.model,
-          signal: controller.signal,
-          ...(documentProfile !== undefined ? { documentProfile } : {}),
-        })
-        if (signal?.aborted) return undefined
-        if (response.status === 'abstain') return undefined
-        return response.transcription
-      } catch {
-        if (signal?.aborted) return undefined
-        if (attempt === this.config.maxRetries) return undefined
-      } finally {
-        clearTimeout(timeout)
-        signal?.removeEventListener('abort', abort)
-      }
-    }
-
-    return undefined
   }
 }
