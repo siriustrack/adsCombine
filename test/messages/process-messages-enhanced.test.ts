@@ -202,4 +202,125 @@ describe('ProcessMessagesService enhanced OCR delegation', () => {
       }
     }
   })
+
+  test('rebases V2 ranges cumulatively across identical files with an astral prefix', async () => {
+    const selected = 'Matrícula nº 12.346'
+    const body = `🧾 prefixo\n${selected}`
+    const selectedStart = body.indexOf(selected)
+    const pdfService: Pick<ProcessPdfService, 'execute' | 'executeEnhanced'> = {
+      async execute() {
+        throw new Error('standard OCR must not run')
+      },
+      async executeEnhanced(file, options) {
+        options?.onEnhancedMetadata?.({
+          fileId: file.fileId,
+          pageQuality: [
+            {
+              pageNumber: 1,
+              visualFallback: {
+                schemaVersion: 'visual-fallback/v2',
+                policyVersion: 'gemini-whole-page-critical-v2',
+                alignmentVersion: 'critical-token-alignment-v1',
+                outcome: 'selected',
+                state: 'reconciled',
+                reasons: ['fragmented-number-or-measure'],
+                offsetEncoding: 'utf16_code_units',
+                sourceRange: { start: 0, end: body.length },
+                criticalUncertainties: [
+                  {
+                    start: selectedStart,
+                    end: selectedStart + selected.length,
+                    scope: 'token',
+                    categories: ['registry_identifier'],
+                    divergences: ['different_value'],
+                  },
+                ],
+                selectedTextSource: 'visual',
+                decisionReason: 'gemini_whole_page_selected',
+                provenance: {
+                  provider: 'gemini',
+                  model: 'gemini-test',
+                  imageSha256: 'a'.repeat(64),
+                  candidateSha256: 'b'.repeat(64),
+                },
+              },
+            },
+          ],
+        })
+        return { value: body, error: undefined }
+      },
+    }
+    const request = createRequest()
+    request.messages[0].body.files = [
+      { fileId: 'file-1', url: 'https://example.com/a/igual.pdf', mimeType: 'application/pdf' },
+      { fileId: 'file-2', url: 'https://example.com/b/igual.pdf', mimeType: 'application/pdf' },
+    ]
+
+    const response = await new ProcessMessagesService(pdfService).execute(request, {
+      enhancedOcr: true,
+    })
+    const transcriptionText = response.transcriptionText ?? ''
+    const criticalUncertainties = (response.enhancedResult?.files ?? []).map(metadata => {
+      const visualFallback = metadata.pageQuality?.[0]?.visualFallback
+      if (visualFallback?.policyVersion !== 'gemini-whole-page-critical-v2') return undefined
+      if (visualFallback.outcome !== 'selected') return undefined
+      return visualFallback.criticalUncertainties[0]
+    })
+
+    expect(criticalUncertainties[0]?.start).toBeLessThan(criticalUncertainties[1]?.start ?? 0)
+    expect(
+      criticalUncertainties.map(range => transcriptionText.slice(range?.start, range?.end))
+    ).toEqual([selected, selected])
+  })
+
+  test('fails the enhanced result when sanitization collapses a V2 range', async () => {
+    const body = 'A\u0000B'
+    const pdfService: Pick<ProcessPdfService, 'execute' | 'executeEnhanced'> = {
+      async execute() {
+        throw new Error('standard OCR must not run')
+      },
+      async executeEnhanced(file, options) {
+        options?.onEnhancedMetadata?.({
+          fileId: file.fileId,
+          pageQuality: [
+            {
+              pageNumber: 1,
+              visualFallback: {
+                schemaVersion: 'visual-fallback/v2',
+                policyVersion: 'gemini-whole-page-critical-v2',
+                alignmentVersion: 'critical-token-alignment-v1',
+                outcome: 'selected',
+                state: 'reconciled',
+                reasons: ['garbled-spans'],
+                offsetEncoding: 'utf16_code_units',
+                sourceRange: { start: 0, end: body.length },
+                criticalUncertainties: [
+                  {
+                    start: 1,
+                    end: 2,
+                    scope: 'token',
+                    categories: ['number'],
+                    divergences: ['different_value'],
+                  },
+                ],
+                provenance: {
+                  provider: 'gemini',
+                  model: 'gemini-test',
+                  imageSha256: 'a'.repeat(64),
+                  candidateSha256: 'b'.repeat(64),
+                },
+                selectedTextSource: 'visual',
+                decisionReason: 'gemini_whole_page_selected',
+              },
+            },
+          ],
+        })
+        return { value: body, error: undefined }
+      },
+    }
+
+    await expect(
+      new ProcessMessagesService(pdfService).execute(createRequest(), { enhancedOcr: true })
+    ).rejects.toThrow('V2 critical uncertainty collapsed during sanitization')
+  })
 })

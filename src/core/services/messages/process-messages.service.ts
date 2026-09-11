@@ -16,6 +16,7 @@ import { sanitizeText } from 'utils/textSanitizer'
 import WordExtractor from 'word-extractor'
 import { FileDownloadService, FileSizeLimitError } from './pdf-utils/file-download.service'
 import { ProcessPdfService } from './pdf-utils/process-pdf.service'
+import type { VisualFallbackV2Metadata } from './pdf-utils/visual-fallback.types'
 import type {
   EnhancedPdfMetadata,
   ProcessAndHandleFileOptions,
@@ -37,6 +38,7 @@ type RebaseMetadataInput = {
   finalText: string
   fileUrl: string
   segmentSearchStart: number
+  deterministicSegmentStart?: number
 }
 
 type RebaseMetadataResult = {
@@ -48,6 +50,7 @@ type EnhancedOccurrence = {
   metadata: EnhancedPdfMetadata
   rawBody: string
   fileUrl: string
+  segmentIndex?: number
 }
 
 type ProcessedFileOutcome = {
@@ -89,16 +92,165 @@ function createOrderedRangeMap(
   return mappedRanges
 }
 
+function isV2VisualMetadata(
+  metadata: NonNullable<NonNullable<EnhancedPdfMetadata['pageQuality']>[number]['visualFallback']>
+): metadata is Extract<typeof metadata, { policyVersion: 'gemini-whole-page-critical-v2' }> {
+  return metadata.policyVersion === 'gemini-whole-page-critical-v2'
+}
+
+function mapSanitizedBoundary(rawBody: string, boundary: number): number | undefined {
+  if (!Number.isInteger(boundary) || boundary < 0 || boundary > rawBody.length) return undefined
+  if (
+    boundary > 0 &&
+    boundary < rawBody.length &&
+    /[\uD800-\uDBFF]/u.test(rawBody[boundary - 1]) &&
+    /[\uDC00-\uDFFF]/u.test(rawBody[boundary])
+  ) {
+    return undefined
+  }
+  return sanitizeText(`${rawBody.slice(0, boundary)}x`).length - 1
+}
+
+function mapV2Range(rawBody: string, range: SourceRange): SourceRange | undefined {
+  if (range.end <= range.start) return undefined
+  const start = mapSanitizedBoundary(rawBody, range.start)
+  const end = mapSanitizedBoundary(rawBody, range.end)
+  if (start === undefined || end === undefined || end <= start) return undefined
+  return { start, end }
+}
+
+function rebaseV2VisualMetadata({
+  visualFallback,
+  rawBody,
+  header,
+  segmentStart,
+}: {
+  visualFallback: Extract<
+    NonNullable<NonNullable<EnhancedPdfMetadata['pageQuality']>[number]['visualFallback']>,
+    { policyVersion: 'gemini-whole-page-critical-v2' }
+  >
+  rawBody: string
+  header: string
+  segmentStart: number
+}): VisualFallbackV2Metadata {
+  const rawSegment = header + rawBody
+  const mapBodyRange = (range: SourceRange) => {
+    if (range.start < 0 || range.end > rawBody.length) return undefined
+    return mapV2Range(rawSegment, {
+      start: header.length + range.start,
+      end: header.length + range.end,
+    })
+  }
+  if (!visualFallback.sourceRange) throw new Error('V2 metadata is missing its source page range')
+  const originalSourceRange = visualFallback.sourceRange
+  const sourceRange = mapBodyRange(originalSourceRange)
+  if (!sourceRange) throw new Error('V2 source page range collapsed during sanitization')
+  const criticalUncertainties = visualFallback.criticalUncertainties ?? []
+  if (
+    criticalUncertainties.some(
+      range => range.start < originalSourceRange.start || range.end > originalSourceRange.end
+    )
+  ) {
+    throw new Error('V2 critical uncertainty left its source page')
+  }
+  const riskySpans = visualFallback.riskySpans ?? []
+  if (
+    riskySpans.some(
+      range =>
+        range.start < originalSourceRange.start ||
+        range.end > originalSourceRange.end ||
+        mapBodyRange(range) === undefined
+    )
+  ) {
+    throw new Error('V2 risky span failed deterministic rebase')
+  }
+  const mappedUncertainties = criticalUncertainties.map(range => ({
+    range,
+    mapped: mapBodyRange(range),
+  }))
+  if (mappedUncertainties.some(({ mapped }) => mapped === undefined)) {
+    throw new Error('V2 critical uncertainty collapsed during sanitization')
+  }
+  const rebasedSourceRange = {
+    start: segmentStart + sourceRange.start,
+    end: segmentStart + sourceRange.end,
+  }
+  const rebasedUncertainties = mappedUncertainties.map(({ range, mapped }) => ({
+    start: segmentStart + (mapped?.start ?? 0),
+    end: segmentStart + (mapped?.end ?? 0),
+    scope: range.scope,
+    categories: range.categories,
+    divergences: range.divergences,
+  }))
+  if (
+    rebasedUncertainties.some(
+      range => range.start < rebasedSourceRange.start || range.end > rebasedSourceRange.end
+    )
+  ) {
+    throw new Error('Rebased V2 critical uncertainty left its source page')
+  }
+  if (visualFallback.outcome === 'unavailable') {
+    return {
+      ...visualFallback,
+      sourceRange: rebasedSourceRange,
+      riskySpans: [rebasedSourceRange],
+    }
+  }
+  if (visualFallback.outcome === 'rejected') {
+    return {
+      ...visualFallback,
+      sourceRange: rebasedSourceRange,
+      criticalUncertainties: rebasedUncertainties,
+      riskySpans: [rebasedSourceRange],
+    }
+  }
+  return {
+    ...visualFallback,
+    sourceRange: rebasedSourceRange,
+    criticalUncertainties: rebasedUncertainties,
+    riskySpans: rebasedUncertainties.map(({ start, end }) => ({ start, end })),
+  }
+}
+
 function rebaseVisualMetadata({
   metadata,
   rawBody,
   finalText,
   fileUrl,
   segmentSearchStart,
+  deterministicSegmentStart,
 }: RebaseMetadataInput): RebaseMetadataResult {
   const fileName = path.basename(new URL(fileUrl).pathname)
   const header = `## Transcricao do arquivo: ${fileName}:\n\n`
   const sanitizedSegment = sanitizeText(header + rawBody)
+  const hasV2Metadata = metadata.pageQuality?.some(page => {
+    const visualFallback = page.visualFallback
+    return visualFallback ? isV2VisualMetadata(visualFallback) : false
+  })
+  if (hasV2Metadata) {
+    if (deterministicSegmentStart === undefined) {
+      throw new Error('V2 deterministic segment offset is unavailable')
+    }
+    return {
+      metadata: {
+        ...metadata,
+        pageQuality: metadata.pageQuality?.map(page => {
+          const visualFallback = page.visualFallback
+          if (!visualFallback || !isV2VisualMetadata(visualFallback)) return page
+          return {
+            ...page,
+            visualFallback: rebaseV2VisualMetadata({
+              visualFallback,
+              rawBody,
+              header,
+              segmentStart: deterministicSegmentStart,
+            }),
+          }
+        }),
+      },
+      nextSegmentSearchStart: deterministicSegmentStart + sanitizedSegment.length,
+    }
+  }
   const segmentStart = finalText.indexOf(sanitizedSegment, segmentSearchStart)
   const sanitizedBody = sanitizeText(rawBody)
   const bodyStartWithinSegment = sanitizedSegment.indexOf(
@@ -264,8 +416,11 @@ export class ProcessMessagesService {
         const results = await Promise.all(promises)
 
         results.forEach(result => {
+          const segmentIndex = extractedTexts.length
           if (result.extractedText !== undefined) extractedTexts.push(result.extractedText)
-          if (result.enhancedOccurrence) enhancedOccurrences.push(result.enhancedOccurrence)
+          if (result.enhancedOccurrence) {
+            enhancedOccurrences.push({ ...result.enhancedOccurrence, segmentIndex })
+          }
           if (result.success) {
             processedFiles.push(result.fileId)
           } else {
@@ -276,6 +431,31 @@ export class ProcessMessagesService {
     }
 
     const sanitizedText = sanitizeText(extractedTexts.join(FILE_SEPARATOR).trim())
+    let rebasedMetadata: EnhancedPdfMetadata[] | undefined
+    if (options.enhancedOcr) {
+      rebasedMetadata = []
+      let segmentSearchStart = 0
+      const sanitizedSeparator = sanitizeText(`a${FILE_SEPARATOR}b`).slice(1, -1)
+      const deterministicSegmentStarts: number[] = []
+      let deterministicOffset = 0
+      for (const extractedText of extractedTexts) {
+        deterministicSegmentStarts.push(deterministicOffset)
+        deterministicOffset += sanitizeText(extractedText).length + sanitizedSeparator.length
+      }
+      for (const occurrence of enhancedOccurrences) {
+        const rebased = rebaseVisualMetadata({
+          ...occurrence,
+          finalText: sanitizedText,
+          segmentSearchStart,
+          ...(occurrence.segmentIndex !== undefined
+            ? { deterministicSegmentStart: deterministicSegmentStarts[occurrence.segmentIndex] }
+            : {}),
+        })
+        rebasedMetadata.push(rebased.metadata)
+        segmentSearchStart = rebased.nextSegmentSearchStart
+      }
+    }
+
     const response = await this.saveProcessedText({
       sanitizedText,
       conversationId: messages[0].conversationId,
@@ -284,25 +464,8 @@ export class ProcessMessagesService {
       processedFiles,
       failedFiles,
     })
-
-    if (options.enhancedOcr) {
-      const rebasedMetadata: EnhancedPdfMetadata[] = []
-      let segmentSearchStart = 0
-      for (const occurrence of enhancedOccurrences) {
-        const rebased = rebaseVisualMetadata({
-          ...occurrence,
-          finalText: sanitizedText,
-          segmentSearchStart,
-        })
-        rebasedMetadata.push(rebased.metadata)
-        segmentSearchStart = rebased.nextSegmentSearchStart
-      }
-      return {
-        ...response,
-        enhancedResult: {
-          files: rebasedMetadata,
-        },
-      }
+    if (rebasedMetadata) {
+      return { ...response, enhancedResult: { files: rebasedMetadata } }
     }
 
     return response
