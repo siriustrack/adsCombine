@@ -80,6 +80,7 @@ Selective Gemini visual fallback, job queue parameters, OCR hard limits, and sou
 | `VISUAL_FALLBACK_ENABLED` | boolean | `false` | boolean (`1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`) | Master toggle for selective visual fallback. Requires the API key for the selected provider. |
 | `VISUAL_FALLBACK_SHADOW_MODE` | boolean | `true` | boolean | When `true`, evaluates the `safe-visual-v1` decision as `shadowDecision` but always retains OCR text. Candidate text is never persisted. |
 | `VISUAL_FALLBACK_PROVIDER` | `gemini` \| `deepseek` | `gemini` | enum | Visual transcription provider. Existing deployments remain on Gemini when omitted. |
+| `VISUAL_RECONCILIATION_POLICY_VERSION` | `safe-visual-v1` \| `gemini-whole-page-critical-v2` | `safe-visual-v1` | enum | Versioned reconciliation policy. V2 is opt-in and active only with `VISUAL_FALLBACK_PROVIDER=gemini`. |
 | `VISUAL_FALLBACK_MODEL` | string | provider-specific | min 1 char | Optional model override. Defaults to `gemini-2.5-flash` for Gemini and `deepseek-v4-flash-vision-exp` for DeepSeek. |
 | `VISUAL_FALLBACK_TIMEOUT_MS` | integer | `15000` | positive integer, max `120000` (120s) | Per-page timeout in milliseconds for visual provider requests. |
 | `VISUAL_FALLBACK_MAX_RETRIES` | integer | `1` | min `0`, max `3` | Maximum retry attempts for failed visual provider requests. |
@@ -107,10 +108,14 @@ Visual fallback operates as a secondary, highly targeted enhancement step for sc
    - Per-PDF cap: `VISUAL_FALLBACK_MAX_PAGES_PER_PDF` (default `2`, max `10`).
    - Global job cap: `MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB` (default `4`, max `20`).
 
-### Ephemeral Candidate and Safe Promotion Policy
+### Ephemeral Candidate and Versioned Reconciliation Policies
 Raw visual candidate text is **ephemeral and immutable outside the in-memory reconciliation boundary**: it is never returned in public metadata, logged, or persisted. Only approved pages may use candidate text while constructing the final enhanced transcription. Public metadata contains hashes, provenance, `policyVersion`, decision reason, selected source, comparison metrics, states, and ranges—never candidate text.
 
 `safe-visual-v1` is deterministic and conservative. It first normalizes NFC, line endings, whitespace, and soft hyphens. Equal normalized text retains OCR. Promotion requires OCR confidence of at least 70 for alignment, similarity of at least 0.99, edit distance at most 20, length ratio from 0.95 through 1.05, unchanged protected content, and an exact non-whitespace content match where the visual text only reduces spacing or fragmentation. Changes to numbers, dates, currency, fractions, CPF/CNPJ, measurements, matrícula identifiers, `R.`/`AV.` markers, negation-sensitive text, or any other alphanumeric content produce `conflict`. Confidence below 90 is never, by itself, a promotion or eligibility signal.
+
+`gemini-whole-page-critical-v2` is an explicit Gemini-only policy. For a valid candidate it selects the complete sanitized Gemini page; it never splices OCR and visual fragments. OCR remains an ephemeral, equal-status witness used to identify disputed critical content. Divergences involving dates, CPF/CNPJ, currency, fractions, measurements, registry identifiers, `R.`/`AV.` markers, negations, or isolated numbers become `criticalUncertainties` with token, clause, or page scope and UTF-16 `[start,end)` offsets. Outcomes are `selected`, `shadow`, `unavailable`, or `rejected` under schema `visual-fallback/v2` and alignment `critical-token-alignment-v1`.
+
+V2 uses no second adjudication/model strategy; configured retries may repeat the same provider request. Provider failures, abstention, budget exhaustion, invalid/truncated candidates, alignment-budget failure, or invalid range rebasing retain OCR and remain fail-closed. Any selected Gemini text and its uncertainty metadata are emitted atomically; invalid metadata never causes uncertainties to be silently dropped.
 
 Accepted page text is assembled in page order. `sourceRange` and `riskySpans` are finally rebased after headers, file separators, and final sanitization, so UTF-16 offsets address the exact returned and persisted transcription.
 
@@ -120,8 +125,8 @@ Accepted page text is assembled in page order. `sourceRange` and `riskySpans` ar
 - **DeepSeek payload limits**: A rendered inline image is rejected above 32 MiB, and the serialized request body is rejected above 48 MiB before an outbound request. The adapter accepts and validates only structured JSON responses.
 
 ### Shadow Rollout Semantics (`VISUAL_FALLBACK_SHADOW_MODE`)
-- **Shadow Mode (`true` - Default)**: Visual fallback renders the page once, requests one transcription, evaluates the hypothetical `safe-visual-v1` decision, and records it as `shadowDecision`. State remains `ocr_plus_visual_candidate`, `selectedTextSource` remains `ocr`, and final text is never changed.
-- **Active Mode (`false`)**: The same policy returns `retain_ocr`, `promote_visual`, or `conflict`. Only `promote_visual` places page text in the internal accepted-page map; all other decisions retain OCR.
+- **Shadow Mode (`true` - Default)**: Visual fallback renders the page once and requests a transcription, but final text remains OCR. Configured retries may repeat the same provider request; there is no second adjudication/model strategy. V1 records `shadowDecision`; V2 records `outcome: shadow` and projects critical uncertainty ranges onto the persisted OCR text. Candidate text is never persisted.
+- **Active Mode (`false`)**: V1 retains its conservative promotion rules. V2 uses the complete sanitized Gemini page for `outcome: selected`; uncertainties refer to that final visual text.
 
 ### Visual Fallback State Reference
 
@@ -166,6 +171,12 @@ If the selected visual provider experiences degradation or rate limits, operator
 2. Restart or reload the `adsCombine` service.
 3. Jobs will immediately skip visual fallback processing (`ocr_only`) without interrupting standard OCR execution.
 
+### V2 Rollout and Rollback
+1. Deploy consumers that understand `visual-fallback/v2` before enabling the producer policy.
+2. Set `VISUAL_RECONCILIATION_POLICY_VERSION=gemini-whole-page-critical-v2`, keep shadow mode enabled, and monitor outcomes, decision reasons, uncertainty counts/scopes, provider latency, failures, and budget exhaustion.
+3. Disable shadow mode only for a bounded cohort after metadata and latency remain stable.
+4. Roll back instantly by restoring `VISUAL_RECONCILIATION_POLICY_VERSION=safe-visual-v1`; historical V1 and V2 JSON metadata require no database migration.
+
 ### Zero Database Migration Architecture
 - Visual fallback results are stored inside the existing JSON payload structure returned by enhanced endpoints.
 - Toggling `VISUAL_FALLBACK_ENABLED` or changing budget environment variables requires **zero database schema migrations**.
@@ -188,4 +199,6 @@ If the selected visual provider experiences degradation or rate limits, operator
 Operators should track the following health indicators in service logs:
 - **Visual Fallback Success Rate**: Percentage of processed pages reaching `reconciled` or `ocr_plus_visual_candidate` vs `fallback_failed`.
 - **Budget Rejections**: Logged events when job page count hits `MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB` (default 4).
+- **V2 Reconciliation Health**: Distribution of `selected`, `shadow`, `unavailable`, and `rejected`, decision reasons, critical uncertainty count/scope, and alignment or rebase failures.
+- **Latency**: Visual provider and end-to-end job latency before and after V2 activation. V2 has no second adjudication/model strategy; configured retries may repeat the same provider request.
 - **Download Security Rejections**: Log entries generated when source URLs fail `SourceUrlPolicy` allowlist verification.
