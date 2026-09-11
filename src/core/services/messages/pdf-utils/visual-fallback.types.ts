@@ -186,6 +186,7 @@ export type VisualFallbackConfig = {
   timeoutMs: number
   maxRetries: number
   concurrency: number
+  maxAlignmentCells: number
   maxPagesPerPdf: number
   reconciliationPolicyVersion?: 'safe-visual-v1' | 'gemini-whole-page-critical-v2'
 }

@@ -23,7 +23,7 @@ describe('visual fallback environment limits', () => {
     expect(parsed.REQUEST_LOGS_ENABLED).toBe(expected)
   })
 
-  test('preserves the existing defaults', () => {
+  test('uses the production visual fallback defaults', () => {
     const parsed = envSchema.parse(requiredEnvironment)
 
     expect(parsed.VISUAL_FALLBACK_PROVIDER).toBe('gemini')
@@ -32,8 +32,10 @@ describe('visual fallback environment limits', () => {
     expect(parsed.VISUAL_FALLBACK_TIMEOUT_MS).toBe(15_000)
     expect(parsed.VISUAL_FALLBACK_MAX_RETRIES).toBe(1)
     expect(parsed.VISUAL_FALLBACK_CONCURRENCY).toBe(1)
-    expect(parsed.VISUAL_FALLBACK_MAX_PAGES_PER_PDF).toBe(2)
-    expect(parsed.MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB).toBe(4)
+    expect(parsed.VISUAL_FALLBACK_MAX_ALIGNMENT_CELLS).toBe(10_000_000)
+    expect(parsed.VISUAL_FALLBACK_MAX_PAGES_PER_PDF).toBe(6)
+    expect(parsed.MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB).toBe(6)
+    expect(createVisualFallbackConfig(parsed).maxAlignmentCells).toBe(10_000_000)
     expect(parsed.VISUAL_RECONCILIATION_POLICY_VERSION).toBe('safe-visual-v1')
   })
 
@@ -107,6 +109,7 @@ describe('visual fallback environment limits', () => {
     'VISUAL_FALLBACK_TIMEOUT_MS',
     'VISUAL_FALLBACK_MAX_RETRIES',
     'VISUAL_FALLBACK_CONCURRENCY',
+    'VISUAL_FALLBACK_MAX_ALIGNMENT_CELLS',
     'VISUAL_FALLBACK_MAX_PAGES_PER_PDF',
     'MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB',
   ] as const)('rejects an unsafe %s value', setting => {

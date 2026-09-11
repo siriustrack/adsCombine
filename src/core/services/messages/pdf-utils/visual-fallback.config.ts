@@ -9,6 +9,7 @@ type VisualFallbackEnvironment = Pick<
   | 'MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB'
   | 'VISUAL_FALLBACK_CONCURRENCY'
   | 'VISUAL_FALLBACK_ENABLED'
+  | 'VISUAL_FALLBACK_MAX_ALIGNMENT_CELLS'
   | 'VISUAL_FALLBACK_MAX_PAGES_PER_PDF'
   | 'VISUAL_FALLBACK_MAX_RETRIES'
   | 'VISUAL_FALLBACK_MODEL'
@@ -38,6 +39,7 @@ export function createVisualFallbackConfig(
     timeoutMs: environment.VISUAL_FALLBACK_TIMEOUT_MS,
     maxRetries: environment.VISUAL_FALLBACK_MAX_RETRIES,
     concurrency: environment.VISUAL_FALLBACK_CONCURRENCY,
+    maxAlignmentCells: environment.VISUAL_FALLBACK_MAX_ALIGNMENT_CELLS,
     maxPagesPerPdf: environment.VISUAL_FALLBACK_MAX_PAGES_PER_PDF,
     reconciliationPolicyVersion: environment.VISUAL_RECONCILIATION_POLICY_VERSION,
   }

@@ -51,8 +51,14 @@ export const envSchema = z.object({
   VISUAL_FALLBACK_TIMEOUT_MS: z.coerce.number().int().positive().max(120_000).default(15_000),
   VISUAL_FALLBACK_MAX_RETRIES: z.coerce.number().int().min(0).max(3).default(1),
   VISUAL_FALLBACK_CONCURRENCY: z.coerce.number().int().positive().max(4).default(1),
-  VISUAL_FALLBACK_MAX_PAGES_PER_PDF: z.coerce.number().int().positive().max(10).default(2),
-  MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB: z.coerce.number().int().positive().max(20).default(4),
+  VISUAL_FALLBACK_MAX_ALIGNMENT_CELLS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(16_000_000)
+    .default(10_000_000),
+  VISUAL_FALLBACK_MAX_PAGES_PER_PDF: z.coerce.number().int().positive().max(10).default(6),
+  MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB: z.coerce.number().int().positive().max(20).default(6),
   TOKEN: z.string().min(1),
   // Toggle to enable/disable request/route logs ("true"/"false")
   REQUEST_LOGS_ENABLED: environmentBoolean.default(false),
