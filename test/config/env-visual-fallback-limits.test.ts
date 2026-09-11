@@ -34,6 +34,7 @@ describe('visual fallback environment limits', () => {
     expect(parsed.VISUAL_FALLBACK_CONCURRENCY).toBe(1)
     expect(parsed.VISUAL_FALLBACK_MAX_PAGES_PER_PDF).toBe(2)
     expect(parsed.MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB).toBe(4)
+    expect(parsed.VISUAL_RECONCILIATION_POLICY_VERSION).toBe('safe-visual-v1')
   })
 
   test('selects the DeepSeek default model only when the DeepSeek provider is selected', () => {
@@ -67,6 +68,39 @@ describe('visual fallback environment limits', () => {
     expect(
       envSchema.safeParse({ ...requiredEnvironment, VISUAL_FALLBACK_PROVIDER: 'other' }).success
     ).toBe(false)
+  })
+
+  test.each(['safe-visual-v1', 'gemini-whole-page-critical-v2'] as const)(
+    'accepts reconciliation policy %s',
+    policyVersion => {
+      const parsed = envSchema.parse({
+        ...requiredEnvironment,
+        VISUAL_RECONCILIATION_POLICY_VERSION: policyVersion,
+      })
+
+      expect(parsed.VISUAL_RECONCILIATION_POLICY_VERSION).toBe(policyVersion)
+    }
+  )
+
+  test('rejects unsupported reconciliation policies', () => {
+    expect(
+      envSchema.safeParse({
+        ...requiredEnvironment,
+        VISUAL_RECONCILIATION_POLICY_VERSION: 'unsafe-v3',
+      }).success
+    ).toBe(false)
+  })
+
+  test('disables active V2 configuration for a non-Gemini provider', () => {
+    const parsed = envSchema.parse({
+      ...requiredEnvironment,
+      VISUAL_FALLBACK_ENABLED: 'true',
+      VISUAL_FALLBACK_PROVIDER: 'deepseek',
+      VISUAL_RECONCILIATION_POLICY_VERSION: 'gemini-whole-page-critical-v2',
+      DEEPSEEK_API_KEY: 'test-deepseek-key',
+    })
+
+    expect(createVisualFallbackConfig(parsed).enabled).toBe(false)
   })
 
   test.each([

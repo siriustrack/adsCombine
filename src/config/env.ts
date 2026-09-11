@@ -44,6 +44,9 @@ export const envSchema = z.object({
   VISUAL_FALLBACK_ENABLED: environmentBoolean.default(false),
   VISUAL_FALLBACK_SHADOW_MODE: environmentBoolean.default(true),
   VISUAL_FALLBACK_PROVIDER: z.enum(['gemini', 'deepseek']).default('gemini'),
+  VISUAL_RECONCILIATION_POLICY_VERSION: z
+    .enum(['safe-visual-v1', 'gemini-whole-page-critical-v2'])
+    .default('safe-visual-v1'),
   VISUAL_FALLBACK_MODEL: z.string().min(1).optional(),
   VISUAL_FALLBACK_TIMEOUT_MS: z.coerce.number().int().positive().max(120_000).default(15_000),
   VISUAL_FALLBACK_MAX_RETRIES: z.coerce.number().int().min(0).max(3).default(1),
