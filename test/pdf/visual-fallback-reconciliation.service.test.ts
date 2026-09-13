@@ -178,6 +178,37 @@ describe('VisualFallbackService reconciliation', () => {
     expect(result.byPage.get(1)).not.toHaveProperty('candidateText')
   })
 
+  test('inverts one-sided fail-closed divergences in shadow OCR metadata', async () => {
+    const text = 'valor 10; valor 20. contexto registral preservado'
+    const visualText = 'valor 20; valor 10; valor 30. contexto registral preservado'
+    const result = await createV2Service(visualText, { shadowMode: true }).execute({
+      buffer: Buffer.from('pdf'),
+      fileName: 'registro.pdf',
+      pages: [
+        {
+          pageNumber: 1,
+          text,
+          sourceRange: { start: 0, end: text.length },
+          legalSignals: { ...legalSignals, corruptedSymbols: 1 },
+        },
+      ],
+    })
+
+    expect(result.byPage.get(1)).toMatchObject({
+      outcome: 'shadow',
+      selectedTextSource: 'ocr',
+      criticalUncertainties: [
+        {
+          start: 0,
+          end: text.length,
+          scope: 'page',
+          categories: ['number'],
+          divergences: ['duplicate_or_reordered', 'ocr_only'],
+        },
+      ],
+    })
+  })
+
   test('disables active V2 when the configured provider is not Gemini', async () => {
     const result = await createV2Service('unused', { provider: 'deepseek' }).execute({
       buffer: Buffer.from('pdf'),

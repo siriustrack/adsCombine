@@ -1,4 +1,5 @@
 import { sanitizePdfText } from 'utils/sanitize'
+import type { PageFurnitureProfile } from './gemini-page-furniture'
 import { reconcileGeminiWholePage } from './gemini-whole-page-critical.policy'
 import type {
   CriticalUncertaintyRange,
@@ -142,6 +143,7 @@ export function reconcileV2Candidate({
   maxAlignmentCells,
   shadowMode,
   provenance,
+  furnitureProfile,
 }: {
   page: VisualFallbackOcrPage
   reasons: VisualFallbackReason[]
@@ -149,11 +151,13 @@ export function reconcileV2Candidate({
   maxAlignmentCells: number
   shadowMode: boolean
   provenance: NonNullable<VisualFallbackV2Metadata['provenance']>
+  furnitureProfile?: PageFurnitureProfile
 }): { metadata: VisualFallbackV2Metadata; acceptedText?: string } {
   const reconciliation = reconcileGeminiWholePage({
     ocrText: page.text,
     visualText: candidate,
     maxAlignmentCells,
+    furnitureProfile,
   })
   if (reconciliation.status === 'rejected') {
     return {
