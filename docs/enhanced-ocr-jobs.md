@@ -118,6 +118,14 @@ Raw visual candidate text is **ephemeral and immutable outside the in-memory rec
 
 V2 uses no second adjudication/model strategy; configured retries may repeat the same provider request. Provider failures, abstention, budget exhaustion, invalid/truncated candidates, alignment-budget failure, or invalid range rebasing retain OCR and remain fail-closed. Any selected Gemini text and its uncertainty metadata are emitted atomically; invalid metadata never causes uncertainties to be silently dropped.
 
+#### Repeated Page Furniture
+
+V2 builds an ephemeral document-level profile to keep recurring headers and footers from contaminating legal-body alignment. A line is eligible as page furniture only when it occurs uniquely in the same top or bottom positional band on at least three distinct pages selected for visual fallback. Registry acts (`R.`/`AV.` and their wrapped continuation lines), one-page or cross-band repetitions, and text that also appears in the body remain legal-body content.
+
+Furniture is never removed from the selected Gemini page. Identical recurring furniture produces no uncertainty, while critical changes inside it remain represented with the same token → clause → page fail-closed hierarchy used for body text. Only explicitly labeled `Página`, `Pág.` or `Folha` counters may vary without uncertainty, and only when their current page number and total are structurally consistent across the recurring pages. An unlabeled expression such as `1 / 2` is always treated as legal-sensitive fraction content, never as pagination.
+
+Furniture profiling and critical alignment share the configured preprocessing/alignment budget. Ambiguous occurrence identity, preprocessing or alignment budget exhaustion, and more than 32 granular ranges fall back conservatively instead of dropping evidence. The profile considers only pages already admitted by the per-PDF and per-job visual budgets; it does not expand provider usage or serialize provider requests. This behavior requires no new environment variable or database migration and does not change the public V2 schema, policy, or alignment version.
+
 Accepted page text is assembled in page order. `sourceRange` and `riskySpans` are finally rebased after headers, file separators, and final sanitization, so UTF-16 offsets address the exact returned and persisted transcription.
 
 ### Provider Selection and DeepSeek Bounds
