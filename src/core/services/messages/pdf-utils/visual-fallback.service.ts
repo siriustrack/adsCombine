@@ -1,8 +1,7 @@
 import { createHash } from 'node:crypto'
 import { env } from '@config/env'
 import pLimit from 'p-limit'
-import { DeepSeekVisualTranscriptionProvider } from './deepseek-visual-transcription.provider'
-import { GeminiVisualTranscriptionProvider } from './gemini-visual-transcription.provider'
+import { buildDocumentFurnitureProfile, type PageFurnitureProfile } from './gemini-page-furniture'
 import { PdfPageRendererService } from './pdf-page-renderer.service'
 import { createVisualFallbackConfig } from './visual-fallback.config'
 import {
@@ -18,11 +17,11 @@ import type {
   VisualFallbackConfig,
   VisualFallbackMetadata,
   VisualFallbackOcrPage,
-  VisualFallbackProvider,
   VisualFallbackReason,
   VisualTranscriptionProvider,
 } from './visual-fallback.types'
 import { GEMINI_WHOLE_PAGE_CRITICAL_POLICY_VERSION } from './visual-fallback.types'
+import { createDefaultVisualProvider } from './visual-fallback-provider.factory'
 import { reconcileVisualText } from './visual-reconciliation.policy'
 import { transcribeWithRetries } from './visual-transcription-retry'
 
@@ -60,13 +59,7 @@ type ProcessSelectedPageInput = {
   acceptedVisualTextByPage: Map<number, string>
   signal?: AbortSignal
   documentProfile?: VisualDocumentProfile
-}
-
-function defaultProvider(provider: VisualFallbackProvider): VisualTranscriptionProvider {
-  if (provider === 'deepseek') {
-    return new DeepSeekVisualTranscriptionProvider(env.DEEPSEEK_API_KEY ?? '')
-  }
-  return new GeminiVisualTranscriptionProvider(env.GEMINI_API_KEY ?? '')
+  furnitureProfile?: PageFurnitureProfile
 }
 
 function inferDocumentProfile(fileName: string): VisualDocumentProfile | undefined {
@@ -198,7 +191,7 @@ export class VisualFallbackService {
     config: VisualFallbackConfig = createVisualFallbackConfig(env)
   ) {
     this.config = config
-    this.provider = provider ?? defaultProvider(config.provider)
+    this.provider = provider ?? createDefaultVisualProvider(config.provider)
   }
 
   private readonly provider: VisualTranscriptionProvider
@@ -284,13 +277,16 @@ export class VisualFallbackService {
       }
     }
 
-    const selectionByPage = new Map(
-      selectedPages.map(selection => [selection.page.pageNumber, selection])
-    )
     const renderedByPage = new Map(
       renderedPages.map(renderedPage => [renderedPage.pageNumber, renderedPage])
     )
     const limit = pLimit(this.config.concurrency)
+    const furnitureByPage = this.isV2Policy()
+      ? buildDocumentFurnitureProfile(
+          selectedPages.map(({ page }) => ({ pageNumber: page.pageNumber, text: page.text })),
+          this.config.maxAlignmentCells
+        )
+      : new Map<number, PageFurnitureProfile>()
     await Promise.all(
       selectedPages.map(selection =>
         limit(() =>
@@ -301,6 +297,7 @@ export class VisualFallbackService {
             acceptedVisualTextByPage,
             signal: input.signal,
             documentProfile: input.documentProfile ?? inferDocumentProfile(input.fileName),
+            furnitureProfile: furnitureByPage.get(selection.page.pageNumber),
           })
         )
       )
@@ -316,7 +313,7 @@ export class VisualFallbackService {
     return {
       byPage,
       acceptedVisualTextByPage,
-      selectedPageCount: selectionByPage.size,
+      selectedPageCount: selectedPages.length,
       enabled: true,
     }
   }
@@ -328,6 +325,7 @@ export class VisualFallbackService {
     acceptedVisualTextByPage,
     signal,
     documentProfile,
+    furnitureProfile,
   }: ProcessSelectedPageInput): Promise<void> {
     if (signal?.aborted) return
     if (!renderedPage) {
@@ -383,6 +381,7 @@ export class VisualFallbackService {
           imageSha256: hash(renderedPage.image),
           candidateSha256: hash(candidate),
         },
+        furnitureProfile,
       })
       byPage.set(page.pageNumber, reconciliation.metadata)
       if (reconciliation.acceptedText !== undefined) {
