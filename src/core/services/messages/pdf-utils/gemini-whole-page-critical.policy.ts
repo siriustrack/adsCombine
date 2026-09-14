@@ -1,7 +1,16 @@
 import { sanitizePdfText } from 'utils/sanitize'
 import { localizeCriticalEvidence } from './gemini-critical-evidence'
 import { AlignmentLedger } from './gemini-critical-tokenization'
-import { createFurnitureAlignmentPlan, type PageFurnitureProfile } from './gemini-page-furniture'
+import {
+  createObservedFurnitureAlignmentPlan,
+  type PageFurnitureProfile,
+} from './gemini-page-furniture'
+import {
+  notifyV2Diagnostic,
+  V2DiagnosticRecorder,
+  type VisualFallbackV2DiagnosticObserver,
+  type VisualFallbackV2DiagnosticTrigger,
+} from './visual-fallback.diagnostics'
 import {
   CRITICAL_TOKEN_ALIGNMENT_VERSION,
   type CriticalUncertaintyRange,
@@ -77,43 +86,70 @@ export function reconcileGeminiWholePage(input: {
   visualText: string
   maxAlignmentCells?: number
   furnitureProfile?: PageFurnitureProfile
+  pageNumber?: number
+  diagnosticObserver?: VisualFallbackV2DiagnosticObserver
 }): GeminiWholePageReconciliation {
+  const diagnostics = new V2DiagnosticRecorder()
+  const finish = <T extends GeminiWholePageReconciliation>(
+    result: T,
+    trigger?: VisualFallbackV2DiagnosticTrigger
+  ): T => {
+    if (trigger) diagnostics.record(trigger)
+    notifyV2Diagnostic(input.diagnosticObserver, diagnostics.snapshot(input.pageNumber ?? 0))
+    return result
+  }
   const maxAlignmentCells = input.maxAlignmentCells ?? 0
   if (
     !Number.isSafeInteger(maxAlignmentCells) ||
     maxAlignmentCells <= 0 ||
     input.ocrText.length + input.visualText.length > maxAlignmentCells
   ) {
-    return { status: 'rejected', reason: 'alignment_budget_exceeded' }
+    return finish(
+      { status: 'rejected', reason: 'alignment_budget_exceeded' },
+      'alignment_budget_exceeded'
+    )
   }
   const ledger = new AlignmentLedger(maxAlignmentCells)
   if (!ledger.consume(input.ocrText.length + input.visualText.length)) {
-    return { status: 'rejected', reason: 'alignment_budget_exceeded' }
+    return finish(
+      { status: 'rejected', reason: 'alignment_budget_exceeded' },
+      'alignment_budget_exceeded'
+    )
   }
   if (!hasValidUtf16(input.visualText)) {
-    return { status: 'rejected', reason: 'candidate_invalid_utf16' }
+    return finish({ status: 'rejected', reason: 'candidate_invalid_utf16' }, 'candidate_rejected')
   }
   const text = sanitizePdfText(input.visualText)
   if (!text || REFUSAL_PATTERN.test(text)) {
-    return { status: 'rejected', reason: 'candidate_empty_after_sanitization' }
+    return finish(
+      { status: 'rejected', reason: 'candidate_empty_after_sanitization' },
+      'candidate_rejected'
+    )
   }
   if (CLEAR_TRUNCATION_PATTERN.test(text)) {
-    return { status: 'rejected', reason: 'candidate_truncated' }
+    return finish({ status: 'rejected', reason: 'candidate_truncated' }, 'candidate_rejected')
   }
   const sanitizedOcr = sanitizePdfText(input.ocrText)
   if (sanitizedOcr.length > 0 && text.length * 5 < sanitizedOcr.length * 4) {
-    return { status: 'rejected', reason: 'candidate_truncated' }
+    return finish({ status: 'rejected', reason: 'candidate_truncated' }, 'candidate_rejected')
   }
 
+  const furniturePlan = createObservedFurnitureAlignmentPlan({
+    ocrText: sanitizedOcr,
+    geminiText: text,
+    profile: input.furnitureProfile,
+    diagnostics,
+  })
   const localized = localizeCriticalEvidence({
     ocrText: sanitizedOcr,
     geminiText: text,
     maxAlignmentCells,
     ledger,
-    furniturePlan: createFurnitureAlignmentPlan(sanitizedOcr, text, input.furnitureProfile),
+    furniturePlan,
+    diagnostics,
   })
   if (localized.status === 'budget_exceeded') {
-    return { status: 'rejected', reason: 'alignment_budget_exceeded' }
+    return finish({ status: 'rejected', reason: 'alignment_budget_exceeded' })
   }
   const criticalUncertainties = localized.geminiRanges
   const ocrCriticalUncertainties = localized.ocrRanges
@@ -121,9 +157,12 @@ export function reconcileGeminiWholePage(input: {
     !rangesAreValid(text, criticalUncertainties) ||
     !rangesAreValid(sanitizedOcr, ocrCriticalUncertainties)
   ) {
-    return { status: 'rejected', reason: 'alignment_invariant_failed' }
+    return finish(
+      { status: 'rejected', reason: 'alignment_invariant_failed' },
+      'alignment_invariant_failed'
+    )
   }
-  return {
+  return finish({
     status: 'selected',
     text,
     metadata: {
@@ -134,5 +173,5 @@ export function reconcileGeminiWholePage(input: {
     },
     ocrCriticalUncertainties,
     ocrTextLength: sanitizedOcr.length,
-  }
+  })
 }

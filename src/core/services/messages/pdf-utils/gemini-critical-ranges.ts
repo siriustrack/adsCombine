@@ -1,4 +1,6 @@
 import { type Hunk, type Token, uniqueSorted } from './gemini-critical-tokenization'
+import type { FurnitureAlignmentSection } from './gemini-page-furniture'
+import type { V2DiagnosticRecorder } from './visual-fallback.diagnostics'
 import type {
   CriticalCategory,
   CriticalDivergence,
@@ -97,18 +99,33 @@ export function pageRange(
   return { start: 0, end: text.length, scope: 'page', categories, divergences }
 }
 
+function recordPageProjection(input: {
+  diagnostics?: V2DiagnosticRecorder
+  target: RangeTarget
+  trigger: 'critical_cardinality_mismatch' | 'unsafe_hunk_projection'
+  section: FurnitureAlignmentSection['kind']
+}): void {
+  if (input.target === 'gemini') {
+    input.diagnostics?.record(input.trigger, input.section)
+  }
+}
+
 export function rangesForHunk({
   text,
   clauseIndex,
   hunk,
   target,
   structurallyUnique,
+  section,
+  diagnostics,
 }: {
   text: string
   clauseIndex: ClauseIndex
   hunk: Hunk
   target: RangeTarget
   structurallyUnique: boolean
+  section: FurnitureAlignmentSection['kind']
+  diagnostics?: V2DiagnosticRecorder
 }): CriticalUncertaintyRange[] {
   const ocrCritical = criticalTokens(hunk.ocr)
   const geminiCritical = criticalTokens(hunk.gemini)
@@ -124,7 +141,15 @@ export function rangesForHunk({
   )
   if (bothSidesHaveCritical && categoryCardinalityMismatch) {
     const projected = projectedDivergence(divergence, target)
-    if (!structurallyUnique) return [pageRange(text, categories, [projected])]
+    if (!structurallyUnique) {
+      recordPageProjection({
+        diagnostics,
+        target,
+        trigger: 'critical_cardinality_mismatch',
+        section,
+      })
+      return [pageRange(text, categories, [projected])]
+    }
     const offset = target === 'gemini' ? hunk.geminiInsertionOffset : hunk.ocrInsertionOffset
     return [
       {
@@ -153,6 +178,7 @@ export function rangesForHunk({
   const repeatedSource = sourceCritical.some(token => (sourceCounts.get(token.normalized) ?? 0) > 1)
   const safelyEnclosed = structurallyUnique || (hunk.hasLeftMatch && hunk.hasRightMatch)
   if (!safelyEnclosed || repeatedSource) {
+    recordPageProjection({ diagnostics, target, trigger: 'unsafe_hunk_projection', section })
     return [pageRange(text, categories, [projectedDivergence(divergence, target)])]
   }
   const offset = target === 'gemini' ? hunk.geminiInsertionOffset : hunk.ocrInsertionOffset
@@ -168,9 +194,12 @@ export function rangesForHunk({
 
 export function aggregateRanges(
   text: string,
-  ranges: CriticalUncertaintyRange[]
+  ranges: CriticalUncertaintyRange[],
+  diagnostics?: V2DiagnosticRecorder
 ): CriticalUncertaintyRange[] {
   if (ranges.length > 32) {
+    diagnostics?.record('range_limit_exceeded')
+    diagnostics?.noteRanges(ranges.length, 1)
     return [
       pageRange(
         text,
@@ -204,7 +233,12 @@ export function aggregateRanges(
       merged.push({ ...range })
     }
   }
-  if (merged.length <= 32) return merged
+  if (merged.length <= 32) {
+    diagnostics?.noteRanges(ranges.length, merged.length)
+    return merged
+  }
+  diagnostics?.record('range_limit_exceeded')
+  diagnostics?.noteRanges(ranges.length, 1)
   return [
     pageRange(
       text,

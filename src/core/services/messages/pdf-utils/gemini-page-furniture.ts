@@ -1,5 +1,6 @@
 import { sanitizePdfText } from 'utils/sanitize'
 import { tokenize } from './gemini-critical-tokenization'
+import type { V2DiagnosticRecorder } from './visual-fallback.diagnostics'
 
 type FurnitureBand = 'top' | 'bottom'
 
@@ -274,6 +275,21 @@ export function createFurnitureAlignmentPlan(
   geminiText: string,
   profile?: PageFurnitureProfile
 ): FurnitureAlignmentPlan | undefined {
+  return createObservedFurnitureAlignmentPlan({ ocrText, geminiText, profile })
+}
+
+export function createObservedFurnitureAlignmentPlan({
+  ocrText,
+  geminiText,
+  profile,
+  diagnostics,
+}: {
+  ocrText: string
+  geminiText: string
+  profile?: PageFurnitureProfile
+  diagnostics?: V2DiagnosticRecorder
+}): FurnitureAlignmentPlan | undefined {
+  diagnostics?.setFurniture(false, profile?.top.length ?? 0, profile?.bottom.length ?? 0)
   if (profile?.preprocessingExceeded) {
     return {
       sections: [],
@@ -290,7 +306,11 @@ export function createFurnitureAlignmentPlan(
       preprocessingExceeded: true,
     }
   }
-  if (!profile || (profile.top.length === 0 && profile.bottom.length === 0)) return undefined
+  if (!profile) return undefined
+  if (profile.top.length === 0 && profile.bottom.length === 0) {
+    diagnostics?.record('furniture_profile_unavailable_or_ambiguous')
+    return undefined
+  }
   const geminiTopPairs = uniqueCandidatePairs(geminiText, 'top', profile.top)
   const geminiBottomPairs = uniqueCandidatePairs(geminiText, 'bottom', profile.bottom)
   const geminiTop = geminiTopPairs.map(pair => pair.gemini)
@@ -340,6 +360,7 @@ export function createFurnitureAlignmentPlan(
       geminiCounter.total === ocrCounter.total
     )
   })
+  diagnostics?.setFurniture(true, profile.top.length, profile.bottom.length)
   return {
     sections,
     preprocessingWork: profile.preprocessingWork,

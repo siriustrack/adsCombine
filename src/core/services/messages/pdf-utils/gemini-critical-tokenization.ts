@@ -170,6 +170,7 @@ export function createHunks(ocr: Token[], gemini: Token[], matches: Match[]): Hu
 
 export type CriticalOrderAnalysis = {
   ambiguous: boolean
+  cardinalityMismatch: boolean
   categories: CriticalCategory[]
   divergences: CriticalDivergence[]
 }
@@ -213,12 +214,14 @@ export function analyzeCriticalOrder(ocr: Token[], gemini: Token[]): CriticalOrd
   const reordered =
     ocrSequence.length > 1 && ocrSequence.some((key, index) => geminiSequence[index] !== key)
   const ambiguous = repeatedAmbiguity || reordered
+  const cardinalityMismatch = ocrOnly || geminiOnly
   const divergences: CriticalDivergence[] = []
   if (ambiguous) divergences.push('duplicate_or_reordered')
   if (reordered && geminiOnly) divergences.push('gemini_only')
   if (reordered && ocrOnly) divergences.push('ocr_only')
   return {
     ambiguous,
+    cardinalityMismatch,
     categories: uniqueSorted(
       [...ocrCritical, ...geminiCritical].flatMap(token => token.category ?? [])
     ),
