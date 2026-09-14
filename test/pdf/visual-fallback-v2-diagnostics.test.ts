@@ -1,11 +1,11 @@
 import { describe, expect, test } from 'bun:test'
-import logger from '../../src/lib/logger'
-import type { VisualFallbackV2Diagnostic } from '../../src/core/services/messages/pdf-utils/visual-fallback.diagnostics'
 import {
   buildDocumentFurnitureProfile,
   type PageFurnitureProfile,
 } from '../../src/core/services/messages/pdf-utils/gemini-page-furniture'
 import { reconcileGeminiWholePage } from '../../src/core/services/messages/pdf-utils/gemini-whole-page-critical.policy'
+import type { VisualFallbackV2Diagnostic } from '../../src/core/services/messages/pdf-utils/visual-fallback.diagnostics'
+import logger from '../../src/lib/logger'
 import { createVisualFallbackService, visualFallbackPage } from './visual-fallback.test-support'
 
 const MAX_CELLS = 10_000_000
@@ -29,9 +29,10 @@ function reconcileWithDiagnostics(input: {
 
 function rangeFixture(count: number) {
   return {
-    ocrText: Array.from({ length: count }, (_, index) => `R.${index + 1} item${index} valor 100`).join(
-      '; '
-    ),
+    ocrText: Array.from(
+      { length: count },
+      (_, index) => `R.${index + 1} item${index} valor 100`
+    ).join('; '),
     visualText: Array.from(
       { length: count },
       (_, index) => `R.${index + 1} item${index} valor ${index + 200}`
@@ -144,6 +145,139 @@ describe('privacy-safe V2 reconciliation diagnostics', () => {
     })
   })
 
+  test('localizes one marked residual pair forced into the same monotonic anchor slot', () => {
+    // Given
+    const ocrBody =
+      'R.1 âncora 🧾 alfa valor 10; R.22 cláusula antiga valor 20; AV.3 âncora ômega valor 30.'
+    const visualBody =
+      'R.1 âncora 🧾 alfa valor 10; R.23 cláusula revisada valor 21; AV.3 âncora ômega valor 30.'
+    const pages = furniturePages(ocrBody)
+    const ocrText = pages[1].text
+    const visualText = ocrText.replace(ocrBody, visualBody)
+    const furnitureProfile = buildDocumentFurnitureProfile(pages).get(2)
+
+    // When
+    const { result, diagnostic } = reconcileWithDiagnostics({
+      ocrText,
+      visualText,
+      furnitureProfile,
+    })
+
+    // Then
+    expect(result.status).toBe('selected')
+    if (result.status !== 'selected') throw new Error('expected selected candidate')
+    expect(diagnostic).toMatchObject({
+      trigger: 'localized',
+      furnitureActive: true,
+      confirmedTopCount: 2,
+      confirmedBottomCount: 2,
+      pairedRegionCount: 5,
+      unpairedOcrRegionCount: 0,
+      unpairedGeminiRegionCount: 0,
+    })
+    expect(
+      result.metadata.criticalUncertainties.map(range => visualText.slice(range.start, range.end))
+    ).toEqual(['R.23', '21'])
+    expect(
+      result.ocrCriticalUncertainties.map(range => ocrText.slice(range.start, range.end))
+    ).toEqual(['R.22', '20'])
+  })
+
+  test('fails closed when single marked residuals occupy different anchor slots', () => {
+    // Given
+    const ocrBody =
+      'R.1 âncora alfa valor 10; R.22 cláusula antiga valor 20; AV.3 âncora ômega valor 30.'
+    const visualBody =
+      'R.23 cláusula revisada valor 21; R.1 âncora alfa valor 10; AV.3 âncora ômega valor 30.'
+    const pages = furniturePages(ocrBody)
+    const ocrText = pages[1].text
+    const visualText = ocrText.replace(ocrBody, visualBody)
+
+    // When
+    const { result, diagnostic } = reconcileWithDiagnostics({
+      ocrText,
+      visualText,
+      furnitureProfile: buildDocumentFurnitureProfile(pages).get(2),
+    })
+
+    // Then
+    expect(result.status).toBe('selected')
+    if (result.status !== 'selected') throw new Error('expected selected candidate')
+    expect(result.metadata.criticalUncertainties).toEqual([
+      expect.objectContaining({ start: 0, end: visualText.length, scope: 'page' }),
+    ])
+    expect(result.ocrCriticalUncertainties).toEqual([
+      expect.objectContaining({ start: 0, end: ocrText.length, scope: 'page' }),
+    ])
+    expect(diagnostic).toMatchObject({
+      trigger: 'region_pairing_ambiguous',
+      section: 'body',
+      furnitureActive: true,
+      unpairedOcrRegionCount: 1,
+      unpairedGeminiRegionCount: 1,
+    })
+  })
+
+  test('fails closed when a monotonic anchor slot contains multiple residuals', () => {
+    // Given
+    const ocrBody =
+      'R.1 âncora alfa valor 10; R.22 cláusula antiga valor 20; AV.8 averbação antiga valor 40; AV.99 âncora ômega valor 90.'
+    const visualBody =
+      'R.1 âncora alfa valor 10; R.23 cláusula revisada valor 21; AV.9 averbação revisada valor 41; AV.99 âncora ômega valor 90.'
+    const pages = furniturePages(ocrBody)
+    const ocrText = pages[1].text
+    const visualText = ocrText.replace(ocrBody, visualBody)
+
+    // When
+    const { result, diagnostic } = reconcileWithDiagnostics({
+      ocrText,
+      visualText,
+      furnitureProfile: buildDocumentFurnitureProfile(pages).get(2),
+    })
+
+    // Then
+    expect(result.status).toBe('selected')
+    if (result.status !== 'selected') throw new Error('expected selected candidate')
+    expect(result.metadata.criticalUncertainties).toEqual([
+      expect.objectContaining({ start: 0, end: visualText.length, scope: 'page' }),
+    ])
+    expect(result.ocrCriticalUncertainties).toEqual([
+      expect.objectContaining({ start: 0, end: ocrText.length, scope: 'page' }),
+    ])
+    expect(diagnostic).toMatchObject({
+      trigger: 'region_pairing_ambiguous',
+      section: 'body',
+      furnitureActive: true,
+      unpairedOcrRegionCount: 2,
+      unpairedGeminiRegionCount: 2,
+    })
+  })
+
+  test('fails closed for a marked residual one-to-one without an established anchor', () => {
+    // Given
+    const ocrText = 'R.22 cláusula antiga valor 20.'
+    const visualText = 'R.23 cláusula revisada valor 21.'
+
+    // When
+    const { result, diagnostic } = reconcileWithDiagnostics({ ocrText, visualText })
+
+    // Then
+    expect(result.status).toBe('selected')
+    if (result.status !== 'selected') throw new Error('expected selected candidate')
+    expect(result.metadata.criticalUncertainties).toEqual([
+      expect.objectContaining({ start: 0, end: visualText.length, scope: 'page' }),
+    ])
+    expect(result.ocrCriticalUncertainties).toEqual([
+      expect.objectContaining({ start: 0, end: ocrText.length, scope: 'page' }),
+    ])
+    expect(diagnostic).toMatchObject({
+      trigger: 'region_pairing_ambiguous',
+      pairedRegionCount: 0,
+      unpairedOcrRegionCount: 1,
+      unpairedGeminiRegionCount: 1,
+    })
+  })
+
   test('keeps a structurally unique top cardinality mismatch localized', () => {
     const pages = furniturePages('PRIVATE_TOP_BODY valor 30.')
     const ocrText = pages[1].text
@@ -238,7 +372,10 @@ describe('privacy-safe V2 reconciliation diagnostics', () => {
       const { service } = createVisualFallbackService(
         {
           async transcribe({ pageNumber }) {
-            return { status: 'transcribed', transcription: `PRIVATE_GEMINI_${pageNumber} valor 99.` }
+            return {
+              status: 'transcribed',
+              transcription: `PRIVATE_GEMINI_${pageNumber} valor 99.`,
+            }
           },
         },
         {

@@ -123,6 +123,31 @@ export function pairRegions(
     pairedGemini.add(pair.gemini)
   }
   const pairs = [...markerPairs, ...signaturePairs]
+  const residualOcr = ocr.filter(region => !pairedOcr.has(region))
+  const residualGemini = gemini.filter(region => !pairedGemini.has(region))
+  const ocrResidual = residualOcr[0]
+  const geminiResidual = residualGemini[0]
+  const anchors = [...pairs].sort((left, right) => left.ocr.index - right.ocr.index)
+  let previousGeminiIndex: number | undefined
+  const monotonic = anchors.every(pair => {
+    if (previousGeminiIndex !== undefined && pair.gemini.index <= previousGeminiIndex) return false
+    previousGeminiIndex = pair.gemini.index
+    return true
+  })
+  if (
+    residualOcr.length === 1 &&
+    residualGemini.length === 1 &&
+    ocrResidual?.marker &&
+    geminiResidual?.marker &&
+    anchors.length > 0 &&
+    monotonic &&
+    anchors.filter(pair => pair.ocr.index < ocrResidual.index).length ===
+      anchors.filter(pair => pair.gemini.index < geminiResidual.index).length
+  ) {
+    pairs.push({ ocr: ocrResidual, gemini: geminiResidual, structurallyUnique: false })
+    pairedOcr.add(ocrResidual)
+    pairedGemini.add(geminiResidual)
+  }
   const unmatchedOcr = ocr.filter(region => !pairedOcr.has(region))
   const unmatchedGemini = gemini.filter(region => !pairedGemini.has(region))
   const normalized = (regions: Region[]) =>
