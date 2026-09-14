@@ -4,6 +4,7 @@ import pLimit from 'p-limit'
 import { buildDocumentFurnitureProfile, type PageFurnitureProfile } from './gemini-page-furniture'
 import { PdfPageRendererService } from './pdf-page-renderer.service'
 import { createVisualFallbackConfig } from './visual-fallback.config'
+import { logV2Diagnostic } from './visual-fallback.diagnostics'
 import {
   createInitialMetadata,
   createV1Metadata,
@@ -382,6 +383,7 @@ export class VisualFallbackService {
           candidateSha256: hash(candidate),
         },
         furnitureProfile,
+        diagnosticObserver: logV2Diagnostic,
       })
       byPage.set(page.pageNumber, reconciliation.metadata)
       if (reconciliation.acceptedText !== undefined) {
