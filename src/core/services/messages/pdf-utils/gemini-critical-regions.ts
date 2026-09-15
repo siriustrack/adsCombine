@@ -137,8 +137,11 @@ export function pairRegions(
   if (
     residualOcr.length === 1 &&
     residualGemini.length === 1 &&
-    ocrResidual?.marker &&
-    geminiResidual?.marker &&
+    ((ocrResidual?.marker && geminiResidual?.marker) ||
+      (!ocrResidual?.marker &&
+        !geminiResidual?.marker &&
+        ocrResidual?.index === 0 &&
+        geminiResidual?.index === 0)) &&
     anchors.length > 0 &&
     monotonic &&
     anchors.filter(pair => pair.ocr.index < ocrResidual.index).length ===
