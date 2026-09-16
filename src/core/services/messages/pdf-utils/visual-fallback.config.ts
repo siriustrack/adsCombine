@@ -8,6 +8,7 @@ type VisualFallbackEnvironment = Pick<
   | 'GEMINI_API_KEY'
   | 'MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB'
   | 'VISUAL_FALLBACK_CONCURRENCY'
+  | 'VISUAL_FALLBACK_CONTEXTUAL_PAIRING_SHADOW_ENABLED'
   | 'VISUAL_FALLBACK_ENABLED'
   | 'VISUAL_FALLBACK_MAX_ALIGNMENT_CELLS'
   | 'VISUAL_FALLBACK_MAX_PAGES_PER_PDF'
@@ -32,6 +33,7 @@ export function createVisualFallbackConfig(
       policyAllowsProvider &&
       Boolean(provider === 'gemini' ? environment.GEMINI_API_KEY : environment.DEEPSEEK_API_KEY),
     shadowMode: environment.VISUAL_FALLBACK_SHADOW_MODE,
+    contextualPairingShadowEnabled: environment.VISUAL_FALLBACK_CONTEXTUAL_PAIRING_SHADOW_ENABLED,
     provider,
     model:
       environment.VISUAL_FALLBACK_MODEL ??
