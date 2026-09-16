@@ -53,6 +53,7 @@ export function createVisualFallbackService(
     {
       enabled: true,
       shadowMode: false,
+      contextualPairingShadowEnabled: false,
       provider: 'gemini',
       model: 'gemini-2.5-flash',
       timeoutMs: 20,

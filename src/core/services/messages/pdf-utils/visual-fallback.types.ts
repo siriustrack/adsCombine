@@ -1,4 +1,8 @@
 import type { EnhancedOcrSignals } from './enhanced-ocr.types'
+import type { VisualDocumentProfile } from './visual-document-profile'
+
+export type { VisualDocumentProfile } from './visual-document-profile'
+
 import type { VisualComparison, VisualReconciliationDecision } from './visual-reconciliation.policy'
 
 export const VISUAL_FALLBACK_V2_SCHEMA_VERSION = 'visual-fallback/v2' as const
@@ -139,11 +143,6 @@ export type VisualFallbackOcrPage = {
   meanConfidence?: number
 }
 
-export type VisualDocumentProfile = {
-  kind: 'matricula'
-  transcriptionHints: readonly string[]
-}
-
 export type RenderedPdfPage = {
   pageNumber: number
   image: Buffer
@@ -181,6 +180,7 @@ export interface PdfPageRenderer {
 export type VisualFallbackConfig = {
   enabled: boolean
   shadowMode: boolean
+  readonly contextualPairingShadowEnabled: boolean
   provider: VisualFallbackProvider
   model: string
   timeoutMs: number
