@@ -1,4 +1,5 @@
 import logger from '@lib/logger'
+import type { CriticalCardinalityCounts } from './gemini-critical-cardinality'
 
 export type VisualFallbackV2DiagnosticTrigger =
   | 'localized'
@@ -24,6 +25,8 @@ export type VisualFallbackV2Diagnostic = Readonly<{
   unpairedGeminiRegionCount: number
   ocrCriticalTokenCount: number
   geminiCriticalTokenCount: number
+  ocrOnlyCriticalTokenCount: number
+  geminiOnlyCriticalTokenCount: number
   hunkCount: number
   rangesBeforeAggregation: number
   rangesAfterAggregation: number
@@ -68,6 +71,8 @@ export class V2DiagnosticRecorder {
     unpairedGeminiRegionCount: 0,
     ocrCriticalTokenCount: 0,
     geminiCriticalTokenCount: 0,
+    ocrOnlyCriticalTokenCount: 0,
+    geminiOnlyCriticalTokenCount: 0,
     hunkCount: 0,
     rangesBeforeAggregation: 0,
     rangesAfterAggregation: 0,
@@ -101,6 +106,11 @@ export class V2DiagnosticRecorder {
   setCriticalTokenCounts(ocr: number, gemini: number): void {
     this.counts.ocrCriticalTokenCount = ocr
     this.counts.geminiCriticalTokenCount = gemini
+  }
+
+  setCriticalCardinalityCounts(counts: CriticalCardinalityCounts): void {
+    this.counts.ocrOnlyCriticalTokenCount = counts.ocrOnlyCriticalTokenCount
+    this.counts.geminiOnlyCriticalTokenCount = counts.geminiOnlyCriticalTokenCount
   }
 
   addHunks(count: number): void {
