@@ -79,6 +79,7 @@ Selective Gemini visual fallback, job queue parameters, OCR hard limits, and sou
 | :--- | :--- | :--- | :--- | :--- |
 | `VISUAL_FALLBACK_ENABLED` | boolean | `false` | boolean (`1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`) | Master toggle for selective visual fallback. Requires the API key for the selected provider. |
 | `VISUAL_FALLBACK_SHADOW_MODE` | boolean | `true` | boolean | When `true`, evaluates the `safe-visual-v1` decision as `shadowDecision` but always retains OCR text. Candidate text is never persisted. |
+| `VISUAL_FALLBACK_CONTEXTUAL_PAIRING_SHADOW_ENABLED` | boolean | `false` | boolean | Enables an internal, observe-only comparison between incumbent V2 pairing and candidate contextual multi-anchor pairing. It never changes a request result or public metadata. |
 | `VISUAL_FALLBACK_PROVIDER` | `gemini` \| `deepseek` | `gemini` | enum | Visual transcription provider. Existing deployments remain on Gemini when omitted. |
 | `VISUAL_RECONCILIATION_POLICY_VERSION` | `safe-visual-v1` \| `gemini-whole-page-critical-v2` | `safe-visual-v1` | enum | Versioned reconciliation policy. V2 is opt-in and active only with `VISUAL_FALLBACK_PROVIDER=gemini`. |
 | `VISUAL_FALLBACK_MODEL` | string | provider-specific | min 1 char | Optional model override. Defaults to `gemini-2.5-flash` for Gemini and `deepseek-v4-flash-vision-exp` for DeepSeek. |
@@ -104,7 +105,7 @@ Visual fallback operates as a secondary, highly targeted enhancement step for sc
    - `garbled-spans`: Low-confidence or distorted text blocks.
    - `missing-measure`: Area/superfície mentioned in page text but zero square-meter markers found.
    - `missing-legal-marker`: Fragmented numbers present with registry markers but zero legal markers.
-2. **Optional Document Profile**: A matrícula filename may supply the provider with fixed, non-interpretive hints to preserve visible `R.` and `AV.` markers. This profile changes neither page eligibility nor reconciliation thresholds.
+2. **Optional Internal Document Profile**: The four internal kinds are `matricula`, `contrato`, `certidao-registro`, and `legal-generico`. Only `matricula` has a verified built-in transcription hint: preserve visible `R.` and `AV.` markers exactly. The other three built-in profiles have no hints. Profile precedence is explicit internal profile first, then matrícula filename inference, then no profile. No other filename infers a kind. Profiles change neither page eligibility nor reconciliation thresholds, and they add no public request field, response field, or metadata.
 3. **Strict Page Budget Enforcement**:
    - Per-PDF cap: `VISUAL_FALLBACK_MAX_PAGES_PER_PDF` (default `6`, max `10`).
    - Global job cap: `MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB` (default `6`, max `20`).
@@ -125,6 +126,39 @@ V2 builds an ephemeral document-level profile to keep recurring headers and foot
 Furniture is never removed from the selected Gemini page. Identical recurring furniture produces no uncertainty, while critical changes inside it remain represented with the same token → clause → page fail-closed hierarchy used for body text. Only explicitly labeled `Página`, `Pág.` or `Folha` counters may vary without uncertainty, and only when their current page number and total are structurally consistent across the recurring pages. An unlabeled expression such as `1 / 2` is always treated as legal-sensitive fraction content, never as pagination.
 
 Furniture profiling and critical alignment share the configured preprocessing/alignment budget. Ambiguous occurrence identity, preprocessing or alignment budget exhaustion, and more than 32 granular ranges fall back conservatively instead of dropping evidence. The profile considers only pages already admitted by the per-PDF and per-job visual budgets; it does not expand provider usage or serialize provider requests. This behavior requires no new environment variable or database migration and does not change the public V2 schema, policy, or alignment version.
+
+V2 production diagnostics expose the required nonnegative integer fields `ocrOnlyCriticalTokenCount` and `geminiOnlyCriticalTokenCount`. After confirmed furniture is filtered, each field sums page-level excess occurrences for every exact critical `(category, normalized value)` identity: OCR contributes `max(ocrOccurrences - geminiOccurrences, 0)` and Gemini contributes the inverse. Zero means the measured page has no excess occurrences in that direction. Equal total critical-token counts can still produce nonzero values in both directions, as with a replacement. These counts do not prove occurrence identity and do not relax fail-closed region pairing or range projection; a higher-priority condition can therefore produce a terminal trigger other than `critical_cardinality_mismatch` while retaining nonzero directional counts.
+
+The synthetic V2 benchmark requires both fields through the same safe nonnegative integer count schema and projects them from the production diagnostic observer without recomputation. Diagnostics and benchmark reports contain neither raw text nor normalized values, markers, files or filenames, URLs, or hashes.
+
+#### Aggregate and Contextual Cardinality
+
+The incumbent V2 policy keeps the approved aggregate cardinality meaning above: page-level directional excess counts are calculated by exact critical `(category, normalized value)` identity after confirmed furniture is filtered. The candidate analysis does not redefine those fields.
+
+Contextual cardinality is an additional internal comparison. It partitions the already admitted `top`, `body`, and `bottom` sections into ordered slots around proven shared anchors, then compares critical counts and order within each safe slot. The aggregate page counts remain available even when slot analysis is ambiguous. Slot-level identities and counts are not logged or added to public metadata.
+
+#### Candidate Multi-Anchor Safety
+
+Candidate pairing is fail-closed. Shared anchors must be unique on both OCR and Gemini sides, based first on an exact marker key and then on an exact structural signature for still-unpaired regions. An anchor cannot be reused, and anchors must keep the same increasing order on both sides. Every gap before, between, or after anchors must contain no regions on either side or exactly one region on each side. A residual pair is accepted only when both regions are marked, except for one supported unmarked prefix at index zero on both sides. Missing shared anchors, duplicate anchors, crossed anchors, multiple residuals in one slot, non-unique slots, or ambiguous critical order make the candidate ambiguous. These rules never weaken incumbent fail-closed behavior.
+
+#### Observe-Only Contextual Pairing Shadow
+
+`VISUAL_FALLBACK_CONTEXTUAL_PAIRING_SHADOW_ENABLED=false` is the default. When enabled, the comparison runs only on Gemini pages using `gemini-whole-page-critical-v2`. It reuses the same OCR text, Gemini candidate text, furniture profile, and alignment limit as the incumbent. It has an independent in-process CPU evaluation budget and makes no extra render or provider request. The candidate result is discarded after diagnostics are emitted.
+
+The incumbent remains authoritative. Candidate decisions never select text, create uncertainty ranges, alter stored metadata, or affect a request. Public output is deep-equal with this flag off or on, including active V2 and existing visual shadow mode. There is no public metadata change, database migration, or request-level cohort field.
+
+The privacy-safe comparison log contains categorical fields and aggregate counts only: `pageNumber`; `status`; and, for both `incumbent` and `candidate`, `trigger`, `section`, aggregate OCR/Gemini/paired/unpaired region counts, and aggregate `token`/`clause`/`page` uncertainty counts. It contains no raw or normalized text, critical identities, markers, ranges, prompts, filenames, URLs, images, or hashes.
+
+Comparison statuses mean:
+
+| Status | Operator interpretation |
+| :--- | :--- |
+| `equivalent` | Incumbent and candidate aggregate summaries match exactly. This shows observational compatibility, not legal correctness. |
+| `narrower` | At the first scope difference, checked from page to clause to token, the candidate emits fewer uncertainties than the incumbent. This is not proof of higher accuracy or permission to activate it. |
+| `broader` | At the first scope difference, the candidate emits more uncertainties than the incumbent. Review the distribution and latency, not private document content. |
+| `ambiguous` | Safe pairing was not proven, critical cardinality or order was ambiguous, or summaries differed without a clear scope-width result. The candidate abstained as designed. |
+| `budget_exceeded` | Candidate reconciliation hit the configured alignment-cell budget and was rejected. The incumbent request path remains unaffected. |
+| `failed` | Candidate evaluation threw or did not produce exactly one diagnostic. The failure is logged and isolated from the incumbent request. |
 
 Accepted page text is assembled in page order. `sourceRange` and `riskySpans` are finally rebased after headers, file separators, and final sanitization, so UTF-16 offsets address the exact returned and persisted transcription.
 
@@ -175,10 +209,12 @@ When handling matrículas imobiliárias and legal contracts containing sensitive
 ## 6. Operational Kill Switch, Rollback, & Zero Migration
 
 ### Operational Kill Switch
-If the selected visual provider experiences degradation or rate limits, operators can disable visual fallback instantly:
-1. Set `VISUAL_FALLBACK_ENABLED=false` in environment configuration.
-2. Restart or reload the `adsCombine` service.
-3. Jobs will immediately skip visual fallback processing (`ocr_only`) without interrupting standard OCR execution.
+For contextual pairing comparison issues, disable the narrowest switch first:
+1. Set `VISUAL_FALLBACK_CONTEXTUAL_PAIRING_SHADOW_ENABLED=false` and restart or reload the affected deployment.
+2. Confirm that contextual comparison logs stop while incumbent V2 output and traffic continue unchanged.
+3. If visual fallback itself remains unsafe or degraded, set `VISUAL_FALLBACK_ENABLED=false` and restart or reload the service. Jobs then skip visual fallback processing (`ocr_only`) without interrupting standard OCR execution.
+
+Roll back immediately if logs expose private data, flag-on output differs from incumbent flag-off output, provider call or render counts increase, candidate failures affect requests, or end-to-end latency regresses meaningfully for the bounded cohort. Disable the new contextual flag first, then disable visual fallback if needed. Do not wait for a claimed quality benefit to offset any of these conditions.
 
 ### V2 Rollout and Rollback
 1. Deploy consumers that understand `visual-fallback/v2` before enabling the producer policy.
@@ -186,9 +222,24 @@ If the selected visual provider experiences degradation or rate limits, operator
 3. Disable shadow mode only for a bounded cohort after metadata and latency remain stable.
 4. Roll back instantly by restoring `VISUAL_RECONCILIATION_POLICY_VERSION=safe-visual-v1`; historical V1 and V2 JSON metadata require no database migration.
 
+### Contextual Pairing Observation Prerequisites
+
+Keep candidate pairing observe-only. Before enabling it, confirm provider privacy approval, log redaction, alerting, incumbent flag-off baselines, and enough latency headroom for a second CPU reconciliation pass. Use all of the following settings together:
+
+```dotenv
+VISUAL_FALLBACK_ENABLED=true
+VISUAL_FALLBACK_PROVIDER=gemini
+VISUAL_RECONCILIATION_POLICY_VERSION=gemini-whole-page-critical-v2
+VISUAL_FALLBACK_SHADOW_MODE=true
+VISUAL_FALLBACK_CONTEXTUAL_PAIRING_SHADOW_ENABLED=true
+```
+
+Enable these settings only for a bounded deployment cohort selected by infrastructure or traffic routing. There is no request-level cohort field. Keep the new flag off elsewhere and compare against the incumbent baseline. This is an observation rollout, not production activation of candidate decisions.
+
 ### Zero Database Migration Architecture
 - Visual fallback results are stored inside the existing JSON payload structure returned by enhanced endpoints.
 - Toggling `VISUAL_FALLBACK_ENABLED` or changing budget environment variables requires **zero database schema migrations**.
+- Toggling `VISUAL_FALLBACK_CONTEXTUAL_PAIRING_SHADOW_ENABLED` also requires no migration because candidate diagnostics are log-only and public metadata is unchanged.
 - Stored historical job results remain completely compatible and unaffected.
 
 ---
@@ -211,3 +262,21 @@ Operators should track the following health indicators in service logs:
 - **V2 Reconciliation Health**: Distribution of `selected`, `shadow`, `unavailable`, and `rejected`, decision reasons, critical uncertainty count/scope, and alignment or rebase failures.
 - **Latency**: Visual provider and end-to-end job latency before and after V2 activation. V2 has no second adjudication/model strategy; configured retries may repeat the same provider request.
 - **Download Security Rejections**: Log entries generated when source URLs fail `SourceUrlPolicy` allowlist verification.
+
+For contextual pairing observation, calculate status rates over eligible Gemini V2 pages, not over all PDFs or jobs. Treat `equivalent` as compatibility evidence only. Treat `narrower` and `broader` as changes in uncertainty scope, not accuracy gains or regressions. A high `ambiguous` rate means the safety rules are abstaining often. `budget_exceeded` indicates alignment-budget pressure. Any `failed` event is a candidate-path health signal and must remain isolated from request success.
+
+Compare flag-off and flag-on cohorts for public-output equality, provider and render call counts, candidate status distribution, and end-to-end latency. The expected provider-call delta is zero. Logs contain aggregate counts only, so operators must not reconstruct, sample, or add private document content for analysis. No measured quality or latency gain is implied by this rollout.
+
+---
+
+## 9. Canonical V2 Benchmark
+
+The canonical incumbent baseline remains exactly eight synthetic cases. Run it without private corpus access:
+
+```bash
+bun run benchmark:v2-reconciliation
+```
+
+The command writes one JSON report line to standard output and exits with code `0`. The report contains exactly eight `results` plus `aggregateUncertaintyScopes`; it contains no `durations` field by default. `bun run benchmark:v2-reconciliation --include-duration` keeps the same eight results and adds one duration entry per case plus `totalMs`. Invalid arguments write `{"error":{"code":"INVALID_ARGUMENTS"}}` to standard error and exit with code `2`; benchmark failures write a structured error to standard error and exit with code `1`.
+
+This benchmark exercises the incumbent reconciliation policy. It is not a candidate activation gate, and its fixtures, case count, command, and output contract must not be changed to measure the contextual shadow candidate.
