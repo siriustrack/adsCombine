@@ -23,6 +23,51 @@ describe('visual fallback environment limits', () => {
     expect(parsed.REQUEST_LOGS_ENABLED).toBe(expected)
   })
 
+  test('defaults contextual pairing shadow evaluation to disabled when omitted', () => {
+    const parsed = envSchema.parse(requiredEnvironment)
+
+    expect(parsed.VISUAL_FALLBACK_CONTEXTUAL_PAIRING_SHADOW_ENABLED).toBe(false)
+  })
+
+  test.each([
+    ['1', true],
+    ['true', true],
+    ['yes', true],
+    ['on', true],
+    ['0', false],
+    ['false', false],
+    ['no', false],
+    ['off', false],
+  ] as const)(
+    'parses VISUAL_FALLBACK_CONTEXTUAL_PAIRING_SHADOW_ENABLED=%s as %s',
+    (value, expected) => {
+      const parsed = envSchema.parse({
+        ...requiredEnvironment,
+        VISUAL_FALLBACK_CONTEXTUAL_PAIRING_SHADOW_ENABLED: value,
+      })
+
+      expect(parsed.VISUAL_FALLBACK_CONTEXTUAL_PAIRING_SHADOW_ENABLED).toBe(expected)
+    }
+  )
+
+  test('rejects an invalid contextual pairing shadow evaluation boolean', () => {
+    const parsed = envSchema.safeParse({
+      ...requiredEnvironment,
+      VISUAL_FALLBACK_CONTEXTUAL_PAIRING_SHADOW_ENABLED: 'sometimes',
+    })
+
+    expect(parsed.success).toBe(false)
+  })
+
+  test('maps contextual pairing shadow evaluation into visual fallback config', () => {
+    const parsed = envSchema.parse({
+      ...requiredEnvironment,
+      VISUAL_FALLBACK_CONTEXTUAL_PAIRING_SHADOW_ENABLED: 'true',
+    })
+
+    expect(createVisualFallbackConfig(parsed).contextualPairingShadowEnabled).toBe(true)
+  })
+
   test('uses the production visual fallback defaults', () => {
     const parsed = envSchema.parse(requiredEnvironment)
 

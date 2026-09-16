@@ -43,6 +43,7 @@ export const envSchema = z.object({
   FILE_DOWNLOAD_ALLOWED_URL_PREFIXES: z.string().min(1).optional(),
   VISUAL_FALLBACK_ENABLED: environmentBoolean.default(false),
   VISUAL_FALLBACK_SHADOW_MODE: environmentBoolean.default(true),
+  VISUAL_FALLBACK_CONTEXTUAL_PAIRING_SHADOW_ENABLED: environmentBoolean.default(false),
   VISUAL_FALLBACK_PROVIDER: z.enum(['gemini', 'deepseek']).default('gemini'),
   VISUAL_RECONCILIATION_POLICY_VERSION: z
     .enum(['safe-visual-v1', 'gemini-whole-page-critical-v2'])
