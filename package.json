@@ -9,6 +9,7 @@
     "build:watch": "swc src -d dist --copy-files --watch",
     "start": "node dist/src/api/server.js",
     "test": "bun test",
+    "benchmark:v2-reconciliation": "bun benchmark/visual-fallback-v2/cli.ts",
     "lint": "biome lint src/",
     "lint:fix": "biome lint --write src/",
     "format": "biome format src/",
