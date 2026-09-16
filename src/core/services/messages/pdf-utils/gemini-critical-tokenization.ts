@@ -1,4 +1,4 @@
-import type { CriticalCategory, CriticalDivergence } from './visual-fallback.types'
+import type { CriticalCategory } from './visual-fallback.types'
 
 const TOKEN_PATTERN =
   /\b\d{3}\.\d{3}\.\d{3}-\d{2}\b|\b\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}\b|(?:R\$|US\$|€|£)\s*\d+(?:[.,]\d+)*|\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b|\b\d+\s*\/\s*\d+\b|\b\d+(?:[.,]\d+)*\s*(?:mm|cm|km|m²|m2|m|ha)(?![\p{L}\p{N}])|\b(?:R|AV)\s*\.\s*\d+(?:\s*\/\s*\d+(?:[.,]\d+)*)?|\b(?:não|nao|sem|nunca|jamais|inexistente|inexistem|nenhum|nenhuma)\b|\b\d+(?:[.,/-]\d+)*\b|[\p{L}\p{M}]+|[^\s]/giu
@@ -166,67 +166,6 @@ export function createHunks(ocr: Token[], gemini: Token[], matches: Match[]): Hu
     geminiStart = match.geminiIndex + 1
   }
   return hunks
-}
-
-export type CriticalOrderAnalysis = {
-  ambiguous: boolean
-  cardinalityMismatch: boolean
-  categories: CriticalCategory[]
-  divergences: CriticalDivergence[]
-}
-
-export function analyzeCriticalOrder(ocr: Token[], gemini: Token[]): CriticalOrderAnalysis {
-  const critical = (tokens: Token[]) => tokens.filter(token => token.category !== undefined)
-  const ocrCritical = critical(ocr)
-  const geminiCritical = critical(gemini)
-  const keyFor = (token: Token) => `${token.category}:${token.normalized}`
-  const countTokens = (tokens: Token[]) => {
-    const counts = new Map<string, number>()
-    for (const token of tokens) {
-      const key = keyFor(token)
-      counts.set(key, (counts.get(key) ?? 0) + 1)
-    }
-    return counts
-  }
-  const ocrCounts = countTokens(ocrCritical)
-  const geminiCounts = countTokens(geminiCritical)
-  const keys = new Set([...ocrCounts.keys(), ...geminiCounts.keys()])
-  let ocrOnly = false
-  let geminiOnly = false
-  let repeatedAmbiguity = false
-  for (const key of keys) {
-    const ocrCount = ocrCounts.get(key) ?? 0
-    const geminiCount = geminiCounts.get(key) ?? 0
-    ocrOnly ||= ocrCount > geminiCount
-    geminiOnly ||= geminiCount > ocrCount
-    repeatedAmbiguity ||= ocrCount !== geminiCount && Math.max(ocrCount, geminiCount) > 1
-  }
-  const balancedKeys = new Set(
-    [...keys].filter(key => {
-      const ocrCount = ocrCounts.get(key) ?? 0
-      return ocrCount > 0 && ocrCount === (geminiCounts.get(key) ?? 0)
-    })
-  )
-  const balancedSequence = (tokens: Token[]) =>
-    tokens.map(keyFor).filter(key => balancedKeys.has(key))
-  const ocrSequence = balancedSequence(ocrCritical)
-  const geminiSequence = balancedSequence(geminiCritical)
-  const reordered =
-    ocrSequence.length > 1 && ocrSequence.some((key, index) => geminiSequence[index] !== key)
-  const ambiguous = repeatedAmbiguity || reordered
-  const cardinalityMismatch = ocrOnly || geminiOnly
-  const divergences: CriticalDivergence[] = []
-  if (ambiguous) divergences.push('duplicate_or_reordered')
-  if (reordered && geminiOnly) divergences.push('gemini_only')
-  if (reordered && ocrOnly) divergences.push('ocr_only')
-  return {
-    ambiguous,
-    cardinalityMismatch,
-    categories: uniqueSorted(
-      [...ocrCritical, ...geminiCritical].flatMap(token => token.category ?? [])
-    ),
-    divergences: uniqueSorted(divergences),
-  }
 }
 
 export function uniqueSorted<T extends string>(values: T[]): T[] {
