@@ -1,3 +1,4 @@
+import { analyzeCriticalOrder, countCriticalCardinality } from './gemini-critical-cardinality'
 import {
   aggregateRanges,
   buildClauseIndex,
@@ -7,17 +8,16 @@ import {
   projectDivergences,
   rangesForHunk,
 } from './gemini-critical-ranges'
+import { filterIgnoredTokens, movedPairs, type RegionPair } from './gemini-critical-regions'
 import {
-  createRegions,
-  filterIgnoredTokens,
-  movedPairs,
-  pairRegions,
-  type RegionPair,
-} from './gemini-critical-regions'
+  type CriticalSectionPairing,
+  pairCriticalSections,
+  pairIncumbentRegions,
+  type RegionPairingStrategy,
+} from './gemini-critical-section-pairing'
 import {
   AlignmentLedger,
   alignTokens,
-  analyzeCriticalOrder,
   createHunks,
   type Token,
   tokenize,
@@ -34,11 +34,6 @@ type LocalizationResult =
       geminiRanges: CriticalUncertaintyRange[]
       ocrRanges: CriticalUncertaintyRange[]
     }
-type SectionPairing = {
-  section: FurnitureAlignmentSection
-  pairing: ReturnType<typeof pairRegions>
-}
-
 function recordOrderAmbiguity(
   diagnostics: V2DiagnosticRecorder | undefined,
   order: ReturnType<typeof analyzeCriticalOrder>,
@@ -100,7 +95,7 @@ function localizePairings(input: {
   geminiText: string
   ocrTokens: Token[]
   geminiTokens: Token[]
-  pairings: SectionPairing[]
+  pairings: CriticalSectionPairing[]
   ledger: AlignmentLedger
   ocrClauseIndex: ClauseIndex
   geminiClauseIndex: ClauseIndex
@@ -165,6 +160,7 @@ export function localizeCriticalEvidence(input: {
   furniturePlan?: FurnitureAlignmentPlan
   ledger?: AlignmentLedger
   diagnostics?: V2DiagnosticRecorder
+  regionPairingStrategy?: RegionPairingStrategy
 }): LocalizationResult {
   if (!Number.isSafeInteger(input.maxAlignmentCells) || input.maxAlignmentCells <= 0) {
     input.diagnostics?.record('alignment_budget_exceeded')
@@ -195,6 +191,7 @@ export function localizeCriticalEvidence(input: {
     criticalTokens(ocrTokens).length,
     criticalTokens(geminiTokens).length
   )
+  input.diagnostics?.setCriticalCardinalityCounts(countCriticalCardinality(ocrTokens, geminiTokens))
   const sections = input.furniturePlan?.sections ?? [
     {
       kind: 'body' as const,
@@ -204,27 +201,18 @@ export function localizeCriticalEvidence(input: {
       geminiEnd: input.geminiText.length,
     },
   ]
-  const pairings = sections.map(section => {
-    const ocrRegions = createRegions(
-      input.ocrText,
-      ocrTokens.filter(token => token.start >= section.ocrStart && token.end <= section.ocrEnd)
-    )
-    const geminiRegions = createRegions(
-      input.geminiText,
-      geminiTokens.filter(
-        token => token.start >= section.geminiStart && token.end <= section.geminiEnd
-      )
-    )
-    const pairing = pairRegions(ocrRegions, geminiRegions)
-    input.diagnostics?.addRegionCounts({
-      ocr: ocrRegions.length,
-      gemini: geminiRegions.length,
-      paired: pairing.pairs.length,
-      unpairedOcr: ocrRegions.length - pairing.pairs.length,
-      unpairedGemini: geminiRegions.length - pairing.pairs.length,
-    })
-    return { section, pairing }
+  const pairingResult = pairCriticalSections({
+    ocrText: input.ocrText,
+    geminiText: input.geminiText,
+    ocrTokens,
+    geminiTokens,
+    sections,
+    strategy: input.regionPairingStrategy ?? pairIncumbentRegions,
+    ledger,
+    diagnostics: input.diagnostics,
   })
+  if (pairingResult.status === 'budget_exceeded') return pairingResult
+  const pairings = [...pairingResult.pairings]
   const ambiguousPairing = pairings.find(({ pairing }) => pairing.ambiguous)
   if (ambiguousPairing) {
     input.diagnostics?.record('region_pairing_ambiguous', ambiguousPairing.section.kind)
