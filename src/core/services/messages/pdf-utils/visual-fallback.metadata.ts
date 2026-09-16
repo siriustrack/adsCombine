@@ -1,6 +1,9 @@
 import { sanitizePdfText } from 'utils/sanitize'
 import type { PageFurnitureProfile } from './gemini-page-furniture'
-import { reconcileGeminiWholePage } from './gemini-whole-page-critical.policy'
+import {
+  type GeminiWholePageReconciliation,
+  reconcileGeminiWholePage,
+} from './gemini-whole-page-critical.policy'
 import type { VisualFallbackV2DiagnosticObserver } from './visual-fallback.diagnostics'
 import type {
   CriticalUncertaintyRange,
@@ -155,7 +158,11 @@ export function reconcileV2Candidate({
   provenance: NonNullable<VisualFallbackV2Metadata['provenance']>
   furnitureProfile?: PageFurnitureProfile
   diagnosticObserver?: VisualFallbackV2DiagnosticObserver
-}): { metadata: VisualFallbackV2Metadata; acceptedText?: string } {
+}): {
+  metadata: VisualFallbackV2Metadata
+  acceptedText?: string
+  reconciliation: GeminiWholePageReconciliation
+} {
   const reconciliation = reconcileGeminiWholePage({
     ocrText: page.text,
     visualText: candidate,
@@ -172,6 +179,7 @@ export function reconcileV2Candidate({
         outcome: { kind: 'rejected', reason: reconciliation.reason },
         provenance,
       }),
+      reconciliation,
     }
   }
   if (shadowMode) {
@@ -195,6 +203,7 @@ export function reconcileV2Candidate({
         selectedTextSource: 'ocr',
         decisionReason: 'shadow_gemini_whole_page',
       },
+      reconciliation,
     }
   }
 
@@ -216,5 +225,6 @@ export function reconcileV2Candidate({
       decisionReason: 'gemini_whole_page_selected',
     },
     acceptedText: reconciliation.text,
+    reconciliation,
   }
 }
