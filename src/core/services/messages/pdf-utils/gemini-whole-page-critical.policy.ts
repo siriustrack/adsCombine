@@ -1,5 +1,7 @@
 import { sanitizePdfText } from 'utils/sanitize'
+import { pairCandidateRegions } from './gemini-candidate-region-pairing'
 import { localizeCriticalEvidence } from './gemini-critical-evidence'
+import { pairIncumbentRegions, type RegionPairingStrategy } from './gemini-critical-section-pairing'
 import { AlignmentLedger } from './gemini-critical-tokenization'
 import {
   createObservedFurnitureAlignmentPlan,
@@ -53,6 +55,15 @@ export type GeminiWholePageReconciliation =
         | 'alignment_invariant_failed'
     }
 
+export type GeminiWholePageReconciliationInput = Readonly<{
+  ocrText: string
+  visualText: string
+  maxAlignmentCells?: number
+  furnitureProfile?: PageFurnitureProfile
+  pageNumber?: number
+  diagnosticObserver?: VisualFallbackV2DiagnosticObserver
+}>
+
 function hasValidUtf16(text: string): boolean {
   for (let index = 0; index < text.length; index++) {
     const code = text.charCodeAt(index)
@@ -81,14 +92,10 @@ function rangesAreValid(text: string, ranges: CriticalUncertaintyRange[]): boole
   )
 }
 
-export function reconcileGeminiWholePage(input: {
-  ocrText: string
-  visualText: string
-  maxAlignmentCells?: number
-  furnitureProfile?: PageFurnitureProfile
-  pageNumber?: number
-  diagnosticObserver?: VisualFallbackV2DiagnosticObserver
-}): GeminiWholePageReconciliation {
+function reconcileWithRegionPairing(
+  input: GeminiWholePageReconciliationInput,
+  regionPairingStrategy: RegionPairingStrategy
+): GeminiWholePageReconciliation {
   const diagnostics = new V2DiagnosticRecorder()
   const finish = <T extends GeminiWholePageReconciliation>(
     result: T,
@@ -147,6 +154,7 @@ export function reconcileGeminiWholePage(input: {
     ledger,
     furniturePlan,
     diagnostics,
+    regionPairingStrategy,
   })
   if (localized.status === 'budget_exceeded') {
     return finish({ status: 'rejected', reason: 'alignment_budget_exceeded' })
@@ -174,4 +182,16 @@ export function reconcileGeminiWholePage(input: {
     ocrCriticalUncertainties,
     ocrTextLength: sanitizedOcr.length,
   })
+}
+
+export function reconcileGeminiWholePage(
+  input: GeminiWholePageReconciliationInput
+): GeminiWholePageReconciliation {
+  return reconcileWithRegionPairing(input, pairIncumbentRegions)
+}
+
+export function reconcileGeminiWholePageCandidate(
+  input: GeminiWholePageReconciliationInput
+): GeminiWholePageReconciliation {
+  return reconcileWithRegionPairing(input, pairCandidateRegions)
 }
