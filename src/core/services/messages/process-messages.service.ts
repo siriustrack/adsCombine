@@ -119,6 +119,25 @@ function mapV2Range(rawBody: string, range: SourceRange): SourceRange | undefine
   return { start, end }
 }
 
+function isBlankUnavailableV2Range({
+  visualFallback,
+}: {
+  readonly visualFallback: Extract<
+    NonNullable<NonNullable<EnhancedPdfMetadata['pageQuality']>[number]['visualFallback']>,
+    { policyVersion: 'gemini-whole-page-critical-v2' }
+  >
+}): boolean {
+  return (
+    visualFallback.outcome === 'unavailable' &&
+    visualFallback.sourceRange?.start === 0 &&
+    visualFallback.sourceRange.end === 0 &&
+    visualFallback.riskySpans?.length === 1 &&
+    visualFallback.riskySpans[0].start === 0 &&
+    visualFallback.riskySpans[0].end === 0 &&
+    visualFallback.criticalUncertainties === undefined
+  )
+}
+
 function rebaseV2VisualMetadata({
   visualFallback,
   rawBody,
@@ -143,6 +162,20 @@ function rebaseV2VisualMetadata({
   }
   if (!visualFallback.sourceRange) throw new Error('V2 metadata is missing its source page range')
   const originalSourceRange = visualFallback.sourceRange
+  if (isBlankUnavailableV2Range({ visualFallback })) {
+    const mappedBoundary = mapSanitizedBoundary(rawSegment, header.length)
+    if (mappedBoundary === undefined) throw new Error('V2 blank source page boundary is invalid')
+    const boundary = Math.min(mappedBoundary, sanitizeText(rawSegment).length)
+    const rebasedSourceRange = {
+      start: segmentStart + boundary,
+      end: segmentStart + boundary,
+    }
+    return {
+      ...visualFallback,
+      sourceRange: rebasedSourceRange,
+      riskySpans: [rebasedSourceRange],
+    }
+  }
   const sourceRange = mapBodyRange(originalSourceRange)
   if (!sourceRange) throw new Error('V2 source page range collapsed during sanitization')
   const criticalUncertainties = visualFallback.criticalUncertainties ?? []
