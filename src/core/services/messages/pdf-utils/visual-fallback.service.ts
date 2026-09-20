@@ -17,6 +17,7 @@ import { GEMINI_WHOLE_PAGE_CRITICAL_POLICY_VERSION } from './visual-fallback.typ
 import { processSelectedPage } from './visual-fallback-page-processor'
 import {
   applyPageBudget,
+  markBudgetExhaustedPages,
   markFailedPages,
   markPendingPages,
   markV2UnavailablePages,
@@ -92,13 +93,11 @@ export class VisualFallbackService {
 
     const riskyPages = selectRiskyPages(input.pages)
     let selectedPages = riskyPages.slice(0, this.config.maxPagesPerPdf)
-    if (this.isV2Policy()) {
-      markV2UnavailablePages(
-        byPage,
-        riskyPages.slice(this.config.maxPagesPerPdf),
-        'budget_exhausted'
-      )
-    }
+    markBudgetExhaustedPages(
+      byPage,
+      riskyPages.slice(this.config.maxPagesPerPdf),
+      this.isV2Policy()
+    )
 
     if (input.pageBudget) {
       selectedPages = applyPageBudget({

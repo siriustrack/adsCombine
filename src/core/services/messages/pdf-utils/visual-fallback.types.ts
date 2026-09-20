@@ -21,6 +21,7 @@ export type VisualFallbackReason =
   | 'corrupted-symbols'
   | 'fragmented-number-or-measure'
   | 'garbled-spans'
+  | 'weak-ocr-evidence'
   | 'missing-legal-marker'
   | 'missing-measure'
 
@@ -141,6 +142,8 @@ export type VisualFallbackOcrPage = {
   sourceRange?: { start: number; end: number }
   legalSignals?: EnhancedOcrSignals
   meanConfidence?: number
+  wordCount?: number
+  warnings?: string[]
 }
 
 export type RenderedPdfPage = {

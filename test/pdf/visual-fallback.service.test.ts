@@ -98,6 +98,58 @@ describe('VisualFallbackService', () => {
     expect(confidenceOnly.selectedPageCount).toBe(0)
   })
 
+  test('selects pages with no text or combined weak OCR evidence without selecting confidence alone', async () => {
+    let calls = 0
+    const { service, renderedPages } = createService({
+      async transcribe({ pageNumber }) {
+        calls++
+        return { status: 'transcribed', transcription: `visual ${pageNumber}` }
+      },
+    })
+
+    const noText = await service.execute({
+      buffer: Buffer.from('pdf'),
+      fileName: 'generic.pdf',
+      pages: [page({ text: '', wordCount: 0, warnings: ['no-text-detected'] })],
+    })
+
+    expect(renderedPages).toEqual([[1]])
+    expect(calls).toBe(1)
+    expect(noText.byPage.get(1)).toMatchObject({
+      state: 'conflict',
+      reasons: ['weak-ocr-evidence'],
+    })
+
+    const combinedWeak = await service.execute({
+      buffer: Buffer.from('pdf'),
+      fileName: 'generic.pdf',
+      pages: [
+        page({
+          pageNumber: 2,
+          text: 'quatro palavras OCR fraco',
+          meanConfidence: 45,
+          wordCount: 4,
+        }),
+      ],
+    })
+
+    expect(renderedPages).toEqual([[1], [2]])
+    expect(calls).toBe(2)
+    expect(combinedWeak.byPage.get(2)).toMatchObject({
+      state: 'conflict',
+      reasons: ['weak-ocr-evidence'],
+    })
+
+    const confidenceOnly = await service.execute({
+      buffer: Buffer.from('pdf'),
+      fileName: 'generic.pdf',
+      pages: [page({ pageNumber: 3, meanConfidence: 45, wordCount: 40 })],
+    })
+
+    expect(calls).toBe(2)
+    expect(confidenceOnly.selectedPageCount).toBe(0)
+  })
+
   test('keeps matrícula as an optional transcription profile without gating eligibility', async () => {
     let profileKind: string | undefined
     const { service } = createService({
@@ -155,12 +207,88 @@ describe('VisualFallbackService', () => {
     })
     expect(result.acceptedVisualTextByPage.size).toBe(0)
     expect(result.byPage.get(2)).toEqual({
-      state: 'ocr_only',
-      reasons: [],
+      state: 'fallback_failed',
+      reasons: ['garbled-spans'],
       offsetEncoding: 'utf16_code_units',
+      decisionReason: 'budget_exhausted',
     })
     expect(first.text).toBe(originalFirstText)
     expect(first.legalSignals).toEqual(originalFirstLegalSignals)
+  })
+
+  test('ranks weak OCR evidence before marker risks before applying max pages cap', async () => {
+    const providerCalls: Array<{ pageNumber: number; model: string }> = []
+    const { service, renderedPages } = createService(
+      {
+        async transcribe({ pageNumber, model }) {
+          providerCalls.push({ pageNumber, model })
+          return { status: 'transcribed', transcription: `visual ${pageNumber}` }
+        },
+      },
+      { maxPagesPerPdf: 1 }
+    )
+
+    const result = await service.execute({
+      buffer: Buffer.from('pdf'),
+      fileName: 'matrícula.pdf',
+      pages: [
+        page({
+          legalSignals: {
+            ...page().legalSignals,
+            squareMeters: 0,
+            fragmentedNumbersOrMeasures: 1,
+          },
+        }),
+        page({
+          pageNumber: 2,
+          text: '',
+          wordCount: 0,
+          warnings: ['no-text-detected'],
+        }),
+      ],
+    })
+
+    expect(renderedPages).toEqual([[2]])
+    expect(providerCalls).toEqual([{ pageNumber: 2, model: 'gemini-2.5-flash' }])
+    expect(result.byPage.get(2)).toMatchObject({
+      state: 'conflict',
+      reasons: ['weak-ocr-evidence'],
+    })
+    expect(result.byPage.get(1)).toMatchObject({
+      state: 'fallback_failed',
+      decisionReason: 'budget_exhausted',
+    })
+  })
+
+  test('marks V1 risky pages excluded by max pages cap as budget exhausted', async () => {
+    const { service, renderedPages } = createService(
+      {
+        async transcribe({ pageNumber }) {
+          return { status: 'transcribed', transcription: `visual ${pageNumber}` }
+        },
+      },
+      { maxPagesPerPdf: 1 }
+    )
+
+    const result = await service.execute({
+      buffer: Buffer.from('pdf'),
+      fileName: 'generic.pdf',
+      pages: [
+        page({ legalSignals: { ...page().legalSignals, corruptedSymbols: 1 } }),
+        page({
+          pageNumber: 2,
+          legalSignals: { ...page().legalSignals, garbledSpans: 1 },
+        }),
+      ],
+    })
+
+    expect(renderedPages).toEqual([[1]])
+    expect(result.byPage.get(2)).toEqual({
+      state: 'fallback_failed',
+      reasons: ['garbled-spans'],
+      offsetEncoding: 'utf16_code_units',
+      decisionReason: 'budget_exhausted',
+    })
   })
 
   test('keeps UTF-16 source ranges and unresolved coverage without candidate text', async () => {
