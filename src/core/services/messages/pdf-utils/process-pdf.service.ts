@@ -81,9 +81,26 @@ function canSelectAcceptedVisualText(
   )
 }
 
+function isBlankUnavailableV2Metadata(
+  metadata: Extract<VisualFallbackMetadata, { policyVersion: 'gemini-whole-page-critical-v2' }>,
+  text: string
+): boolean {
+  return (
+    metadata.outcome === 'unavailable' &&
+    text.length === 0 &&
+    metadata.sourceRange?.start === 0 &&
+    metadata.sourceRange.end === 0 &&
+    metadata.riskySpans?.length === 1 &&
+    metadata.riskySpans[0].start === 0 &&
+    metadata.riskySpans[0].end === 0 &&
+    metadata.criticalUncertainties === undefined
+  )
+}
+
 function hasMatchingV2Ranges(metadata: VisualFallbackMetadata, text: string): boolean {
   if (!isV2Metadata(metadata)) return true
   if (metadata.sourceRange?.start !== 0 || metadata.sourceRange.end !== text.length) return false
+  if (isBlankUnavailableV2Metadata(metadata, text)) return true
   if (
     metadata.riskySpans?.some(range => !isValidLocalRange(range, text)) ||
     (metadata.outcome === 'unavailable' &&
@@ -340,6 +357,8 @@ export class ProcessPdfService {
           ...(sourceRange !== undefined ? { sourceRange } : {}),
           legalSignals: page.legalSignals,
           meanConfidence: page.meanConfidence,
+          wordCount: page.wordCount,
+          warnings: page.warnings,
         }
       }),
       pageBudget: options.visualFallbackPageBudget,

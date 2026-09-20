@@ -70,7 +70,16 @@ describe('ProcessPdfService enhanced OCR limits', () => {
   })
 
   test('keeps enhanced metadata backward-compatible while visual fallback is disabled', async () => {
-    const { service } = createEnhancedPdfService(1)
+    const { service } = createEnhancedPdfService(1, '', {
+      async execute() {
+        return {
+          byPage: new Map(),
+          acceptedVisualTextByPage: new Map(),
+          selectedPageCount: 0,
+          enabled: false,
+        }
+      },
+    })
     let metadata: Record<string, unknown> | undefined
 
     const result = await service.executeEnhanced(file, {
