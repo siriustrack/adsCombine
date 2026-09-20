@@ -292,8 +292,8 @@ export class TextQualityAnalyzer {
     const spaceDensity = spaceCount / totalChars
     const alphanumericRatio = alphanumericCount / totalChars
     const headerRatio = headerMatches / nonEmptyLines.length
-    const approximateWords = Math.max(1, totalChars / 5)
-    const wordDensity = approximateWords / totalChars
+    const wordCount = cleanText.split(/\s+/).filter(Boolean).length
+    const wordDensity = wordCount / totalChars
 
     const isHighQuality =
       alphanumericRatio > this.QUALITY_THRESHOLDS.MIN_ALPHANUMERIC_RATIO &&
