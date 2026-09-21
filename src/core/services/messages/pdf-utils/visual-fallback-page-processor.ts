@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import logger from '@lib/logger'
 import type { PageFurnitureProfile } from './gemini-page-furniture'
 import { logV2Diagnostic, type VisualFallbackV2Diagnostic } from './visual-fallback.diagnostics'
 import {
@@ -23,6 +24,7 @@ import { reconcileVisualText } from './visual-reconciliation.policy'
 import { transcribeWithRetries } from './visual-transcription-retry'
 
 type ProcessSelectedPageInput = {
+  readonly fileId?: string
   readonly selection: SelectedVisualFallbackPage
   readonly renderedPage?: RenderedPdfPage
   readonly byPage: Map<number, VisualFallbackMetadata>
@@ -95,7 +97,46 @@ function applyV2Candidate(context: V2CandidateContext, state: V2PageState): void
   })
 }
 
+function applyV1Candidate(context: V2CandidateContext, state: V2PageState): void {
+  const { page, reasons } = context.selection
+  const reconciliation = reconcileVisualText({
+    ocrText: page.text,
+    visualText: context.candidate,
+    ocrConfidence: page.meanConfidence,
+  })
+  const selectedTextSource =
+    !context.config.shadowMode && reconciliation.decision === 'promote_visual' ? 'visual' : 'ocr'
+  if (selectedTextSource === 'visual') {
+    state.acceptedVisualTextByPage.set(page.pageNumber, context.candidate)
+  }
+  const visualState = context.config.shadowMode
+    ? 'ocr_plus_visual_candidate'
+    : reconciliation.decision === 'conflict'
+      ? 'conflict'
+      : 'reconciled'
+  state.byPage.set(
+    page.pageNumber,
+    createV1Metadata({
+      page,
+      state: visualState,
+      reasons,
+      provenance: {
+        provider: context.config.provider,
+        model: context.config.model,
+        imageSha256: hash(context.renderedPage.image),
+        candidateSha256: hash(context.candidate),
+      },
+      policyVersion: reconciliation.policyVersion,
+      decisionReason: reconciliation.decisionReason,
+      selectedTextSource,
+      ...(context.config.shadowMode ? { shadowDecision: reconciliation.decision } : {}),
+      comparison: reconciliation.comparison,
+    })
+  )
+}
+
 export async function processSelectedPage({
+  fileId,
   selection: { page, reasons },
   renderedPage,
   byPage,
@@ -121,6 +162,8 @@ export async function processSelectedPage({
     return
   }
 
+  const processingStartedAt = Date.now()
+  const transcriptionStartedAt = Date.now()
   const transcription = await transcribeWithRetries({
     image: renderedPage.image,
     pageNumber: page.pageNumber,
@@ -131,6 +174,7 @@ export async function processSelectedPage({
     timeoutMs: config.timeoutMs,
     provider,
   })
+  const transcriptionDurationMs = Date.now() - transcriptionStartedAt
   if (signal?.aborted) return
   if (transcription.status === 'unavailable') {
     byPage.set(
@@ -143,9 +187,21 @@ export async function processSelectedPage({
           })
         : createV1Metadata({ page, state: 'fallback_failed', reasons })
     )
+    logger.debug('Visual fallback page processing completed', {
+      ...(fileId !== undefined ? { fileId } : {}),
+      pageNumber: page.pageNumber,
+      provider: config.provider,
+      model: config.model,
+      transcriptionOutcome: 'unavailable',
+      unavailableReason: transcription.reason,
+      transcriptionDurationMs,
+      reconciliationDurationMs: 0,
+      totalDurationMs: Date.now() - processingStartedAt,
+    })
     return
   }
   const candidate = transcription.text
+  const reconciliationStartedAt = Date.now()
 
   if (config.reconciliationPolicyVersion === GEMINI_WHOLE_PAGE_CRITICAL_POLICY_VERSION) {
     applyV2Candidate(
@@ -161,41 +217,34 @@ export async function processSelectedPage({
         acceptedVisualTextByPage,
       }
     )
-    return
+  } else {
+    applyV1Candidate(
+      {
+        selection: { page, reasons },
+        renderedPage,
+        candidate,
+        furnitureProfile,
+        config,
+      },
+      {
+        byPage,
+        acceptedVisualTextByPage,
+      }
+    )
   }
 
-  const reconciliation = reconcileVisualText({
-    ocrText: page.text,
-    visualText: candidate,
-    ocrConfidence: page.meanConfidence,
+  const metadata = byPage.get(page.pageNumber)
+  const visualOutcome = metadata && 'outcome' in metadata ? metadata.outcome : undefined
+  logger.debug('Visual fallback page processing completed', {
+    ...(fileId !== undefined ? { fileId } : {}),
+    pageNumber: page.pageNumber,
+    provider: config.provider,
+    model: config.model,
+    transcriptionOutcome: 'transcribed',
+    ...(visualOutcome !== undefined ? { visualOutcome } : {}),
+    decisionReason: metadata?.decisionReason,
+    transcriptionDurationMs,
+    reconciliationDurationMs: Date.now() - reconciliationStartedAt,
+    totalDurationMs: Date.now() - processingStartedAt,
   })
-  const selectedTextSource =
-    !config.shadowMode && reconciliation.decision === 'promote_visual' ? 'visual' : 'ocr'
-  if (selectedTextSource === 'visual') {
-    acceptedVisualTextByPage.set(page.pageNumber, candidate)
-  }
-  const state = config.shadowMode
-    ? 'ocr_plus_visual_candidate'
-    : reconciliation.decision === 'conflict'
-      ? 'conflict'
-      : 'reconciled'
-  byPage.set(
-    page.pageNumber,
-    createV1Metadata({
-      page,
-      state,
-      reasons,
-      provenance: {
-        provider: config.provider,
-        model: config.model,
-        imageSha256: hash(renderedPage.image),
-        candidateSha256: hash(candidate),
-      },
-      policyVersion: reconciliation.policyVersion,
-      decisionReason: reconciliation.decisionReason,
-      selectedTextSource,
-      ...(config.shadowMode ? { shadowDecision: reconciliation.decision } : {}),
-      comparison: reconciliation.comparison,
-    })
-  )
 }

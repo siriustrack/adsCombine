@@ -1,4 +1,5 @@
 import { env } from '@config/env'
+import logger from '@lib/logger'
 import pLimit from 'p-limit'
 import { buildDocumentFurnitureProfile, type PageFurnitureProfile } from './gemini-page-furniture'
 import { PdfPageRendererService } from './pdf-page-renderer.service'
@@ -31,6 +32,7 @@ export type { VisualTranscriptionProvider } from './visual-fallback.types'
 
 type VisualFallbackInput = {
   buffer: Buffer
+  fileId?: string
   fileName: string
   pages: VisualFallbackOcrPage[]
   signal?: AbortSignal
@@ -115,13 +117,25 @@ export class VisualFallbackService {
     markPendingPages(byPage, selectedPages)
 
     let renderedPages: Awaited<ReturnType<PdfPageRenderer['renderPages']>>
+    const renderingStartedAt = Date.now()
     try {
       renderedPages = await this.renderer.renderPages(
         input.buffer,
         selectedPages.map(({ page }) => page.pageNumber),
         input.signal
       )
+      logger.debug('Visual fallback rendering completed', {
+        ...(input.fileId !== undefined ? { fileId: input.fileId } : {}),
+        selectedPageCount: selectedPages.length,
+        renderedPageCount: renderedPages.length,
+        durationMs: Date.now() - renderingStartedAt,
+      })
     } catch {
+      logger.warn('Visual fallback rendering failed', {
+        ...(input.fileId !== undefined ? { fileId: input.fileId } : {}),
+        selectedPageCount: selectedPages.length,
+        durationMs: Date.now() - renderingStartedAt,
+      })
       markFailedPages({
         byPage,
         pages: selectedPages,
@@ -151,6 +165,7 @@ export class VisualFallbackService {
       selectedPages.map(selection =>
         limit(() =>
           processSelectedPage({
+            fileId: input.fileId,
             selection,
             renderedPage: renderedByPage.get(selection.page.pageNumber),
             byPage,
