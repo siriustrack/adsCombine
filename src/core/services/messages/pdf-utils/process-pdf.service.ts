@@ -328,7 +328,7 @@ export class ProcessPdfService {
       fileId,
       totalPages,
       chunksProcessed: ocrResult.chunksProcessed,
-      processingTime: ocrResult.processingTime,
+      durationMs: ocrResult.processingTime,
       pages: ocrResult.pages.map(page => ({
         pageNumber: page.pageNumber,
         meanConfidence: page.meanConfidence,
@@ -347,6 +347,7 @@ export class ProcessPdfService {
     const pagesByNumber = new Map(ocrResult.pages.map(page => [page.pageNumber, page]))
     const visualFallback = await this.visualFallbackService.execute({
       buffer,
+      fileId,
       fileName,
       pages: orderedOcrPages.map(page => {
         const sourceRange = composedOcr.rangesByPage.get(page.pageNumber)
