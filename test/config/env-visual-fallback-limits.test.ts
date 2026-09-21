@@ -11,6 +11,24 @@ const requiredEnvironment = {
 }
 
 describe('visual fallback environment limits', () => {
+  test('accepts supported log level overrides', () => {
+    const parsed = envSchema.parse({
+      ...requiredEnvironment,
+      LOG_LEVEL: 'debug',
+    })
+
+    expect(parsed.LOG_LEVEL).toBe('debug')
+  })
+
+  test('rejects unsupported log level overrides', () => {
+    const parsed = envSchema.safeParse({
+      ...requiredEnvironment,
+      LOG_LEVEL: 'verbose',
+    })
+
+    expect(parsed.success).toBe(false)
+  })
+
   test.each([
     ['false', false],
     ['0', false],

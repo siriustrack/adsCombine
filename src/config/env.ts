@@ -10,6 +10,7 @@ export const environmentBoolean = z.preprocess(value => {
 }, z.boolean())
 
 export const envSchema = z.object({
+  LOG_LEVEL: z.enum(['error', 'warn', 'info', 'debug']).optional(),
   BASE_URL: z.string(),
   OPENAI_API_KEY: z.string().min(1),
   OPENAI_MODEL_TEXT: z.string().min(1),
