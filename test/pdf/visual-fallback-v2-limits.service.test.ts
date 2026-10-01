@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { VisualFallbackService } from '../../src/core/services/messages/pdf-utils/visual-fallback.service'
 import { createVisualFallbackService, visualFallbackPage } from './visual-fallback.test-support'
 
 describe('VisualFallbackService V2 per-PDF limits', () => {
@@ -30,8 +31,13 @@ describe('VisualFallbackService V2 per-PDF limits', () => {
     expect(attemptedPages).toEqual([1, 2, 3, 4, 5, 6])
     expect(result.selectedPageCount).toBe(6)
     expect(result.byPage.get(7)).toMatchObject({
-      outcome: 'unavailable',
+      outcome: 'skipped',
+      state: 'fallback_skipped',
       decisionReason: 'budget_exhausted',
+    })
+    expect(result.summary).toMatchObject({
+      budgetSkippedPageCount: 1,
+      budgetSkippedByScope: { pdf: 1, job: 0 },
     })
   })
 
@@ -76,8 +82,13 @@ describe('VisualFallbackService V2 per-PDF limits', () => {
     expect(attemptedPages).toEqual([1, 2, 3, 4, 5, 6])
     expect(result.selectedPageCount).toBe(6)
     expect(result.byPage.get(7)).toMatchObject({
-      outcome: 'unavailable',
+      outcome: 'skipped',
+      state: 'fallback_skipped',
       decisionReason: 'budget_exhausted',
+    })
+    expect(result.summary).toMatchObject({
+      budgetSkippedPageCount: 1,
+      budgetSkippedByScope: { pdf: 0, job: 1 },
     })
   })
 
@@ -106,8 +117,8 @@ describe('VisualFallbackService V2 per-PDF limits', () => {
     expect(renderedPages).toEqual([[1]])
     expect(result.selectedPageCount).toBe(1)
     expect([result.byPage.get(2), result.byPage.get(3)]).toEqual([
-      expect.objectContaining({ outcome: 'unavailable', decisionReason: 'budget_exhausted' }),
-      expect.objectContaining({ outcome: 'unavailable', decisionReason: 'budget_exhausted' }),
+      expect.objectContaining({ outcome: 'skipped', decisionReason: 'budget_exhausted' }),
+      expect.objectContaining({ outcome: 'skipped', decisionReason: 'budget_exhausted' }),
     ])
   })
 
@@ -139,7 +150,74 @@ describe('VisualFallbackService V2 per-PDF limits', () => {
     expect(renderedPages).toEqual([])
     expect(result.selectedPageCount).toBe(1)
     expect(result.byPage.get(1)).toMatchObject({ decisionReason: 'aborted' })
-    expect(result.byPage.get(2)).toMatchObject({ decisionReason: 'budget_exhausted' })
-    expect(result.byPage.get(3)).toMatchObject({ decisionReason: 'budget_exhausted' })
+    expect(result.byPage.get(2)).toMatchObject({
+      outcome: 'skipped',
+      state: 'fallback_skipped',
+      decisionReason: 'budget_exhausted',
+    })
+    expect(result.byPage.get(3)).toMatchObject({
+      outcome: 'skipped',
+      state: 'fallback_skipped',
+      decisionReason: 'budget_exhausted',
+    })
+    expect(result.summary).toMatchObject({
+      status: 'aborted',
+      admittedPageCount: 1,
+      renderAttemptedPageCount: 0,
+      providerAttemptedPageCount: 0,
+      budgetSkippedPageCount: 2,
+      budgetSkippedByScope: { pdf: 2, job: 0 },
+    })
+  })
+
+  test('counts provider attempts only after provider processing begins', async () => {
+    const controller = new AbortController()
+    let providerCalls = 0
+    const service = new VisualFallbackService(
+      {
+        async renderPages() {
+          controller.abort(new Error('cancelled after rendering'))
+          return [{ pageNumber: 1, image: Buffer.from('page-1') }]
+        },
+      },
+      {
+        async transcribe() {
+          providerCalls++
+          return { status: 'abstain' }
+        },
+      },
+      {
+        enabled: true,
+        shadowMode: false,
+        contextualPairingShadowEnabled: false,
+        provider: 'gemini',
+        model: 'gemini-2.5-flash',
+        timeoutMs: 20,
+        maxRetries: 0,
+        concurrency: 1,
+        maxAlignmentCells: 10_000_000,
+        maxPagesPerPdf: 1,
+        reconciliationPolicyVersion: 'gemini-whole-page-critical-v2',
+      }
+    )
+
+    const result = await service.execute({
+      buffer: Buffer.from('pdf'),
+      fileName: 'x.pdf',
+      pages: [
+        visualFallbackPage({
+          legalSignals: { ...visualFallbackPage().legalSignals, corruptedSymbols: 1 },
+        }),
+      ],
+      signal: controller.signal,
+    })
+
+    expect(providerCalls).toBe(0)
+    expect(result.summary).toMatchObject({
+      renderAttemptedPageCount: 1,
+      providerAttemptedPageCount: 0,
+      unavailablePageCount: 1,
+    })
+    expect(result.byPage.get(1)).toMatchObject({ decisionReason: 'aborted' })
   })
 })

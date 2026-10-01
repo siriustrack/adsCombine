@@ -1,5 +1,7 @@
 import type { ProcessMessage } from 'api/controllers/messages.controllers'
+import type { EnhancedTextSelection } from '../messages/pdf-utils/enhanced-text-selection'
 import type { VisualFallbackMetadata } from '../messages/pdf-utils/visual-fallback.types'
+import type { VisualFallbackFileSummary } from '../messages/process-messages.types'
 
 export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed' | 'expired'
 
@@ -46,10 +48,15 @@ export type EnhancedOcrPageQuality = {
 export type EnhancedOcrFileResult = {
   fileId: string
   summary?: string
+  pageCount?: number
+  metricsSource?: 'ocr'
+  textSelection?: EnhancedTextSelection
+  visualFallbackSummary?: VisualFallbackFileSummary
   pageQuality?: EnhancedOcrPageQuality[]
 }
 
 export type EnhancedOcrJobResult = {
+  schemaVersion?: 'enhanced-ocr/v2'
   profile: 'enhanced-ocr'
   summary?: {
     fileCount: number
@@ -57,6 +64,17 @@ export type EnhancedOcrJobResult = {
     averageConfidence?: number
     totalWordCount: number
     warningCount: number
+    metricsSource?: 'ocr'
+    warningPageCount?: number
+    warningsByType?: Record<string, number>
+    textSelection?: {
+      nativeFileCount: number
+      enhancedFileCount: number
+      byReason: Record<EnhancedTextSelection['reason'], number>
+    }
+    visual?: Omit<VisualFallbackFileSummary, 'status'> & {
+      filesByStatus: Record<VisualFallbackFileSummary['status'], number>
+    }
   }
   files: EnhancedOcrFileResult[]
 }

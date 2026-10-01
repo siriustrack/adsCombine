@@ -79,6 +79,14 @@ function createRequest() {
   }
 }
 
+function createDeferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void
+  const promise = new Promise<void>(promiseResolve => {
+    resolve = promiseResolve
+  })
+  return { promise, resolve }
+}
+
 describe('ProcessMessagesService enhanced OCR delegation', () => {
   test('uses executeEnhanced exactly once and returns its page metadata for enhanced PDFs', async () => {
     const seam = createPdfServiceSeam()
@@ -132,12 +140,14 @@ describe('ProcessMessagesService enhanced OCR delegation', () => {
   test('rebases repeated UTF-16 ranges by file and raw occurrence order', async () => {
     const repeatedPage = 'Página visual repetida'
     const body = `Introdução 🧾\n${repeatedPage}\n${repeatedPage}`
+    const secondFileStarted = createDeferred()
     const pdfService: Pick<ProcessPdfService, 'execute' | 'executeEnhanced'> = {
       async execute() {
         throw new Error('standard OCR must not run')
       },
       async executeEnhanced(file, options) {
-        if (file.fileId === 'file-1') await Bun.sleep(10)
+        if (file.fileId === 'file-1') await secondFileStarted.promise
+        else secondFileStarted.resolve()
         const firstStart = body.indexOf(repeatedPage)
         const secondStart = body.indexOf(repeatedPage, firstStart + repeatedPage.length)
         const visualFallback = (start: number) => ({

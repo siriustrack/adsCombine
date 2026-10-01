@@ -197,18 +197,18 @@ describe('VisualFallbackService', () => {
       pages: [first, second],
     })
 
-    expect(renderedPages).toEqual([[1]])
-    expect(providerCalls).toEqual([{ pageNumber: 1, model: 'gemini-2.5-flash' }])
-    expect(result.byPage.get(1)).toMatchObject({ state: 'ocr_plus_visual_candidate' })
-    expect(result.byPage.get(1)).toMatchObject({
+    expect(renderedPages).toEqual([[2]])
+    expect(providerCalls).toEqual([{ pageNumber: 2, model: 'gemini-2.5-flash' }])
+    expect(result.byPage.get(2)).toMatchObject({ state: 'ocr_plus_visual_candidate' })
+    expect(result.byPage.get(2)).toMatchObject({
       policyVersion: 'safe-visual-v1',
       selectedTextSource: 'ocr',
       shadowDecision: 'conflict',
     })
     expect(result.acceptedVisualTextByPage.size).toBe(0)
-    expect(result.byPage.get(2)).toEqual({
-      state: 'fallback_failed',
-      reasons: ['garbled-spans'],
+    expect(result.byPage.get(1)).toEqual({
+      state: 'fallback_skipped',
+      reasons: ['corrupted-symbols'],
       offsetEncoding: 'utf16_code_units',
       decisionReason: 'budget_exhausted',
     })
@@ -255,9 +255,81 @@ describe('VisualFallbackService', () => {
       reasons: ['weak-ocr-evidence'],
     })
     expect(result.byPage.get(1)).toMatchObject({
-      state: 'fallback_failed',
+      state: 'fallback_skipped',
       decisionReason: 'budget_exhausted',
     })
+  })
+
+  test('ranks stronger corruption evidence before page order within the same severity', async () => {
+    const { service, renderedPages } = createService(
+      {
+        async transcribe({ pageNumber }) {
+          return { status: 'transcribed', transcription: `visual ${pageNumber}` }
+        },
+      },
+      { maxPagesPerPdf: 1 }
+    )
+
+    await service.execute({
+      buffer: Buffer.from('pdf'),
+      fileName: 'normas.pdf',
+      pages: [
+        page({ legalSignals: { ...page().legalSignals, corruptedSymbols: 1 } }),
+        page({
+          pageNumber: 2,
+          legalSignals: { ...page().legalSignals, corruptedSymbols: 9 },
+        }),
+      ],
+    })
+
+    expect(renderedPages).toEqual([[2]])
+  })
+
+  test('does not treat organizational areas as missing physical measurements', async () => {
+    const { service, renderedPages } = createService({
+      async transcribe() {
+        return { status: 'abstain' }
+      },
+    })
+
+    const result = await service.execute({
+      buffer: Buffer.from('pdf'),
+      fileName: 'normas.pdf',
+      pages: [
+        page({
+          text: 'A área de atuação da comissão abrange todo o Estado.',
+          legalSignals: { ...page().legalSignals, squareMeters: 0 },
+        }),
+      ],
+    })
+
+    expect(renderedPages).toEqual([])
+    expect(result.selectedPageCount).toBe(0)
+  })
+
+  test('keeps a physical-area risk when organizational prose appears on the same page', async () => {
+    const { service, renderedPages } = createService({
+      async transcribe() {
+        return { status: 'abstain' }
+      },
+    })
+
+    const result = await service.execute({
+      buffer: Buffer.from('pdf'),
+      fileName: 'normas.pdf',
+      pages: [
+        page({
+          text: [
+            'A área de atuação da comissão abrange todo o Estado.',
+            'A superfície do imóvel consta da planta sem indicação numérica.',
+          ].join('\n'),
+          legalSignals: { ...page().legalSignals, squareMeters: 0 },
+        }),
+      ],
+    })
+
+    expect(renderedPages).toEqual([[1]])
+    expect(result.byPage.get(1)?.reasons).toContain('missing-measure')
   })
 
   test('marks V1 risky pages excluded by max pages cap as budget exhausted', async () => {
@@ -282,10 +354,10 @@ describe('VisualFallbackService', () => {
       ],
     })
 
-    expect(renderedPages).toEqual([[1]])
-    expect(result.byPage.get(2)).toEqual({
-      state: 'fallback_failed',
-      reasons: ['garbled-spans'],
+    expect(renderedPages).toEqual([[2]])
+    expect(result.byPage.get(1)).toEqual({
+      state: 'fallback_skipped',
+      reasons: ['corrupted-symbols'],
       offsetEncoding: 'utf16_code_units',
       decisionReason: 'budget_exhausted',
     })

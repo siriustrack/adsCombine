@@ -16,8 +16,8 @@ import { sanitize, sanitizePdfText } from 'utils/sanitize'
 import WordExtractor from 'word-extractor'
 import { FileDownloadService, FileSizeLimitError } from './pdf-utils/file-download.service'
 import { ProcessPdfService } from './pdf-utils/process-pdf.service'
-import { createSignedTextDownload } from '../texts/signed-text-download'
 import type { VisualFallbackV2Metadata } from './pdf-utils/visual-fallback.types'
+import { createSignedTextDownload } from '../texts/signed-text-download'
 import type {
   EnhancedPdfMetadata,
   ProcessAndHandleFileOptions,
@@ -190,6 +190,8 @@ function rebaseV2VisualMetadata({
   header: string
   segmentStart: number
 }): VisualFallbackV2Metadata {
+  if (visualFallback.outcome === 'skipped') return visualFallback
+
   const rawSegment = header + rawBody
   const mapBodyRange = (range: SourceRange) => {
     if (range.start < 0 || range.end > rawBody.length) return undefined

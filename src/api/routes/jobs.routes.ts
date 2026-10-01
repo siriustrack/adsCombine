@@ -68,7 +68,11 @@ router.get('/:jobId/result', jobsController.getJobResultHandler)
  *         schema: { type: string, format: uuid }
  *     responses:
  *       200:
- *         description: Resultado concluído ou estado terminal do job
+ *         description: |
+ *           Resultado concluído ou estado terminal do job. Resultados concluídos usam
+ *           `schemaVersion: enhanced-ocr/v2`, renovam `downloadUrl` e `downloadExpiresAt`
+ *           a cada leitura autenticada e agregam seleção nativo/OCR, warnings e desfechos
+ *           visuais no objeto `summary`.
  *       202:
  *         description: Job ainda enfileirado ou processando
  *       401:

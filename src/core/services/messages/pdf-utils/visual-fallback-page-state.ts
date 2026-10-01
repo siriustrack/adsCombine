@@ -1,5 +1,9 @@
 import { sanitizePdfText } from 'utils/sanitize'
-import { createV1Metadata, createV2FullPageMetadata } from './visual-fallback.metadata'
+import {
+  createV1Metadata,
+  createV2BudgetSkippedMetadata,
+  createV2FullPageMetadata,
+} from './visual-fallback.metadata'
 import type {
   VisualFallbackMetadata,
   VisualFallbackOcrPage,
@@ -28,7 +32,11 @@ function selectRiskReasons(page: VisualFallbackOcrPage): VisualFallbackReason[] 
   if (signals.fragmentedNumbersOrMeasures > 0) reasons.push('fragmented-number-or-measure')
   if (signals.garbledSpans > 0) reasons.push('garbled-spans')
 
-  const hasAreaReference = /(?:área|area|superf[ií]cie)/iu.test(page.text)
+  const textWithoutOrganizationalAreas = page.text.replace(
+    /(?:^|\s)(?:área|area)\s+de\s+(?:atua[cç][aã]o|compet[eê]ncia|conhecimento|jurisdi[cç][aã]o)\b/giu,
+    ' '
+  )
+  const hasAreaReference = /(?:área|area|superf[ií]cie)/iu.test(textWithoutOrganizationalAreas)
   if (hasAreaReference && signals.squareMeters === 0) reasons.push('missing-measure')
 
   const hasFragmentedMeasure = reasons.includes('fragmented-number-or-measure')
@@ -67,15 +75,32 @@ function getRiskSeverity(reasons: VisualFallbackReason[]): number {
   return 0
 }
 
+function getRiskIntensity(page: VisualFallbackOcrPage, reasons: VisualFallbackReason[]): number {
+  const signals = page.legalSignals
+  const confidenceDeficit =
+    page.meanConfidence === undefined ? 0 : Math.max(0, 100 - page.meanConfidence)
+  return (
+    (signals?.garbledSpans ?? 0) * 50 +
+    (signals?.fragmentedNumbersOrMeasures ?? 0) * 40 +
+    (signals?.corruptedSymbols ?? 0) * 30 +
+    (reasons.includes('missing-measure') ? 20 : 0) +
+    (reasons.includes('missing-legal-marker') ? 10 : 0) +
+    confidenceDeficit
+  )
+}
+
 export function selectRiskyPages(pages: VisualFallbackOcrPage[]): SelectedVisualFallbackPage[] {
   return pages
     .map(page => ({ page, reasons: selectRiskReasons(page) }))
     .filter(({ reasons }) => reasons.length > 0)
     .sort((left, right) => {
       const severityDifference = getRiskSeverity(right.reasons) - getRiskSeverity(left.reasons)
-      return severityDifference === 0
+      if (severityDifference !== 0) return severityDifference
+      const intensityDifference =
+        getRiskIntensity(right.page, right.reasons) - getRiskIntensity(left.page, left.reasons)
+      return intensityDifference === 0
         ? left.page.pageNumber - right.page.pageNumber
-        : severityDifference
+        : intensityDifference
     })
 }
 
@@ -88,14 +113,10 @@ export function markBudgetExhaustedPages(
     byPage.set(
       page.pageNumber,
       isV2Policy
-        ? createV2FullPageMetadata({
-            page,
-            reasons,
-            outcome: { kind: 'unavailable', reason: 'budget_exhausted' },
-          })
+        ? createV2BudgetSkippedMetadata({ reasons })
         : createV1Metadata({
             page,
-            state: 'fallback_failed',
+            state: 'fallback_skipped',
             reasons,
             decisionReason: 'budget_exhausted',
           })
@@ -106,7 +127,7 @@ export function markBudgetExhaustedPages(
 export function markV2UnavailablePages(
   byPage: Map<number, VisualFallbackMetadata>,
   pages: SelectedVisualFallbackPage[],
-  reason: 'aborted' | 'budget_exhausted'
+  reason: 'aborted'
 ): void {
   for (const { page, reasons } of pages) {
     byPage.set(

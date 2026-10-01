@@ -108,7 +108,7 @@ describe('VisualFallbackService reconciliation', () => {
     expect(result.byPage.get(1)?.state).toBe('ocr_only')
   })
 
-  test('emits the exact unavailable shape for exhausted V2 budget', async () => {
+  test('emits the exact skipped shape for exhausted V2 budget', async () => {
     const text = 'Matrícula nº 12.345'
     const result = await createV2Service('unused').execute({
       buffer: Buffer.from('pdf'),
@@ -119,12 +119,10 @@ describe('VisualFallbackService reconciliation', () => {
     expect(result.byPage.get(1)).toEqual({
       schemaVersion: 'visual-fallback/v2',
       policyVersion: 'gemini-whole-page-critical-v2',
-      outcome: 'unavailable',
-      state: 'fallback_failed',
+      outcome: 'skipped',
+      state: 'fallback_skipped',
       reasons: ['corrupted-symbols', 'fragmented-number-or-measure'],
       offsetEncoding: 'utf16_code_units',
-      sourceRange: { start: 0, end: text.length },
-      riskySpans: [{ start: 0, end: text.length }],
       selectedTextSource: 'ocr',
       decisionReason: 'budget_exhausted',
     })

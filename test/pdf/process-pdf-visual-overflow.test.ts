@@ -2,9 +2,9 @@ import { describe, expect, test } from 'bun:test'
 import { createEnhancedPdfService, enhancedPdfFile } from './process-pdf-enhanced.test-support'
 
 describe('ProcessPdfService V2 visual overflow', () => {
-  test('retains per-PDF overflow metadata in downstream page quality', async () => {
-    const pageText = 'enhanced text'
+  test('compacts per-PDF overflow into a file summary', async () => {
     let pageQuality: Array<Record<string, unknown>> | undefined
+    let visualFallbackSummary: Record<string, unknown> | undefined
     const { service } = createEnhancedPdfService(2, '', {
       async execute() {
         return {
@@ -14,12 +14,10 @@ describe('ProcessPdfService V2 visual overflow', () => {
               {
                 schemaVersion: 'visual-fallback/v2' as const,
                 policyVersion: 'gemini-whole-page-critical-v2' as const,
-                outcome: 'unavailable' as const,
-                state: 'fallback_failed' as const,
+                outcome: 'skipped' as const,
+                state: 'fallback_skipped' as const,
                 reasons: ['corrupted-symbols' as const],
                 offsetEncoding: 'utf16_code_units' as const,
-                sourceRange: { start: 0, end: pageText.length },
-                riskySpans: [{ start: 0, end: pageText.length }],
                 selectedTextSource: 'ocr' as const,
                 decisionReason: 'budget_exhausted' as const,
               },
@@ -28,6 +26,20 @@ describe('ProcessPdfService V2 visual overflow', () => {
           acceptedVisualTextByPage: new Map(),
           selectedPageCount: 1,
           enabled: true,
+          summary: {
+            status: 'evaluated' as const,
+            eligiblePageCount: 2,
+            admittedPageCount: 1,
+            renderAttemptedPageCount: 1,
+            providerAttemptedPageCount: 1,
+            selectedVisualPageCount: 0,
+            reconciledPageCount: 0,
+            shadowPageCount: 0,
+            conflictPageCount: 1,
+            unavailablePageCount: 0,
+            budgetSkippedPageCount: 1,
+            budgetSkippedByScope: { pdf: 1, job: 0 },
+          },
         }
       },
     })
@@ -35,17 +47,16 @@ describe('ProcessPdfService V2 visual overflow', () => {
     const result = await service.executeEnhanced(enhancedPdfFile, {
       onEnhancedMetadata: metadata => {
         pageQuality = metadata.pageQuality as Array<Record<string, unknown>>
+        visualFallbackSummary = metadata.visualFallbackSummary
       },
     })
 
     expect(result.error).toBeNull()
     expect(pageQuality?.[0]).not.toHaveProperty('visualFallback')
-    expect(pageQuality?.[1]?.visualFallback).toMatchObject({
-      schemaVersion: 'visual-fallback/v2',
-      outcome: 'unavailable',
-      decisionReason: 'budget_exhausted',
-      sourceRange: { start: pageText.length + 2, end: pageText.length * 2 + 2 },
-      riskySpans: [{ start: pageText.length + 2, end: pageText.length * 2 + 2 }],
+    expect(pageQuality?.[1]).not.toHaveProperty('visualFallback')
+    expect(visualFallbackSummary).toMatchObject({
+      budgetSkippedPageCount: 1,
+      budgetSkippedByScope: { pdf: 1, job: 0 },
     })
   })
 })

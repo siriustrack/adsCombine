@@ -28,7 +28,7 @@ describe('VisualFallbackService reconciliation', () => {
     expect(result.byPage.get(1)).not.toHaveProperty('candidateText')
   })
 
-  test('marks risky pages skipped by the shared budget as unresolved', async () => {
+  test('marks risky pages skipped by the shared budget without reporting a failure', async () => {
     const result = await createService('unused').execute({
       buffer: Buffer.from('pdf'),
       fileName: 'generic.pdf',
@@ -36,7 +36,7 @@ describe('VisualFallbackService reconciliation', () => {
       pageBudget: { reserve: () => false, remaining: () => 0 },
     })
     expect(result.byPage.get(1)).toMatchObject({
-      state: 'fallback_failed',
+      state: 'fallback_skipped',
       decisionReason: 'budget_exhausted',
       reasons: ['fragmented-number-or-measure', 'garbled-spans'],
     })

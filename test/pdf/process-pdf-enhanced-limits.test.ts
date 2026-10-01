@@ -341,4 +341,233 @@ describe('ProcessPdfService enhanced OCR limits', () => {
       },
     ])
   })
+
+  test('preserves strong native text before visual fallback when OCR loses legal status', async () => {
+    const nativeText = [
+      'CPF 123.456.789-10',
+      'Data 01/02/2026',
+      'Valor R$ 1.234,56',
+      'Art. 1 Dispositivo revogado.',
+      'Art. 2 Dispositivo revogado.',
+      'conteúdo normativo válido '.repeat(500),
+    ].join('\n')
+    const ocrText = nativeText.replace(
+      'Art. 1 Dispositivo revogado.',
+      'Art. 1 Dispositivo vigente.'
+    )
+    let visualCalls = 0
+    let metadata: Record<string, unknown> | undefined
+    const service = new ProcessPdfService(
+      {
+        async downloadFile() {
+          return { value: { buffer: Buffer.from('pdf'), contentLength: 3 }, error: undefined }
+        },
+      },
+      {
+        async extractTextFromPdf() {
+          return { value: { text: nativeText, totalPages: 1, pages: [] }, error: undefined }
+        },
+      },
+      undefined,
+      {
+        async processWithOcr() {
+          throw new Error('legacy OCR must not run')
+        },
+        async processPagesWithOcr() {
+          throw new Error('selected-page OCR must not run')
+        },
+        async processWithEnhancedOcr() {
+          return {
+            value: {
+              ocrText,
+              totalPages: 1,
+              pages: [
+                {
+                  pageNumber: 1,
+                  text: ocrText,
+                  meanConfidence: 96,
+                  wordCount: 1_000,
+                  warnings: [],
+                },
+              ],
+              chunksProcessed: 1,
+              processingTime: 1,
+            },
+            error: undefined,
+          }
+        },
+      },
+      {
+        async execute() {
+          visualCalls++
+          throw new Error('visual fallback must not run')
+        },
+      }
+    )
+
+    const result = await service.executeEnhanced(file, {
+      onEnhancedMetadata: value => {
+        metadata = value
+      },
+    })
+
+    expect(result.value).toContain('Dispositivo revogado')
+    expect(result.value).not.toContain('Dispositivo vigente')
+    expect(visualCalls).toBe(0)
+    expect(metadata).toMatchObject({
+      metricsSource: 'ocr',
+      pageCount: 1,
+      textSelection: {
+        source: 'native',
+        reason: 'ocr_lost_legal_marker',
+        pageMapping: 'unavailable',
+      },
+      pageQuality: [expect.objectContaining({ classification: 'native-preserved' })],
+    })
+  })
+
+  test('emits native-preserved metadata when enhanced OCR returns no text', async () => {
+    const nativeText = 'Texto nativo preservado de documento digital.'
+    let metadata: Record<string, unknown> | undefined
+    const service = new ProcessPdfService(
+      {
+        async downloadFile() {
+          return { value: { buffer: Buffer.from('pdf'), contentLength: 3 }, error: undefined }
+        },
+      },
+      {
+        async extractTextFromPdf() {
+          return { value: { text: nativeText, totalPages: 1, pages: [] }, error: undefined }
+        },
+      },
+      undefined,
+      {
+        async processWithOcr() {
+          throw new Error('legacy OCR must not run')
+        },
+        async processPagesWithOcr() {
+          throw new Error('selected-page OCR must not run')
+        },
+        async processWithEnhancedOcr() {
+          return {
+            value: {
+              ocrText: '',
+              totalPages: 1,
+              pages: [
+                {
+                  pageNumber: 1,
+                  text: '',
+                  meanConfidence: 0,
+                  wordCount: 0,
+                  warnings: ['no-text-detected'],
+                },
+              ],
+              chunksProcessed: 1,
+              processingTime: 1,
+            },
+            error: undefined,
+          }
+        },
+      },
+      {
+        async execute() {
+          throw new Error('visual fallback must not run')
+        },
+      }
+    )
+
+    const result = await service.executeEnhanced(file, {
+      onEnhancedMetadata: value => {
+        metadata = value
+      },
+    })
+
+    expect(result.value).toContain(nativeText)
+    expect(metadata).toMatchObject({
+      pageCount: 1,
+      metricsSource: 'ocr',
+      textSelection: {
+        source: 'native',
+        reason: 'ocr_empty',
+        pageMapping: 'unavailable',
+      },
+      visualFallbackSummary: {
+        status: 'native_preserved',
+        providerAttemptedPageCount: 0,
+      },
+      pageQuality: [
+        expect.objectContaining({
+          pageNumber: 1,
+          confidence: 0,
+          wordCount: 0,
+          classification: 'native-preserved',
+          warnings: ['no-text-detected'],
+        }),
+      ],
+    })
+  })
+
+  test('emits native-preserved metadata when enhanced OCR fails', async () => {
+    const nativeText = 'Texto nativo preservado após falha do worker OCR.'
+    let metadata: Record<string, unknown> | undefined
+    const service = new ProcessPdfService(
+      {
+        async downloadFile() {
+          return { value: { buffer: Buffer.from('pdf'), contentLength: 3 }, error: undefined }
+        },
+      },
+      {
+        async extractTextFromPdf() {
+          return { value: { text: nativeText, totalPages: 1, pages: [] }, error: undefined }
+        },
+      },
+      undefined,
+      {
+        async processWithOcr() {
+          throw new Error('legacy OCR must not run')
+        },
+        async processPagesWithOcr() {
+          throw new Error('selected-page OCR must not run')
+        },
+        async processWithEnhancedOcr() {
+          return { value: undefined, error: new Error('OCR worker failed') }
+        },
+      },
+      {
+        async execute() {
+          throw new Error('visual fallback must not run')
+        },
+      }
+    )
+
+    const result = await service.executeEnhanced(file, {
+      onEnhancedMetadata: value => {
+        metadata = value
+      },
+    })
+
+    expect(result.value).toContain(nativeText)
+    expect(metadata).toMatchObject({
+      pageCount: 1,
+      metricsSource: 'ocr',
+      textSelection: {
+        source: 'native',
+        reason: 'ocr_failed',
+        enhancedLength: 0,
+        pageMapping: 'unavailable',
+      },
+      visualFallbackSummary: {
+        status: 'native_preserved',
+        providerAttemptedPageCount: 0,
+      },
+      pageQuality: [
+        {
+          pageNumber: 1,
+          classification: 'native-preserved',
+          shouldOcr: true,
+          warnings: ['ocr-processing-failed'],
+        },
+      ],
+    })
+  })
 })

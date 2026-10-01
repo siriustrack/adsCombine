@@ -134,6 +134,7 @@ export class ProcessMessageJobService {
         enhancedResult:
           job.profile === 'enhanced-ocr'
             ? {
+                schemaVersion: 'enhanced-ocr/v2',
                 profile: 'enhanced-ocr',
                 summary: createEnhancedSummary(_enhancedResult?.files ?? []),
                 files: _enhancedResult?.files ?? [],
@@ -234,15 +235,96 @@ function createEnhancedSummary(
     page.confidence === undefined ? [] : [page.confidence]
   )
 
+  const warningsByType: Record<string, number> = {}
+  let warningPageCount = 0
+  for (const page of pages) {
+    if ((page.warnings?.length ?? 0) > 0) warningPageCount++
+    for (const warning of page.warnings ?? []) {
+      warningsByType[warning] = (warningsByType[warning] ?? 0) + 1
+    }
+  }
+  const textSelection = files.reduce(
+    (total, file) => {
+      const selection = file.textSelection
+      if (!selection) return total
+      if (selection.source === 'native') total.nativeFileCount++
+      if (selection.source === 'enhanced') total.enhancedFileCount++
+      total.byReason[selection.reason]++
+      return total
+    },
+    {
+      nativeFileCount: 0,
+      enhancedFileCount: 0,
+      byReason: {
+        ocr_empty: 0,
+        ocr_failed: 0,
+        ocr_materially_less_complete: 0,
+        ocr_lost_legal_marker: 0,
+        enhanced_selected: 0,
+      },
+    }
+  )
+  const visual = files.reduce(
+    (total, file) => {
+      const summary = file.visualFallbackSummary
+      if (!summary) return total
+      for (const key of [
+        'eligiblePageCount',
+        'admittedPageCount',
+        'renderAttemptedPageCount',
+        'providerAttemptedPageCount',
+        'selectedVisualPageCount',
+        'reconciledPageCount',
+        'shadowPageCount',
+        'conflictPageCount',
+        'unavailablePageCount',
+        'budgetSkippedPageCount',
+      ] as const) {
+        total[key] += summary[key]
+      }
+      total.budgetSkippedByScope.pdf += summary.budgetSkippedByScope.pdf
+      total.budgetSkippedByScope.job += summary.budgetSkippedByScope.job
+      total.filesByStatus[summary.status]++
+      return total
+    },
+    {
+      eligiblePageCount: 0,
+      admittedPageCount: 0,
+      renderAttemptedPageCount: 0,
+      providerAttemptedPageCount: 0,
+      selectedVisualPageCount: 0,
+      reconciledPageCount: 0,
+      shadowPageCount: 0,
+      conflictPageCount: 0,
+      unavailablePageCount: 0,
+      budgetSkippedPageCount: 0,
+      budgetSkippedByScope: { pdf: 0, job: 0 },
+      filesByStatus: {
+        evaluated: 0,
+        disabled: 0,
+        native_preserved: 0,
+        aborted: 0,
+      },
+    }
+  )
+
   return {
     fileCount: files.length,
-    pageCount: pages.length,
+    pageCount: files.reduce(
+      (total, file) => total + (file.pageCount ?? file.pageQuality?.length ?? 0),
+      0
+    ),
     averageConfidence:
       confidences.length > 0
         ? confidences.reduce((total, confidence) => total + confidence, 0) / confidences.length
         : undefined,
     totalWordCount: pages.reduce((total, page) => total + (page.wordCount ?? 0), 0),
     warningCount: pages.reduce((total, page) => total + (page.warnings?.length ?? 0), 0),
+    metricsSource: 'ocr',
+    warningPageCount,
+    warningsByType,
+    textSelection,
+    visual,
   }
 }
 

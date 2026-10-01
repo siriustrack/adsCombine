@@ -49,6 +49,7 @@ const ALL_CRITICAL_CATEGORIES = [
   'measurement',
   'registry_identifier',
   'registry_marker',
+  'legal_status',
   'negation',
   'number',
 ] as const
@@ -137,6 +138,23 @@ export function createV2FullPageMetadata({
     state: 'conflict',
     selectedTextSource: 'ocr',
     decisionReason: outcome.reason,
+  }
+}
+
+export function createV2BudgetSkippedMetadata({
+  reasons,
+}: {
+  reasons: VisualFallbackReason[]
+}): VisualFallbackV2Metadata {
+  return {
+    schemaVersion: VISUAL_FALLBACK_V2_SCHEMA_VERSION,
+    policyVersion: GEMINI_WHOLE_PAGE_CRITICAL_POLICY_VERSION,
+    outcome: 'skipped',
+    state: 'fallback_skipped',
+    reasons,
+    offsetEncoding: 'utf16_code_units',
+    selectedTextSource: 'ocr',
+    decisionReason: 'budget_exhausted',
   }
 }
 

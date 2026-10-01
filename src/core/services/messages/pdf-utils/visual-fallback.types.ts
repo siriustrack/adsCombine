@@ -11,6 +11,7 @@ export const CRITICAL_TOKEN_ALIGNMENT_VERSION = 'critical-token-alignment-v1' as
 
 export type VisualFallbackState =
   | 'ocr_only'
+  | 'fallback_skipped'
   | 'fallback_pending'
   | 'fallback_failed'
   | 'ocr_plus_visual_candidate'
@@ -62,6 +63,7 @@ export type CriticalCategory =
   | 'measurement'
   | 'registry_identifier'
   | 'registry_marker'
+  | 'legal_status'
   | 'negation'
   | 'number'
 
@@ -87,6 +89,15 @@ type VisualFallbackV2Base = VisualFallbackMetadataBase & {
 }
 
 export type VisualFallbackV2Metadata =
+  | (VisualFallbackV2Base & {
+      outcome: 'skipped'
+      state: 'fallback_skipped'
+      selectedTextSource: 'ocr'
+      decisionReason: 'budget_exhausted'
+      alignmentVersion?: never
+      criticalUncertainties?: never
+      provenance?: never
+    })
   | (VisualFallbackV2Base & {
       outcome: 'selected'
       state: 'reconciled'

@@ -23,9 +23,17 @@ Risky pages are sorted before `maxPagesPerPdf` is applied:
 1. no-text / weak OCR evidence
 2. corrupted symbols, garbled spans, or fragmented numbers/measures
 3. missing legal marker or missing measure risks
-4. page-number order for ties
+4. within the same severity, the measured intensity of corruption, fragmentation, garbling,
+   missing markers, and confidence deficit
+5. page-number order only when severity and intensity are equal
 
-Pages excluded by the per-PDF cap are recorded as `fallback_failed` with `decisionReason: budget_exhausted` in V1, matching the existing V2 budget semantics.
+Organizational expressions such as `área de atuação`, `área de competência`, `área de
+conhecimento`, and `área de jurisdição` do not trigger the physical-measure risk.
+
+Pages excluded by per-PDF or per-job limits are internal `fallback_skipped` /
+`outcome: skipped` decisions with `decisionReason: budget_exhausted`. They are not provider
+or rendering failures, are omitted from page-level public metadata, and are counted only in
+the file/job aggregate summary by `pdf` or `job` scope.
 
 ## Latency trade-offs
 

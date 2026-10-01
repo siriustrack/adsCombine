@@ -45,6 +45,9 @@ function categoryFor(value: string, prefix: string): CriticalCategory | undefine
   if (/^\d+\s*\/\s*\d+$/u.test(value)) return 'fraction'
   if (/^\d+(?:[.,]\d+)*\s*(?:mm|cm|km|m²|m2|m|ha)$/iu.test(value)) return 'measurement'
   if (/^(?:R|AV)\s*\./iu.test(value)) return 'registry_marker'
+  if (/^(?:revogad[oa]s?|vigente|acrescid[oa]s?|alterad[oa]s?|inclu[ií]d[oa]s?)$/iu.test(value)) {
+    return 'legal_status'
+  }
   if (/^(?:não|nao|sem|nunca|jamais|inexistente|inexistem|nenhum|nenhuma)$/iu.test(value)) {
     return 'negation'
   }

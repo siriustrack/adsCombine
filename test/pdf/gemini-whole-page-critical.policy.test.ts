@@ -83,6 +83,23 @@ describe('gemini-whole-page-critical-v2 reconciliation policy', () => {
     ])
   })
 
+  test('marks changes in legal status as critical uncertainty', () => {
+    const visualText = 'Art. 1. Dispositivo vigente.'
+    const result = reconcileGeminiWholePage({
+      ocrText: 'Art. 1. Dispositivo revogado.',
+      visualText,
+    })
+
+    expect(result.status).toBe('selected')
+    if (result.status !== 'selected') throw new Error('expected selected candidate')
+    expect(
+      result.metadata.criticalUncertainties.map(range => ({
+        text: visualText.slice(range.start, range.end),
+        categories: range.categories,
+      }))
+    ).toEqual([{ text: 'vigente', categories: ['legal_status'] }])
+  })
+
   test.each([
     [32, 32],
     [33, 1],
@@ -143,6 +160,7 @@ describe('gemini-whole-page-critical-v2 reconciliation policy', () => {
     ['Desculpe, não posso ajudar com essa solicitação.', 'candidate_empty_after_sanitization'],
     ['Matrícula nº 12.345…', 'candidate_truncated'],
     ['texto \ud800 inválido', 'candidate_invalid_utf16'],
+    ['texto inválido\ud800', 'candidate_invalid_utf16'],
   ] as const)('rejects invalid candidate %s', (visualText, reason) => {
     const result = reconcileGeminiWholePage({
       ocrText: 'Matrícula nº 12.345 com descrição integral e encerramento do registro.',

@@ -31,10 +31,12 @@ Selective Gemini visual fallback, job queue parameters, OCR hard limits, and sou
 
 | Environment Variable | Type | Default | Validation / Constraint | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| `BASE_URL` | string | `undefined` | required non-empty string | Service public base URL used for absolute endpoint links. |
+| `BASE_URL` | URL | `undefined` | required valid URL | Canonical public origin used for job and signed download links; request `Host` is not trusted for link generation. |
 | `PORT` | integer | `3000` | positive integer | HTTP server listening port. |
 | `TOKEN` | string (secret) | `undefined` | required non-empty string | Standard bearer token for legacy route protection. |
 | `JOBS_TOKEN` | string (secret) | `undefined` | required non-empty string | Bearer token required for enhanced jobs API authentication. |
+| `TEXTS_SIGNING_SECRET` | string (secret) | `undefined` | optional; when provided, exactly 64 hexadecimal characters | Preferred dedicated HMAC-SHA256 key for `/texts` signatures. When omitted, a stable domain-separated key is derived from the required `TOKEN`, preserving signed downloads for legacy deployments. |
+| `TEXTS_URL_TTL_SECONDS` | integer | `900` | positive integer, max `86400` | Lifetime of each signed text download URL. |
 | `REQUEST_LOGS_ENABLED` | boolean | `false` | boolean | Toggle for verbose HTTP request/route logging. |
 | `OPENAI_API_KEY` | string (secret) | `undefined` | required non-empty string | OpenAI API key used for standard transcription processing. |
 | `OPENAI_MODEL_TEXT` | string | `undefined` | required non-empty string | Default OpenAI model for text processing operations. |
@@ -117,9 +119,9 @@ Raw visual candidate text is **ephemeral and immutable outside the in-memory rec
 
 `safe-visual-v1` is deterministic and conservative. It first normalizes NFC, line endings, whitespace, and soft hyphens. Equal normalized text retains OCR. Promotion requires OCR confidence of at least 70 for alignment, similarity of at least 0.99, edit distance at most 20, length ratio from 0.95 through 1.05, unchanged protected content, and an exact non-whitespace content match where the visual text only reduces spacing or fragmentation. Changes to numbers, dates, currency, fractions, CPF/CNPJ, measurements, matrícula identifiers, `R.`/`AV.` markers, negation-sensitive text, or any other alphanumeric content produce `conflict`. Confidence below 90 is never, by itself, a promotion or eligibility signal.
 
-`gemini-whole-page-critical-v2` is an explicit Gemini-only policy. For a valid candidate it selects the complete sanitized Gemini page; it never splices OCR and visual fragments. OCR remains an ephemeral, equal-status witness used to identify disputed critical content. Divergences involving dates, CPF/CNPJ, currency, fractions, measurements, registry identifiers, `R.`/`AV.` markers, negations, or isolated numbers become `criticalUncertainties` with token, clause, or page scope and UTF-16 `[start,end)` offsets. Outcomes are `selected`, `shadow`, `unavailable`, or `rejected` under schema `visual-fallback/v2` and alignment `critical-token-alignment-v1`. Production uses `VISUAL_FALLBACK_MAX_ALIGNMENT_CELLS=10000000`, `VISUAL_FALLBACK_MAX_PAGES_PER_PDF=6`, `MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB=6`, and `VISUAL_FALLBACK_CONCURRENCY=1`.
+`gemini-whole-page-critical-v2` is an explicit Gemini-only policy. For a valid candidate it selects the complete sanitized Gemini page; it never splices OCR and visual fragments. OCR remains an ephemeral, equal-status witness used to identify disputed critical content. Divergences involving dates, CPF/CNPJ, currency, fractions, measurements, registry identifiers, `R.`/`AV.` markers, legal-status terms, negations, or isolated numbers become `criticalUncertainties` with token, clause, or page scope and UTF-16 `[start,end)` offsets. Outcomes are `selected`, `shadow`, `unavailable`, `rejected`, or `skipped` under schema `visual-fallback/v2` and alignment `critical-token-alignment-v1`. `skipped` is reserved for budget exclusion and is not a failed provider attempt. Production uses `VISUAL_FALLBACK_MAX_ALIGNMENT_CELLS=10000000`, `VISUAL_FALLBACK_MAX_PAGES_PER_PDF=6`, `MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB=6`, and `VISUAL_FALLBACK_CONCURRENCY=1`.
 
-V2 uses no second adjudication/model strategy; configured retries may repeat the same provider request. Provider failures, abstention, budget exhaustion, invalid/truncated candidates, alignment-budget failure, or invalid range rebasing retain OCR and remain fail-closed. Any selected Gemini text and its uncertainty metadata are emitted atomically; invalid metadata never causes uncertainties to be silently dropped.
+V2 uses no second adjudication/model strategy; configured retries may repeat the same provider request. Provider failures, abstention, invalid/truncated candidates, alignment-budget failure, or invalid range rebasing retain OCR and remain fail-closed. Budget exhaustion also retains OCR but is represented separately as a skipped page, never as a render/provider failure. Any selected Gemini text and its uncertainty metadata are emitted atomically; invalid metadata never causes uncertainties to be silently dropped.
 
 #### Repeated Page Furniture
 
@@ -178,6 +180,7 @@ Accepted page text is assembled in page order. `sourceRange` and `riskySpans` ar
 | State | Description |
 | :--- | :--- |
 | `ocr_only` | Page was not evaluated because no bounded risk signals were detected. |
+| `fallback_skipped` | Page was risky but excluded before rendering/provider work by a per-PDF or per-job budget. This internal state is compacted into aggregate summaries and omitted from page-level public metadata. |
 | `fallback_pending` | Visual fallback rendering or selected provider request is currently in progress. |
 | `fallback_failed` | Visual fallback failed due to rendering error, timeout (default 15s, max 120s), max retries exceeded (default 1, max 3), or API failure. |
 | `ocr_plus_visual_candidate` | Visual candidate generated successfully in shadow mode (`VISUAL_FALLBACK_SHADOW_MODE=true`). Candidate text is not saved. |
@@ -186,7 +189,30 @@ Accepted page text is assembled in page order. `sourceRange` and `riskySpans` ar
 
 ---
 
-## 4. Storage & Download URL Allowlist Configuration
+## 4. Signed Result Downloads and Source URL Allowlist
+
+Processed text is stored under `public/texts/<conversationId>/<random-uuid>.txt`, but the
+directory is not exposed through static middleware. API responses return a versioned
+HMAC-SHA256 URL with `exp` and `sig` query parameters. `GET` and `HEAD` validate the same
+read scope, expiry, exact query contract, conversation identifier, filename grammar, and
+real filesystem target before serving a regular non-symlink file.
+
+Job JSON intentionally omits signed URLs and expiration timestamps. Each authenticated job
+result read generates a fresh URL from `BASE_URL`, so persisted signatures do not outlive
+their intended TTL. Access logs omit the query string, and structured URL redaction never
+logs the artifact path or signature.
+
+Deployment migration:
+1. Existing deployments may omit `TEXTS_SIGNING_SECRET`; the service derives a stable,
+   domain-separated signing key from the already-required `TOKEN`.
+2. For stronger key separation, generate a cryptographically random 32-byte key, encode it
+   as 64 hexadecimal characters, and set `TEXTS_SIGNING_SECRET`.
+3. Set `TEXTS_URL_TTL_SECONDS` and a valid canonical `BASE_URL` before starting the new
+   release.
+4. Deploy API consumers that accept `downloadExpiresAt` and refresh the authenticated job
+   result when a URL expires.
+5. Existing text files require no data migration; old unsigned `/texts/...` URLs stop
+   working after this release.
 
 To guard against SSRF (Server-Side Request Forgery) and unauthorized resource access, `FileDownloadService` enforces strict origin allowlists when downloading source files.
 
@@ -224,6 +250,20 @@ Roll back immediately if logs expose private data, flag-on output differs from i
 3. Disable shadow mode only for a bounded cohort after metadata and latency remain stable.
 4. Roll back instantly by restoring `VISUAL_RECONCILIATION_POLICY_VERSION=safe-visual-v1`; historical V1 and V2 JSON metadata require no database migration.
 
+### Enhanced result summary contract
+
+Newly completed enhanced jobs use `schemaVersion: enhanced-ocr/v2`. The summary keeps the
+legacy totals and adds:
+
+- `warningPageCount` and `warningsByType`;
+- `textSelection.nativeFileCount`, `enhancedFileCount`, and counts by selection reason;
+- aggregate visual eligibility, admission, render/provider attempts, selected/reconciled,
+  shadow, conflict, unavailable, and budget-skipped page counts;
+- budget-skipped counts split by `pdf` and `job`, plus visual file counts by status.
+
+Historical JSON without `schemaVersion` or the new optional fields remains readable and
+requires no database migration.
+
 ### Contextual Pairing Observation Prerequisites
 
 Keep candidate pairing observe-only. Before enabling it, confirm provider privacy approval, log redaction, alerting, incumbent flag-off baselines, and enough latency headroom for a second CPU reconciliation pass. Use all of the following settings together:
@@ -248,11 +288,17 @@ Enable these settings only for a bounded deployment cohort selected by infrastru
 
 ## 7. Security Protocols & Secret Rotation
 
-- **Never Commit Secrets**: `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, `JOBS_TOKEN`, `OPENAI_API_KEY`, and other secrets must remain strictly in environment variables and never committed to source control or public files.
+- **Never Commit Secrets**: `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, `JOBS_TOKEN`, `TEXTS_SIGNING_SECRET`, `OPENAI_API_KEY`, and other secrets must remain strictly in environment variables and never committed to source control or public files.
 - **Secret Rotation Protocol**: If any API key is exposed in logs, git commit history, or unencrypted storage, operators MUST immediately:
   1. Revoke the compromised API key in the provider console (e.g., Google Cloud Console).
   2. Generate a new API key.
   3. Update environment configuration and restart application services.
+
+Rotating `TEXTS_SIGNING_SECRET` immediately invalidates every outstanding download URL.
+Rotate it by updating all service instances together, restarting them, and requiring clients
+to fetch a fresh authenticated result. When the explicit secret is omitted, rotating `TOKEN`
+also rotates the derived signing key and invalidates outstanding URLs. The derivation uses a
+dedicated domain, so the bearer token itself is never used directly as the download HMAC key.
 
 ---
 
@@ -260,8 +306,8 @@ Enable these settings only for a bounded deployment cohort selected by infrastru
 
 Operators should track the following health indicators in service logs:
 - **Visual Fallback Success Rate**: Percentage of processed pages reaching `reconciled` or `ocr_plus_visual_candidate` vs `fallback_failed`.
-- **Budget Rejections**: Logged events when job page count hits `MAX_TOTAL_VISUAL_FALLBACK_PAGES_PER_JOB` (default 6).
-- **V2 Reconciliation Health**: Distribution of `selected`, `shadow`, `unavailable`, and `rejected`, decision reasons, critical uncertainty count/scope, and alignment or rebase failures.
+- **Budget Skips**: Aggregate `budgetSkippedPageCount` and `budgetSkippedByScope` when per-PDF or per-job limits exclude pages before provider work.
+- **V2 Reconciliation Health**: Distribution of `selected`, `shadow`, `unavailable`, `rejected`, and `skipped`, decision reasons, critical uncertainty count/scope, and alignment or rebase failures.
 - **Latency**: Visual provider and end-to-end job latency before and after V2 activation. V2 has no second adjudication/model strategy; configured retries may repeat the same provider request.
 - **Download Security Rejections**: Log entries generated when source URLs fail `SourceUrlPolicy` allowlist verification.
 

@@ -1,8 +1,13 @@
 import type { FileInfo } from 'api/controllers/messages.controllers'
+import type { EnhancedTextSelection } from './pdf-utils/enhanced-text-selection'
 import type { VisualFallbackMetadata } from './pdf-utils/visual-fallback.types'
 
 export type EnhancedPdfMetadata = {
   fileId: string
+  pageCount?: number
+  metricsSource?: 'ocr'
+  textSelection?: EnhancedTextSelection
+  visualFallbackSummary?: VisualFallbackFileSummary
   pageQuality?: Array<{
     pageNumber: number
     qualityScore?: number
@@ -32,6 +37,24 @@ export type EnhancedPdfMetadata = {
     warnings?: string[]
     visualFallback?: VisualFallbackMetadata
   }>
+}
+
+export type VisualFallbackFileSummary = {
+  status: 'evaluated' | 'disabled' | 'native_preserved' | 'aborted'
+  eligiblePageCount: number
+  admittedPageCount: number
+  renderAttemptedPageCount: number
+  providerAttemptedPageCount: number
+  selectedVisualPageCount: number
+  reconciledPageCount: number
+  shadowPageCount: number
+  conflictPageCount: number
+  unavailablePageCount: number
+  budgetSkippedPageCount: number
+  budgetSkippedByScope: {
+    pdf: number
+    job: number
+  }
 }
 
 export type ProcessMessagesOptions = {

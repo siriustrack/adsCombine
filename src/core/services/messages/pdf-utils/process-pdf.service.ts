@@ -6,8 +6,11 @@ import { redactUrl } from '@lib/redact-url'
 import { errResult, okResult, type Result } from '@lib/result.types'
 import { sanitizePdfText } from 'utils/sanitize'
 import type { FileInput } from '../process-messages.service'
+import type { EnhancedPdfMetadata } from '../process-messages.types'
+import { selectEnhancedDocumentText } from './enhanced-text-selection'
+import { summarizeOcrPages } from './enhanced-ocr-summary'
 import { FileDownloadService } from './file-download.service'
-import { OcrOrchestrator } from './ocr-orchestrator.service'
+import { OcrOrchestrator, type OcrPageResult } from './ocr-orchestrator.service'
 import type { PdfPageText } from './pdf-text-extractor.service'
 import { PdfTextExtractorService } from './pdf-text-extractor.service'
 import { PdfLimitError, type ProcessPdfOptions } from './process-pdf.types'
@@ -81,6 +84,30 @@ function canSelectAcceptedVisualText(
   )
 }
 
+function validateVisualFallbackSelection({
+  pages,
+  acceptedVisualTextByPage,
+  metadataByPage,
+}: {
+  pages: readonly OcrPageResult[]
+  acceptedVisualTextByPage: ReadonlyMap<number, string>
+  metadataByPage: ReadonlyMap<number, VisualFallbackMetadata>
+}): Error | undefined {
+  for (const page of pages) {
+    const candidate = acceptedVisualTextByPage.get(page.pageNumber)
+    const metadata = metadataByPage.get(page.pageNumber)
+    if (metadata?.state === 'fallback_skipped') continue
+    if (candidate && !canSelectAcceptedVisualText(candidate, metadata)) {
+      return new Error('Invalid V2 selected visual metadata or ranges')
+    }
+    const persistedPageText = sanitizePdfText(candidate ?? page.text)
+    if (metadata && !hasMatchingV2Ranges(metadata, persistedPageText)) {
+      return new Error('Invalid V2 visual metadata range integrity')
+    }
+  }
+  return undefined
+}
+
 function isBlankUnavailableV2Metadata(
   metadata: Extract<VisualFallbackMetadata, { policyVersion: 'gemini-whole-page-critical-v2' }>,
   text: string
@@ -139,10 +166,68 @@ function composePages(pages: Array<{ pageNumber: number; text: string }>): {
   return { text: parts.join('\n\n'), rangesByPage }
 }
 
+function createNativePreservedPageQuality({
+  totalPages,
+  pagesByNumber,
+}: {
+  totalPages: number
+  pagesByNumber: ReadonlyMap<number, OcrPageResult>
+}): NonNullable<EnhancedPdfMetadata['pageQuality']> {
+  return Array.from({ length: totalPages }, (_, index) => {
+    const pageNumber = index + 1
+    const page = pagesByNumber.get(pageNumber)
+    const noTextWarning = !page?.text.trim() ? ['no-text-detected'] : []
+    const warnings = [...new Set([...(page?.warnings ?? []), ...noTextWarning])]
+    return {
+      pageNumber,
+      qualityScore: page?.meanConfidence,
+      confidence: page?.meanConfidence,
+      classification: 'native-preserved',
+      shouldOcr: true,
+      ocrDecisionReason: page?.selectedAttempt?.label,
+      wordCount: page?.wordCount,
+      selectedAttempt: page?.selectedAttempt,
+      legalSignals: page?.legalSignals,
+      warnings,
+    }
+  })
+}
+
+function createFailedOcrPageQuality(
+  totalPages: number
+): NonNullable<EnhancedPdfMetadata['pageQuality']> {
+  return Array.from({ length: totalPages }, (_, index) => ({
+    pageNumber: index + 1,
+    classification: 'native-preserved',
+    shouldOcr: true,
+    warnings: ['ocr-processing-failed'],
+  }))
+}
+
+function createNativePreservedVisualSummary(): NonNullable<
+  EnhancedPdfMetadata['visualFallbackSummary']
+> {
+  return {
+    status: 'native_preserved',
+    eligiblePageCount: 0,
+    admittedPageCount: 0,
+    renderAttemptedPageCount: 0,
+    providerAttemptedPageCount: 0,
+    selectedVisualPageCount: 0,
+    reconciledPageCount: 0,
+    shadowPageCount: 0,
+    conflictPageCount: 0,
+    unavailablePageCount: 0,
+    budgetSkippedPageCount: 0,
+    budgetSkippedByScope: { pdf: 0, job: 0 },
+  }
+}
+
 function withFinalSourceRange(
   metadata: VisualFallbackMetadata,
   sourceRange: { start: number; end: number } | undefined
 ): VisualFallbackMetadata {
+  if (metadata.state === 'fallback_skipped') return metadata
   if (isV2Metadata(metadata) && sourceRange !== undefined) {
     if (metadata.outcome === 'unavailable') {
       return { ...metadata, sourceRange, riskySpans: [sourceRange] }
@@ -177,7 +262,9 @@ function selectPublicVisualMetadata(
   metadata: VisualFallbackMetadata | undefined,
   sourceRange: { start: number; end: number } | undefined
 ): VisualFallbackMetadata | undefined {
-  if (!metadata || metadata.state === 'ocr_only') return undefined
+  if (!metadata || metadata.state === 'ocr_only' || metadata.state === 'fallback_skipped') {
+    return undefined
+  }
   return withFinalSourceRange(metadata, sourceRange)
 }
 
@@ -311,32 +398,36 @@ export class ProcessPdfService {
       buffer,
       totalPages,
       fileId,
+      signal: options.signal,
       maxOcrPagesPerPdf: options.maxOcrPagesPerPdf,
       ocrPageBudget: options.ocrPageBudget,
     })
     if (error) {
       if (error instanceof PdfLimitError) return errResult(error)
-      return extractedText.trim().length > 0
-        ? okResult(sanitizePdfText(extractedText))
-        : errResult(error)
+      const nativeText = sanitizePdfText(extractedText)
+      if (!nativeText) return errResult(error)
+      onEnhancedMetadata?.({
+        fileId,
+        pageCount: totalPages,
+        metricsSource: 'ocr',
+        textSelection: {
+          source: 'native',
+          reason: 'ocr_failed',
+          nativeLength: nativeText.replace(/\s/gu, '').length,
+          enhancedLength: 0,
+          pageMapping: 'unavailable',
+        },
+        visualFallbackSummary: createNativePreservedVisualSummary(),
+        pageQuality: createFailedOcrPageQuality(totalPages),
+      })
+      return okResult(nativeText)
     }
-    if (!ocrResult.ocrText.trim() && extractedText.trim().length > 0) {
-      return okResult(sanitizePdfText(extractedText))
-    }
-
     logger.debug('Enhanced all-page OCR completed', {
       fileId,
       totalPages,
       chunksProcessed: ocrResult.chunksProcessed,
       durationMs: ocrResult.processingTime,
-      pages: ocrResult.pages.map(page => ({
-        pageNumber: page.pageNumber,
-        meanConfidence: page.meanConfidence,
-        wordCount: page.wordCount,
-        selectedAttempt: page.selectedAttempt,
-        legalSignals: page.legalSignals,
-        warnings: page.warnings,
-      })),
+      pageSummary: summarizeOcrPages(ocrResult.pages),
     })
     const orderedOcrPages = [...ocrResult.pages].sort(
       (left, right) => left.pageNumber - right.pageNumber
@@ -345,6 +436,26 @@ export class ProcessPdfService {
       orderedOcrPages.map(page => ({ pageNumber: page.pageNumber, text: page.text }))
     )
     const pagesByNumber = new Map(ocrResult.pages.map(page => [page.pageNumber, page]))
+    const textSelection = selectEnhancedDocumentText({
+      nativeText: extractedText,
+      enhancedText: composedOcr.text,
+      totalPages: ocrResult.totalPages,
+      nativeQuality: this.textQualityAnalyzer.analyze(extractedText),
+    })
+    if (textSelection.selection.source === 'native') {
+      onEnhancedMetadata?.({
+        fileId,
+        pageCount: ocrResult.totalPages,
+        metricsSource: 'ocr',
+        textSelection: textSelection.selection,
+        visualFallbackSummary: createNativePreservedVisualSummary(),
+        pageQuality: createNativePreservedPageQuality({
+          totalPages: ocrResult.totalPages,
+          pagesByNumber,
+        }),
+      })
+      return okResult(combineTextResults(textSelection.text, fileId, ocrResult))
+    }
     const visualFallback = await this.visualFallbackService.execute({
       buffer,
       fileId,
@@ -369,17 +480,12 @@ export class ProcessPdfService {
         : {}),
     })
     const acceptedVisualTextByPage = visualFallback.acceptedVisualTextByPage ?? new Map()
-    for (const page of orderedOcrPages) {
-      const candidate = acceptedVisualTextByPage.get(page.pageNumber)
-      const metadata = visualFallback.byPage.get(page.pageNumber)
-      if (candidate && !canSelectAcceptedVisualText(candidate, metadata)) {
-        return errResult(new Error('Invalid V2 selected visual metadata or ranges'))
-      }
-      const persistedPageText = sanitizePdfText(candidate ?? page.text)
-      if (metadata && !hasMatchingV2Ranges(metadata, persistedPageText)) {
-        return errResult(new Error('Invalid V2 visual metadata range integrity'))
-      }
-    }
+    const selectionError = validateVisualFallbackSelection({
+      pages: orderedOcrPages,
+      acceptedVisualTextByPage,
+      metadataByPage: visualFallback.byPage,
+    })
+    if (selectionError) return errResult(selectionError)
     const selectedPages = orderedOcrPages.map(page => {
       const candidate = acceptedVisualTextByPage.get(page.pageNumber)
       const visualMetadata = visualFallback.byPage.get(page.pageNumber)
@@ -396,6 +502,12 @@ export class ProcessPdfService {
     const finalRangesByPage = composedFinal.rangesByPage
     onEnhancedMetadata?.({
       fileId,
+      pageCount: ocrResult.totalPages,
+      metricsSource: 'ocr',
+      textSelection: textSelection.selection,
+      ...(visualFallback.summary !== undefined
+        ? { visualFallbackSummary: visualFallback.summary }
+        : {}),
       pageQuality: Array.from({ length: ocrResult.totalPages }, (_, index) => {
         const pageNumber = index + 1
         const page = pagesByNumber.get(pageNumber)

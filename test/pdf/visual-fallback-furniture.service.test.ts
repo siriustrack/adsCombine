@@ -1,10 +1,20 @@
 import { expect, test } from 'bun:test'
 import { createVisualFallbackService, visualFallbackPage } from './visual-fallback.test-support'
 
+function createDeferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void
+  const promise = new Promise<void>(promiseResolve => {
+    resolve = promiseResolve
+  })
+  return { promise, resolve }
+}
+
 test('keeps V2 page concurrency and ordering while applying ephemeral furniture profiles', async () => {
   let active = 0
   let maxActive = 0
   const calls: number[] = []
+  const concurrencyReached = createDeferred()
+  const releaseProviders = createDeferred()
   const texts = [1, 2, 3].map(pageNumber =>
     [
       'CABEÇALHO SINTÉTICO',
@@ -21,7 +31,8 @@ test('keeps V2 page concurrency and ordering while applying ephemeral furniture 
         calls.push(pageNumber)
         active++
         maxActive = Math.max(maxActive, active)
-        await Bun.sleep(pageNumber === 1 ? 10 : 2)
+        if (active === 2) concurrencyReached.resolve()
+        await releaseProviders.promise
         active--
         return {
           status: 'transcribed',
@@ -44,14 +55,17 @@ test('keeps V2 page concurrency and ordering while applying ephemeral furniture 
     })
   )
 
-  const result = await service.execute({
+  const execution = service.execute({
     buffer: Buffer.from('pdf'),
     fileName: 'registro-sintetico.pdf',
     pages,
   })
+  await concurrencyReached.promise
+  expect(maxActive).toBe(2)
+  releaseProviders.resolve()
+  const result = await execution
 
   expect(calls.sort()).toEqual([1, 2, 3])
-  expect(maxActive).toBe(2)
   expect([...result.byPage.keys()]).toEqual([1, 2, 3])
   const second = result.byPage.get(2)
   expect(second).toMatchObject({ outcome: 'selected', selectedTextSource: 'visual' })
@@ -116,7 +130,8 @@ test('preserves a repeated edge fraction and profiles only visual-attempt pages'
     expect.objectContaining({ categories: ['fraction'], divergences: ['different_value'] }),
   ])
   expect(result.byPage.get(4)).toMatchObject({
-    outcome: 'unavailable',
+    outcome: 'skipped',
+    state: 'fallback_skipped',
     decisionReason: 'budget_exhausted',
   })
 })

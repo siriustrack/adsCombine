@@ -146,8 +146,8 @@ export async function processSelectedPage({
   furnitureProfile,
   config,
   provider,
-}: ProcessSelectedPageInput): Promise<void> {
-  if (signal?.aborted) return
+}: ProcessSelectedPageInput): Promise<boolean> {
+  if (signal?.aborted) return false
   if (!renderedPage) {
     byPage.set(
       page.pageNumber,
@@ -159,7 +159,7 @@ export async function processSelectedPage({
           })
         : createV1Metadata({ page, state: 'fallback_failed', reasons })
     )
-    return
+    return false
   }
 
   const processingStartedAt = Date.now()
@@ -175,7 +175,7 @@ export async function processSelectedPage({
     provider,
   })
   const transcriptionDurationMs = Date.now() - transcriptionStartedAt
-  if (signal?.aborted) return
+  if (signal?.aborted) return true
   if (transcription.status === 'unavailable') {
     byPage.set(
       page.pageNumber,
@@ -198,7 +198,7 @@ export async function processSelectedPage({
       reconciliationDurationMs: 0,
       totalDurationMs: Date.now() - processingStartedAt,
     })
-    return
+    return true
   }
   const candidate = transcription.text
   const reconciliationStartedAt = Date.now()
@@ -247,4 +247,5 @@ export async function processSelectedPage({
     reconciliationDurationMs: Date.now() - reconciliationStartedAt,
     totalDurationMs: Date.now() - processingStartedAt,
   })
+  return true
 }
