@@ -152,7 +152,19 @@ describe('ProcessPdfService enhanced OCR limits', () => {
       {
         async extractTextFromPdf() {
           return {
-            value: { text: '', totalPages: 2, pages: [] },
+            value: {
+              text: '',
+              totalPages: 2,
+              pages: [
+                {
+                  pageNumber: 2,
+                  text: `Página dois nativa ${'conteúdo confiável '.repeat(100)}`,
+                  embeddedImageCount: 0,
+                  tableCount: 0,
+                  hasVisualContent: false,
+                },
+              ],
+            },
             error: undefined,
           }
         },
@@ -218,6 +230,127 @@ describe('ProcessPdfService enhanced OCR limits', () => {
         start: 'Página um OCR\n\n'.length,
         end: `Página um OCR\n\n${visualText}`.length,
       },
+    })
+  })
+
+  test('preserves a complete native page when OCR remains materially garbled', async () => {
+    const nativePageText = [
+      '6',
+      ...Array.from(
+        { length: 80 },
+        (_, index) => `CAPÍTULO ${index + 1} ${'.'.repeat(40)} ${index + 40}`
+      ),
+    ].join('\n')
+    const ocrPageText = [
+      'CAPITULO |',
+      'PROCEDIMENTOS ADMINISTRATIVOS EM ESPÉCIE...',
+      'CAPITULO || PORN',
+      'REGULAMENTAGAO ......csccsecscscscsscecsscscsececsesessesecs',
+    ].join('\n')
+    let metadata: Array<Record<string, unknown>> | undefined
+    let textSelection: Record<string, unknown> | undefined
+    const service = new ProcessPdfService(
+      {
+        async downloadFile() {
+          return { value: { buffer: Buffer.from('pdf'), contentLength: 3 }, error: undefined }
+        },
+      },
+      {
+        async extractTextFromPdf() {
+          return {
+            value: {
+              text: nativePageText,
+              totalPages: 1,
+              pages: [
+                {
+                  pageNumber: 1,
+                  text: nativePageText,
+                  embeddedImageCount: 0,
+                  tableCount: 0,
+                  hasVisualContent: false,
+                },
+              ],
+            },
+            error: undefined,
+          }
+        },
+      },
+      undefined,
+      {
+        async processWithOcr() {
+          throw new Error('legacy OCR must not run')
+        },
+        async processPagesWithOcr() {
+          throw new Error('selected-page OCR must not run')
+        },
+        async processWithEnhancedOcr() {
+          return {
+            value: {
+              ocrText: ocrPageText,
+              totalPages: 1,
+              pages: [
+                {
+                  pageNumber: 1,
+                  text: ocrPageText,
+                  meanConfidence: 55,
+                  wordCount: 20,
+                  warnings: ['garbled-spans'],
+                },
+              ],
+              chunksProcessed: 1,
+              processingTime: 1,
+            },
+            error: undefined,
+          }
+        },
+      },
+      {
+        async execute() {
+          return {
+            byPage: new Map([
+              [
+                1,
+                {
+                  schemaVersion: 'visual-fallback/v2' as const,
+                  policyVersion: 'gemini-whole-page-critical-v2' as const,
+                  outcome: 'unavailable' as const,
+                  state: 'fallback_failed' as const,
+                  reasons: ['garbled-spans' as const],
+                  offsetEncoding: 'utf16_code_units' as const,
+                  sourceRange: { start: 0, end: ocrPageText.length },
+                  riskySpans: [{ start: 0, end: ocrPageText.length }],
+                  selectedTextSource: 'ocr' as const,
+                  decisionReason: 'provider_failed' as const,
+                },
+              ],
+            ]),
+            acceptedVisualTextByPage: new Map(),
+            selectedPageCount: 0,
+            enabled: true,
+          }
+        },
+      }
+    )
+
+    const result = await service.executeEnhanced(file, {
+      onEnhancedMetadata: value => {
+        metadata = value.pageQuality as Array<Record<string, unknown>>
+        textSelection = value.textSelection as unknown as Record<string, unknown>
+      },
+    })
+
+    expect(result.value).toBe(nativePageText)
+    expect(metadata?.[0]).toMatchObject({
+      classification: 'native-preserved',
+      warnings: ['garbled-spans'],
+    })
+    expect(metadata?.[0]).not.toHaveProperty('visualFallback')
+    expect(textSelection).toMatchObject({
+      source: 'hybrid',
+      reason: 'native_pages_preserved',
+      nativePageCount: 1,
+      enhancedPageCount: 0,
+      visualPageCount: 0,
     })
   })
 

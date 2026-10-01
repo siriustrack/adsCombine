@@ -248,7 +248,9 @@ function createEnhancedSummary(
       const selection = file.textSelection
       if (!selection) return total
       if (selection.source === 'native') total.nativeFileCount++
-      if (selection.source === 'enhanced') total.enhancedFileCount++
+      if (selection.source === 'enhanced' || selection.source === 'hybrid') {
+        total.enhancedFileCount++
+      }
       total.byReason[selection.reason]++
       return total
     },
@@ -261,6 +263,7 @@ function createEnhancedSummary(
         ocr_materially_less_complete: 0,
         ocr_lost_legal_marker: 0,
         enhanced_selected: 0,
+        native_pages_preserved: 0,
       },
     }
   )

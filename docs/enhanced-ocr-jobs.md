@@ -256,7 +256,8 @@ Newly completed enhanced jobs use `schemaVersion: enhanced-ocr/v2`. The summary 
 legacy totals and adds:
 
 - `warningPageCount` and `warningsByType`;
-- `textSelection.nativeFileCount`, `enhancedFileCount`, and counts by selection reason;
+- `textSelection.nativeFileCount`, `enhancedFileCount`, and counts by selection reason; hybrid
+  files report page-level native, OCR, and visual selection counts;
 - aggregate visual eligibility, admission, render/provider attempts, selected/reconciled,
   shadow, conflict, unavailable, and budget-skipped page counts;
 - budget-skipped counts split by `pdf` and `job`, plus visual file counts by status.

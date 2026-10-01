@@ -216,6 +216,7 @@ describe('ProcessMessageJobService', () => {
             ocr_materially_less_complete: 0,
             ocr_lost_legal_marker: 0,
             enhanced_selected: 0,
+            native_pages_preserved: 0,
           },
         },
         visual: {
@@ -364,6 +365,7 @@ describe('ProcessMessageJobService', () => {
           ocr_materially_less_complete: 0,
           ocr_lost_legal_marker: 1,
           enhanced_selected: 1,
+          native_pages_preserved: 0,
         },
       },
       visual: {

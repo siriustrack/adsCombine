@@ -7,8 +7,8 @@ import { errResult, okResult, type Result } from '@lib/result.types'
 import { sanitizePdfText } from 'utils/sanitize'
 import type { FileInput } from '../process-messages.service'
 import type { EnhancedPdfMetadata } from '../process-messages.types'
-import { selectEnhancedDocumentText } from './enhanced-text-selection'
 import { summarizeOcrPages } from './enhanced-ocr-summary'
+import { selectEnhancedDocumentText, selectEnhancedPageText } from './enhanced-text-selection'
 import { FileDownloadService } from './file-download.service'
 import { OcrOrchestrator, type OcrPageResult } from './ocr-orchestrator.service'
 import type { PdfPageText } from './pdf-text-extractor.service'
@@ -355,6 +355,7 @@ export class ProcessPdfService {
       return this.processEnhancedPdf({
         buffer: downloadedFile.buffer,
         extractedText,
+        nativePages: textData.pages,
         totalPages,
         fileId,
         fileName: this.getFileName(file),
@@ -378,6 +379,7 @@ export class ProcessPdfService {
   private async processEnhancedPdf({
     buffer,
     extractedText,
+    nativePages,
     totalPages,
     fileId,
     fileName,
@@ -386,6 +388,7 @@ export class ProcessPdfService {
   }: {
     buffer: Buffer
     extractedText: string
+    nativePages: readonly PdfPageText[]
     totalPages: number
     fileId: string
     fileName: string
@@ -436,6 +439,7 @@ export class ProcessPdfService {
       orderedOcrPages.map(page => ({ pageNumber: page.pageNumber, text: page.text }))
     )
     const pagesByNumber = new Map(ocrResult.pages.map(page => [page.pageNumber, page]))
+    const nativePagesByNumber = new Map(nativePages.map(page => [page.pageNumber, page]))
     const textSelection = selectEnhancedDocumentText({
       nativeText: extractedText,
       enhancedText: composedOcr.text,
@@ -486,17 +490,50 @@ export class ProcessPdfService {
       metadataByPage: visualFallback.byPage,
     })
     if (selectionError) return errResult(selectionError)
+    const selectedTextSourceByPage = new Map<number, 'enhanced' | 'native' | 'visual'>()
     const selectedPages = orderedOcrPages.map(page => {
       const candidate = acceptedVisualTextByPage.get(page.pageNumber)
       const visualMetadata = visualFallback.byPage.get(page.pageNumber)
+      if (candidate && canSelectAcceptedVisualText(candidate, visualMetadata)) {
+        selectedTextSourceByPage.set(page.pageNumber, 'visual')
+        return { pageNumber: page.pageNumber, text: candidate }
+      }
+
+      const nativePageText = nativePagesByNumber.get(page.pageNumber)?.text ?? ''
+      const pageSelection = selectEnhancedPageText({
+        nativeText: nativePageText,
+        enhancedText: page.text,
+        enhancedWarnings: page.warnings ?? [],
+        nativeQuality: this.textQualityAnalyzer.analyzePage(nativePageText),
+      })
+      selectedTextSourceByPage.set(page.pageNumber, pageSelection.selection.source)
       return {
         pageNumber: page.pageNumber,
-        text:
-          candidate && canSelectAcceptedVisualText(candidate, visualMetadata)
-            ? candidate
-            : page.text,
+        text: pageSelection.text,
       }
     })
+    const nativePageCount = [...selectedTextSourceByPage.values()].filter(
+      source => source === 'native'
+    ).length
+    const enhancedPageCount = [...selectedTextSourceByPage.values()].filter(
+      source => source === 'enhanced'
+    ).length
+    const visualPageCount = [...selectedTextSourceByPage.values()].filter(
+      source => source === 'visual'
+    ).length
+    const finalTextSelection =
+      nativePageCount > 0
+        ? {
+            source: 'hybrid' as const,
+            reason: 'native_pages_preserved' as const,
+            nativeLength: textSelection.selection.nativeLength,
+            enhancedLength: textSelection.selection.enhancedLength,
+            pageMapping: 'complete' as const,
+            nativePageCount,
+            enhancedPageCount,
+            visualPageCount,
+          }
+        : textSelection.selection
     const composedFinal = composePages(selectedPages)
     const finalEnhancedText = composedFinal.text
     const finalRangesByPage = composedFinal.rangesByPage
@@ -504,7 +541,7 @@ export class ProcessPdfService {
       fileId,
       pageCount: ocrResult.totalPages,
       metricsSource: 'ocr',
-      textSelection: textSelection.selection,
+      textSelection: finalTextSelection,
       ...(visualFallback.summary !== undefined
         ? { visualFallbackSummary: visualFallback.summary }
         : {}),
@@ -513,18 +550,25 @@ export class ProcessPdfService {
         const page = pagesByNumber.get(pageNumber)
         const noTextWarning = !page?.text.trim() ? ['no-text-detected'] : []
         const warnings = [...new Set([...(page?.warnings ?? []), ...noTextWarning])]
-        const visualMetadata = visualFallback.enabled
-          ? selectPublicVisualMetadata(
-              visualFallback.byPage.get(pageNumber),
-              finalRangesByPage.get(pageNumber)
-            )
-          : undefined
+        const selectedTextSource = selectedTextSourceByPage.get(pageNumber)
+        const visualMetadata =
+          visualFallback.enabled && selectedTextSource !== 'native'
+            ? selectPublicVisualMetadata(
+                visualFallback.byPage.get(pageNumber),
+                finalRangesByPage.get(pageNumber)
+              )
+            : undefined
 
         return {
           pageNumber,
           qualityScore: page?.meanConfidence ?? 0,
           confidence: page?.meanConfidence ?? 0,
-          classification: warnings.length > 0 ? 'ocr-warning' : 'ocr-selected',
+          classification:
+            selectedTextSource === 'native'
+              ? 'native-preserved'
+              : warnings.length > 0
+                ? 'ocr-warning'
+                : 'ocr-selected',
           shouldOcr: true,
           ocrDecisionReason: page?.selectedAttempt?.label,
           wordCount: page?.wordCount ?? 0,
