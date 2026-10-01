@@ -26,7 +26,7 @@ describe('PDF page policy', () => {
     const input = {
       ...requiredEnvironment,
       MAX_PDF_PAGES: '500',
-      MAX_OCR_PAGES_PER_PDF: '150',
+      MAX_OCR_PAGES_PER_PDF: '500',
       MAX_TOTAL_OCR_PAGES_PER_JOB: '300',
     }
     // When
@@ -34,7 +34,7 @@ describe('PDF page policy', () => {
     // Then
     expect(parsed).toMatchObject({
       MAX_PDF_PAGES: 500,
-      MAX_OCR_PAGES_PER_PDF: 150,
+      MAX_OCR_PAGES_PER_PDF: 500,
       MAX_TOTAL_OCR_PAGES_PER_JOB: 300,
       EXTRACTION_MAX_FILE_BYTES: 104_857_600,
     })

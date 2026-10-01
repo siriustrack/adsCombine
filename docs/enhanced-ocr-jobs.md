@@ -65,7 +65,7 @@ Selective Gemini visual fallback, job queue parameters, OCR hard limits, and sou
 | `EXTRACTION_MAX_FILE_BYTES` | integer | `104857600` | positive integer, max `104857600` (100MB) | Maximum file size in bytes accepted for text extraction. |
 | `MAX_FILES_PER_JOB` | integer | `10` | positive integer, max `10` | Maximum number of files accepted within a single job execution. |
 | `MAX_PDF_PAGES` | integer | `300` | positive integer, max `500` | Maximum page count permitted per individual PDF file. |
-| `MAX_OCR_PAGES_PER_PDF` | integer | `150` | positive integer, max `150` | Maximum pages selected for OCR processing per individual PDF file. |
+| `MAX_OCR_PAGES_PER_PDF` | integer | `500` | positive integer, max `500` | Maximum pages selected for OCR processing per individual PDF file. |
 | `MAX_TOTAL_OCR_PAGES_PER_JOB` | integer | `200` | positive integer, max `1000` | Budget limit for total OCR pages processed across an entire job. |
 | `OCR_MAX_PAGES_PER_CHUNK` | integer | `2` | positive integer, max `10` | Maximum pages processed per parallel OCR chunk execution. |
 | `PDF_OCR_ALWAYS_THRESHOLD` | integer | `5` | positive integer, max `50` | PDF page count threshold below which OCR is always enforced. |
@@ -73,7 +73,7 @@ Selective Gemini visual fallback, job queue parameters, OCR hard limits, and sou
 | `MIXED_PAGE_OCR_DIRECT_MAX_PAGES` | integer | `10` | positive integer, max `50` | Maximum pages directly processed under mixed native and image mode. |
 | `MIXED_PAGE_MIN_NATIVE_CHARS_PER_PAGE` | integer | `80` | positive integer | Minimum native characters per page required to consider native text valid. |
 
-The PDF page-count gate accepts a 350-page or 500-page PDF under `MAX_PDF_PAGES=500`; a 501-page PDF returns `PDF_PAGE_LIMIT_EXCEEDED`. This cap is independent of OCR budgets and file-size protections: `MAX_OCR_PAGES_PER_PDF=150` remains unchanged, and a deployment configured with `MAX_TOTAL_OCR_PAGES_PER_JOB=300` keeps that budget (the code default remains `200`). Enhanced all-page OCR must still fit both OCR budgets even when the PDF page-count gate passes.
+The PDF page-count gate accepts a 350-page or 500-page PDF under `MAX_PDF_PAGES=500`; a 501-page PDF returns `PDF_PAGE_LIMIT_EXCEEDED`. This cap is independent of OCR budgets and file-size protections: `MAX_OCR_PAGES_PER_PDF=500` remains unchanged, and a deployment configured with `MAX_TOTAL_OCR_PAGES_PER_JOB=300` keeps that budget (the code default remains `200`). Enhanced all-page OCR must still fit both OCR budgets even when the PDF page-count gate passes.
 
 ### Provider-Agnostic Visual Fallback Configuration
 
