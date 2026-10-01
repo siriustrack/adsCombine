@@ -9,9 +9,28 @@ export const environmentBoolean = z.preprocess(value => {
   return value
 }, z.boolean())
 
+const baseUrlSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .transform(value => (/^[a-z][a-z\d+.-]*:\/\//i.test(value) ? value : `https://${value}`))
+  .pipe(z.url())
+  .refine(value => {
+    const url = new URL(value)
+    return (
+      (url.protocol === 'https:' || url.protocol === 'http:') &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash &&
+      (url.pathname === '/' || url.pathname === '')
+    )
+  }, 'BASE_URL must be an HTTP(S) origin without credentials, path, query, or hash')
+  .transform(value => new URL(value).origin)
+
 export const envSchema = z.object({
   LOG_LEVEL: z.enum(['error', 'warn', 'info', 'debug']).optional(),
-  BASE_URL: z.string(),
+  BASE_URL: baseUrlSchema,
   OPENAI_API_KEY: z.string().min(1),
   OPENAI_MODEL_TEXT: z.string().min(1),
   PORT: z.coerce.number().default(3000),
