@@ -1,50 +1,45 @@
 import fs from 'node:fs'
-import { cpus } from 'node:os'
+import { availableParallelism } from 'node:os'
 import path from 'node:path'
 import Piscina from 'piscina'
 import logger from './logger'
+import { calculateWorkerCount, parseCgroupV2CpuQuota } from './worker-count'
 
 function getOptimalWorkerCount(): { maxWorkers: number; minWorkers: number } {
-  const totalCpus = cpus().length
-  let maxWorkers = Math.floor(totalCpus / 2)
-  let minWorkers = maxWorkers
-
   const isDocker = fs.existsSync('/.dockerenv')
   const isKubernetes = !!process.env.KUBERNETES_SERVICE_HOST
+  let cpuQuota: number | undefined
 
-  if (isDocker || isKubernetes) {
-    maxWorkers = Math.max(1, Math.floor(totalCpus / 3))
-    minWorkers = maxWorkers
-
-    try {
-      if (
-        fs.existsSync('/sys/fs/cgroup/cpu/cpu.cfs_quota_us') &&
-        fs.existsSync('/sys/fs/cgroup/cpu/cpu.cfs_period_us')
-      ) {
-        const quota = parseInt(fs.readFileSync('/sys/fs/cgroup/cpu/cpu.cfs_quota_us', 'utf8'), 10)
-        const period = parseInt(fs.readFileSync('/sys/fs/cgroup/cpu/cpu.cfs_period_us', 'utf8'), 10)
-        if (quota > 0 && period > 0) {
-          const cpuLimit = quota / period
-          maxWorkers = Math.max(1, Math.floor(cpuLimit / 2))
-          minWorkers = maxWorkers
-        }
+  try {
+    if (fs.existsSync('/sys/fs/cgroup/cpu.max')) {
+      cpuQuota = parseCgroupV2CpuQuota(fs.readFileSync('/sys/fs/cgroup/cpu.max', 'utf8'))
+    } else if (
+      fs.existsSync('/sys/fs/cgroup/cpu/cpu.cfs_quota_us') &&
+      fs.existsSync('/sys/fs/cgroup/cpu/cpu.cfs_period_us')
+    ) {
+      const quota = parseInt(fs.readFileSync('/sys/fs/cgroup/cpu/cpu.cfs_quota_us', 'utf8'), 10)
+      const period = parseInt(fs.readFileSync('/sys/fs/cgroup/cpu/cpu.cfs_period_us', 'utf8'), 10)
+      if (quota > 0 && period > 0) {
+        cpuQuota = quota / period
       }
-    } catch {
-      logger.warn('Error reading CPU limits from cgroup:', {
-        message: 'Failed to read CPU limits from cgroup files',
-      })
     }
+  } catch {
+    logger.warn('Error reading CPU limits from cgroup:', {
+      message: 'Failed to read CPU limits from cgroup files',
+    })
   }
 
-  if (process.env.PDF_MAX_WORKERS) {
-    const envMaxWorkers = parseInt(process.env.PDF_MAX_WORKERS, 10)
-    if (envMaxWorkers > 0) {
-      maxWorkers = envMaxWorkers
-      minWorkers = maxWorkers
-    }
-  }
+  const configuredWorkers = process.env.PDF_MAX_WORKERS
+    ? parseInt(process.env.PDF_MAX_WORKERS, 10)
+    : undefined
+  const maxWorkers = calculateWorkerCount({
+    availableCpus: availableParallelism(),
+    isContainer: isDocker || isKubernetes,
+    ...(cpuQuota === undefined ? {} : { cpuQuota }),
+    ...(configuredWorkers === undefined ? {} : { configuredWorkers }),
+  })
 
-  return { maxWorkers, minWorkers }
+  return { maxWorkers, minWorkers: maxWorkers }
 }
 
 function getWorkerFilePath(): string {

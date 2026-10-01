@@ -1,14 +1,14 @@
 const REGISTRY_MARKERS = /\b(?:matr[ií]cula|registro\s+de\s+im[oó]veis|r\.\s*\d+|av\.\s*\d+|certid[aã]o)\b/giu;
-const LEGAL_MARKERS = /\b(?:art(?:igo)?\.?\s*\d+|lei\s+n[º°o]?\s*\d+|provimento\s+(?:n[º°o]?\s*)?\d+|revogad[oa]|acrescid[oa]|averba[cç][aã]o)\b/giu;
+const LEGAL_MARKERS = /\b(?:art(?:igo)?\.?\s*\d+(?:[-–—]\s*[\p{L}\p{N}]+)?|lei\s+n[º°o]?\s*\d+|provimento\s+(?:n[º°o]?\s*)?\d+|revogad[oa]s?|acrescid[oa]s?|alterad[oa]s?|inclu[ií]d[oa]s?|vigente|reda[cç][aã]o\s+dada|averba[cç][aã]o)\b/giu;
 const CPF_CNPJ = /\b(?:\d{3}\.\d{3}\.\d{3}-\d{2}|\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2})\b/g;
 const DATES = /\b(?:\d{2}\/\d{2}\/\d{4}|\d{1,2}\s+de\s+[A-Za-zÀ-ÿ]+\s+de\s+\d{4})\b/giu;
-const CURRENCY = /R\$\s*\d{1,3}(?:\.\d{3})*,\d{2}\b/g;
+const CURRENCY = /R\$\s*(?:\d{1,3}(?:\.\d{3})+|\d+),\d{2}\b/g;
 const FRACTIONS = /(?<![\d/])\b\d+\s*\/\s*\d+\b(?!\s*\/)/g;
 const SQUARE_METERS = /\b\d+(?:[.,]\d+)?\s*m[²2](?!\p{L}|\p{N})/giu;
-const CORRUPTED_SYMBOLS = /[�□]|(?:[^\p{L}\p{N}\s.,;:()\[\]{}\-–—/º°²$%#@&+*=|])/gu;
+const CORRUPTED_SYMBOLS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u25A1\u25AF\uFFFD]|\p{Co}/gu;
 const GARBLED_SPANS = /(?:[#@?]{3,}|(?:\p{P}{2,}\s*){2,})/gu;
 const FRAGMENTED_NUMBER_OR_MEASURE = /\b\d(?:\s+\d){2,}\b|\b\d\s+[.,]\s+\d\b|\bm\s+[²2]\b/gu;
-const LABEL = /^\s*(?:(?:r|av)\.\s*(?:n[º°o]?\s*)?\d+|art(?:igo)?\.?\s*\d+|matr[ií]cula\s*(?:n[º°o]?\s*)?\d+|(?:cpf|cnpj)\s*[:#]?\s*\d+|lei\s+n[º°o]?\s*\d+|provimento\s+(?:n[º°o]?\s*)?\d+)/iu;
+const LABEL = /^\s*(?:(?:r|av)\.\s*(?:n[º°o]?\s*)?\d+(?:[-–—]\s*[\p{L}\p{N}]+)?|art(?:igo)?\.?\s*\d+(?:[-–—]\s*[\p{L}\p{N}]+)?|matr[ií]cula\s*(?:n[º°o]?\s*)?\d+|(?:cpf|cnpj)\s*[:#]?\s*\d+|lei\s+n[º°o]?\s*\d+|provimento\s+(?:n[º°o]?\s*)?\d+)/iu;
 
 function countMatches(text, expression) {
   expression.lastIndex = 0;
@@ -22,6 +22,11 @@ function countDuplicateLabels(text) {
     if (label) labels.set(label, (labels.get(label) || 0) + 1);
   }
   return Array.from(labels.values()).reduce((duplicates, count) => duplicates + Math.max(0, count - 1), 0);
+}
+
+function countGarbledSpans(text) {
+	const withoutLegalOmissions = text.replace(/[\[(]\s*(?:\.{3}|…)\s*[\])]/gu, '');
+	return countMatches(withoutLegalOmissions, GARBLED_SPANS);
 }
 
 function sanitizeEnhancedOcrText(input) {
@@ -47,7 +52,7 @@ function analyzeEnhancedOcrText(input) {
     corruptedSymbols: countMatches(text, CORRUPTED_SYMBOLS),
     fragmentedNumbersOrMeasures: countMatches(text, FRAGMENTED_NUMBER_OR_MEASURE),
     duplicateLabels: countDuplicateLabels(text),
-    garbledSpans: countMatches(text, GARBLED_SPANS),
+		garbledSpans: countGarbledSpans(text),
   };
 }
 

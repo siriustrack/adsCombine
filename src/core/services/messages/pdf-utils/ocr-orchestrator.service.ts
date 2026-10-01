@@ -28,6 +28,55 @@ export interface OcrPageResult {
   warnings?: string[]
 }
 
+export class OcrPageCoverageError extends Error {
+  constructor(
+    readonly missingPages: number[],
+    readonly duplicatePages: number[],
+    readonly unexpectedPages: number[]
+  ) {
+    super('Enhanced OCR did not return every expected page exactly once')
+    this.name = 'OcrPageCoverageError'
+  }
+}
+
+export function validateOcrPageCoverage(
+  pages: OcrPageResult[],
+  expectedPages: number[]
+): OcrPageCoverageError | undefined {
+  const expected = new Set(expectedPages)
+  const counts = new Map<number, number>()
+  for (const page of pages) counts.set(page.pageNumber, (counts.get(page.pageNumber) ?? 0) + 1)
+  const missingPages = expectedPages.filter(pageNumber => !counts.has(pageNumber))
+  const duplicatePages = [...counts]
+    .filter(([, count]) => count > 1)
+    .map(([pageNumber]) => pageNumber)
+    .sort((left, right) => left - right)
+  const unexpectedPages = [...counts.keys()]
+    .filter(pageNumber => !expected.has(pageNumber))
+    .sort((left, right) => left - right)
+  return missingPages.length > 0 || duplicatePages.length > 0 || unexpectedPages.length > 0
+    ? new OcrPageCoverageError(missingPages, duplicatePages, unexpectedPages)
+    : undefined
+}
+
+export function parsePdfinfoVersion(stdout: string, stderr: string): string | undefined {
+  return `${stdout}\n${stderr}`.match(/(\d+\.\d+\.\d+)/u)?.[1]
+}
+
+export function bindAbortSignal(
+  signal: AbortSignal | undefined,
+  controller: AbortController
+): () => void {
+  if (!signal) return () => {}
+  const abort = () => controller.abort(signal.reason)
+  if (signal.aborted) {
+    abort()
+    return () => {}
+  }
+  signal.addEventListener('abort', abort, { once: true })
+  return () => signal.removeEventListener('abort', abort)
+}
+
 export interface OcrPagesProcessingResult {
   pages: OcrPageResult[]
   chunksProcessed: number
@@ -51,6 +100,7 @@ export type EnhancedOcrProcessingOptions = EnhancedOcrLimits & {
   buffer: Buffer
   totalPages: number
   fileId: string
+  signal?: AbortSignal
 }
 
 export function validateEnhancedOcrLimits(
@@ -87,6 +137,7 @@ type OcrChunkProcessingOptions = {
   fileId: string
   totalPages: number
   enhancedOcr?: boolean
+  signal?: AbortSignal
 }
 
 export class OcrOrchestrator {
@@ -96,9 +147,8 @@ export class OcrOrchestrator {
   static async checkPdfinfo(): Promise<{ available: boolean; version?: string }> {
     try {
       const execAsync = promisify(execFileCb)
-      const { stdout } = await execAsync('pdfinfo', ['-v'], { timeout: 5_000 })
-      const versionMatch = stdout.match(/(\d+\.\d+\.\d+)/)
-      return { available: true, version: versionMatch?.[1] }
+      const { stdout, stderr } = await execAsync('pdfinfo', ['-v'], { timeout: 5_000 })
+      return { available: true, version: parsePdfinfoVersion(stdout, stderr) }
     } catch {
       return { available: false }
     }
@@ -303,6 +353,7 @@ export class OcrOrchestrator {
     buffer,
     totalPages,
     fileId,
+    signal,
     ...limits
   }: EnhancedOcrProcessingOptions): Promise<Result<EnhancedOcrProcessingResult, Error>> {
     const startTime = Date.now()
@@ -340,9 +391,13 @@ export class OcrOrchestrator {
         fileId,
         totalPages: validation.pageCount,
         enhancedOcr: true,
+        signal,
       })
       if (error) return errResult(error)
 
+      const expectedPages = Array.from({ length: validation.pageCount }, (_, index) => index + 1)
+      const coverageError = validateOcrPageCoverage(pages, expectedPages)
+      if (coverageError) return errResult(coverageError)
       const orderedPages = pages.sort((a, b) => a.pageNumber - b.pageNumber)
       return okResult({
         pages: orderedPages,
@@ -476,25 +531,35 @@ export class OcrOrchestrator {
     pdfPath,
     fileId,
     totalPages,
+    signal,
   }: OcrChunkProcessingOptions): Promise<Result<OcrPageResult[], Error>> {
-    const { promise: timeoutPromise, timer } = this.createTimeoutPromise(
+    const controller = new AbortController()
+    const unbindAbortSignal = bindAbortSignal(signal, controller)
+    const timer = setTimeout(
+      () => controller.abort(new Error('Enhanced OCR processing timed out')),
       PROCESSING_TIMEOUTS.PDF_GLOBAL
     )
     const ocrPromise = Promise.all(
       chunks.map(async chunk => {
-        const result = await pdfWorkerPool.run({
-          pageRange: chunk,
-          pdfPath,
-          fileId,
-          totalPages,
-          structuredPages: true,
-          enhancedOcr: true,
-        })
+        const result = await pdfWorkerPool.run(
+          {
+            pageRange: chunk,
+            pdfPath,
+            fileId,
+            totalPages,
+            structuredPages: true,
+            enhancedOcr: true,
+          },
+          { signal: controller.signal }
+        )
         return Array.isArray(result?.pages) ? (result.pages as OcrPageResult[]) : []
       })
     )
     const { value: chunkResults, error } = await wrapPromiseResult<OcrPageResult[][], Error>(
-      Promise.race([ocrPromise, timeoutPromise]).finally(() => clearTimeout(timer))
+      ocrPromise.finally(() => {
+        clearTimeout(timer)
+        unbindAbortSignal()
+      })
     )
     if (error) {
       logger.error('Error in enhanced OCR processing', {

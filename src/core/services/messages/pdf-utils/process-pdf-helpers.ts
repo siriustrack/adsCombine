@@ -176,8 +176,12 @@ export function createMixedPageDiagnostics(
   })
 }
 
-function hasLegalChangeMarker(text: string, marker: RegExp): boolean {
-  return marker.test(text)
+function getLegalChangeMarkers(text: string): string[] {
+  return (
+    text.match(
+      /\b(?:revogad[oa]s?|vigentes?|acrescid[oa]s?|alterad[oa]s?|inclu[ií]d[oa]s?|reda[cç][aã]o\s+dada)\b/giu
+    ) ?? []
+  ).map(marker => marker.toLocaleLowerCase('pt-BR'))
 }
 
 export function shouldPreferNativePdfTextOverOcr({
@@ -187,16 +191,11 @@ export function shouldPreferNativePdfTextOverOcr({
   nativeText: string
   ocrText: string
 }): boolean {
-  const legalChangeMarkers = [
-    /revogad[oa]/iu,
-    /acrescid[oa]/iu,
-    /alterad[oa]/iu,
-    /reda[cç][aã]o\s+dada/iu,
-    /inclu[ií]d[oa]/iu,
-  ]
-
-  return legalChangeMarkers.some(
-    marker => hasLegalChangeMarker(nativeText, marker) && !hasLegalChangeMarker(ocrText, marker)
+  const nativeMarkers = getLegalChangeMarkers(nativeText)
+  const ocrMarkers = getLegalChangeMarkers(ocrText)
+  return (
+    nativeMarkers.length !== ocrMarkers.length ||
+    nativeMarkers.some((marker, index) => marker !== ocrMarkers[index])
   )
 }
 

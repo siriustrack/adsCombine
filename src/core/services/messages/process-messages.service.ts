@@ -12,8 +12,7 @@ import { TEXTS_DIR } from 'config/dirs'
 import mammoth from 'mammoth'
 import type { Uploadable } from 'openai/uploads'
 import pLimit from 'p-limit'
-import { sanitize } from 'utils/sanitize'
-import { sanitizeText } from 'utils/textSanitizer'
+import { sanitize, sanitizePdfText } from 'utils/sanitize'
 import WordExtractor from 'word-extractor'
 import { FileDownloadService, FileSizeLimitError } from './pdf-utils/file-download.service'
 import { ProcessPdfService } from './pdf-utils/process-pdf.service'
@@ -78,12 +77,12 @@ function rebaseEnhancedMetadata({
 
   const metadata: EnhancedPdfMetadata[] = []
   let segmentSearchStart = 0
-  const sanitizedSeparator = sanitizeText(`a${FILE_SEPARATOR}b`).slice(1, -1)
+  const sanitizedSeparator = sanitizePdfText(`a${FILE_SEPARATOR}b`).slice(1, -1)
   const deterministicSegmentStarts: number[] = []
   let deterministicOffset = 0
   for (const extractedText of extractedTexts) {
     deterministicSegmentStarts.push(deterministicOffset)
-    deterministicOffset += sanitizeText(extractedText).length + sanitizedSeparator.length
+    deterministicOffset += sanitizePdfText(extractedText).length + sanitizedSeparator.length
   }
   for (const occurrence of enhancedOccurrences) {
     const rebased = rebaseVisualMetadata({
@@ -121,7 +120,7 @@ function createOrderedRangeMap(
   for (const range of ranges) {
     const key = rangeKey(range)
     if (mappedRanges.has(key)) continue
-    const selectedText = sanitizeText(rawBody.slice(range.start, range.end))
+    const selectedText = sanitizePdfText(rawBody.slice(range.start, range.end))
     if (!selectedText) continue
     const start = sanitizedBody.indexOf(selectedText, searchStart)
     if (start < 0) continue
@@ -147,7 +146,7 @@ function mapSanitizedBoundary(rawBody: string, boundary: number): number | undef
   ) {
     return undefined
   }
-  return sanitizeText(`${rawBody.slice(0, boundary)}x`).length - 1
+  return sanitizePdfText(`${rawBody.slice(0, boundary)}x`).length - 1
 }
 
 function mapV2Range(rawBody: string, range: SourceRange): SourceRange | undefined {
@@ -204,7 +203,7 @@ function rebaseV2VisualMetadata({
   if (isBlankUnavailableV2Range({ visualFallback })) {
     const mappedBoundary = mapSanitizedBoundary(rawSegment, header.length)
     if (mappedBoundary === undefined) throw new Error('V2 blank source page boundary is invalid')
-    const boundary = Math.min(mappedBoundary, sanitizeText(rawSegment).length)
+    const boundary = Math.min(mappedBoundary, sanitizePdfText(rawSegment).length)
     const rebasedSourceRange = {
       start: segmentStart + boundary,
       end: segmentStart + boundary,
@@ -294,7 +293,7 @@ function rebaseVisualMetadata({
 }: RebaseMetadataInput): RebaseMetadataResult {
   const fileName = path.basename(new URL(fileUrl).pathname)
   const header = `## Transcricao do arquivo: ${fileName}:\n\n`
-  const sanitizedSegment = sanitizeText(header + rawBody)
+  const sanitizedSegment = sanitizePdfText(header + rawBody)
   const hasV2Metadata = metadata.pageQuality?.some(page => {
     const visualFallback = page.visualFallback
     return visualFallback ? isV2VisualMetadata(visualFallback) : false
@@ -324,10 +323,10 @@ function rebaseVisualMetadata({
     }
   }
   const segmentStart = finalText.indexOf(sanitizedSegment, segmentSearchStart)
-  const sanitizedBody = sanitizeText(rawBody)
+  const sanitizedBody = sanitizePdfText(rawBody)
   const bodyStartWithinSegment = sanitizedSegment.indexOf(
     sanitizedBody,
-    sanitizeText(header).length
+    sanitizePdfText(header).length
   )
   if (segmentStart < 0 || bodyStartWithinSegment < 0) {
     return { metadata, nextSegmentSearchStart: segmentSearchStart }
@@ -501,7 +500,7 @@ export class ProcessMessagesService {
       }
     }
 
-    const sanitizedText = sanitizeText(extractedTexts.join(FILE_SEPARATOR).trim())
+    const sanitizedText = sanitizePdfText(extractedTexts.join(FILE_SEPARATOR).trim())
     const rebasedMetadata = rebaseEnhancedMetadata({
       enabled: options.enhancedOcr,
       extractedTexts,
@@ -779,7 +778,7 @@ export class ProcessMessagesService {
     return this.processWithTimeout({
       processor: async () => {
         const textContent = (await this.downloadSourceFile(file, maxFileBytes)).toString('utf-8')
-        return sanitize(textContent)
+        return sanitizePdfText(textContent)
       },
       timeout: PROCESSING_TIMEOUTS.TXT,
       fileId,
@@ -837,7 +836,7 @@ export class ProcessMessagesService {
       processor: async () => {
         const buffer = await this.downloadSourceFile(file, maxFileBytes)
         const result = await mammoth.extractRawText({ buffer })
-        return sanitize(result.value)
+        return sanitizePdfText(result.value)
       },
       timeout: PROCESSING_TIMEOUTS.DOCX,
       fileId,
@@ -852,7 +851,7 @@ export class ProcessMessagesService {
       processor: async () => {
         const buffer = await this.downloadSourceFile(file, maxFileBytes)
         const doc = await this.wordExtractor.extract(buffer)
-        return sanitize(doc.getBody())
+        return sanitizePdfText(doc.getBody())
       },
       timeout: PROCESSING_TIMEOUTS.DOCX, // Reusing DOCX timeout for now
       fileId,

@@ -8,6 +8,7 @@ export function sanitizePdfText(input: string | undefined | null): string {
 
   return input
     .replace(/\r\n?/g, '\n')
+    .replace(/\p{Cc}/gu, character => (character === '\n' || character === '\t' ? character : ''))
     .replace(/[^\S\r\n]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim()

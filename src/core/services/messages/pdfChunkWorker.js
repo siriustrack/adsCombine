@@ -361,7 +361,8 @@ function performOcrOnPages(pngs, env, options = {}) {
   const enhancedOcr = options.enhancedOcr === true;
   const lang = pickLanguage();
   const oem = getEnvInt('PDF_OCR_OEM', 1);
-  const dpi = getEnvInt('PDF_OCR_DPI', 300);
+	const configuredDpi = Number.parseInt(env.PDF_OCR_DPI || '', 10);
+	const dpi = Number.isFinite(configuredDpi) && configuredDpi > 0 ? configuredDpi : getEnvInt('PDF_OCR_DPI', 300);
   const preferredPsm = getEnvInt('PDF_OCR_PSM', 4);
   const fallbackPsm = getEnvInt('PDF_OCR_PSM_FALLBACK', 6);
   const maxAttempts = getEnvInt('PDF_OCR_MAX_ATTEMPTS', 2);
@@ -420,9 +421,11 @@ function performOcrOnPages(pngs, env, options = {}) {
 
     const attempts = [];
     function queueAttempt(attempt) {
-      if (!attempts.some((candidate) => candidate.label === attempt.label && candidate.path === attempt.path && candidate.psm === attempt.psm)) {
-        attempts.push(attempt);
+			if (attempts.some((candidate) => candidate.label === attempt.label && candidate.path === attempt.path && candidate.psm === attempt.psm)) {
+				return false;
       }
+			attempts.push(attempt);
+			return true;
     }
     // 1) Try original first (fastest path)
     queueAttempt({ label: 'orig', path: png, psm: preferredPsm });
@@ -451,9 +454,10 @@ function performOcrOnPages(pngs, env, options = {}) {
       // Enhanced mode prioritizes the alternate segmentation mode when evidence is
       // corrupted; it never adds this fallback beyond the shared attempt budget.
       if (enhancedOcr && attempts.length < maxAttempts && shouldUseEnhancedPsmFallback(result)) {
-        queueAttempt({ label: 'orig', path: png, psm: fallbackPsm });
+				if (queueAttempt({ label: 'orig', path: png, psm: fallbackPsm })) {
         return;
       }
+			}
 
       // If the first attempt isn't good enough, try a preprocessed version.
       if (attempts.length < maxAttempts && !isGoodEnough(result)) {
@@ -519,8 +523,7 @@ function performOcrOnPages(pngs, env, options = {}) {
           }
         } catch (error) {
           logWorkerWarn(
-            `[Worker ${process.pid}] OCR rotated fallback failed (angle=${angle}, psm=${preferredPsm}) on page ${
-              pageIndex + 1
+						`[Worker ${process.pid}] OCR rotated fallback failed (angle=${angle}, psm=${preferredPsm}) on page ${pageIndex + 1
             }: ${error.message}`
           );
         }
@@ -549,17 +552,17 @@ function performOcrOnPages(pngs, env, options = {}) {
 
         // Early stop if quality is clearly good.
         if (isGoodEnough(result) && (!enhancedOcr || !shouldUseEnhancedPsmFallback(result))) {
-          best = result;
-          bestMeta = { label: attempt.label, psm: attempt.psm };
           break;
         }
       } catch (error) {
         // Keep trying other candidates
         logWorkerWarn(
-          `[Worker ${process.pid}] OCR attempt failed (${attempt.label}, psm=${attempt.psm}) on page ${
-            pageIndex + 1
+					`[Worker ${process.pid}] OCR attempt failed (${attempt.label}, psm=${attempt.psm}) on page ${pageIndex + 1
           }: ${error.message}`
         );
+				if (attempts.length < maxAttempts) {
+					queueAttempt({ label: 'orig', path: png, psm: fallbackPsm });
+				}
       }
     }
 

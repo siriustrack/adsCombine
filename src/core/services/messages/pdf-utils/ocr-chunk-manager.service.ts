@@ -17,9 +17,9 @@ export class OcrChunkManager {
     const targetChunks = maxWorkers * 2
     // Calculate optimal chunk size to aim for targetChunks, but keep it within bounds
     // Min 1 page to ensure we use available workers for small files
-    // Max 50 pages to avoid blocking workers for too long
+    // Respect the configured per-task cap to keep cancellation and load balancing bounded.
     const rawChunkSize = Math.ceil(totalPages / targetChunks)
-    const chunkSize = Math.max(1, Math.min(50, rawChunkSize))
+    const chunkSize = Math.max(1, Math.min(env.OCR_MAX_PAGES_PER_CHUNK, rawChunkSize))
 
     const chunks: PageChunk[] = []
     for (let i = 0; i < totalPages; i += chunkSize) {

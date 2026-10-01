@@ -132,6 +132,15 @@ describe('ProcessMessagesService source downloads', () => {
     expect(result.transcriptionText).toContain('text')
   })
 
+  test('preserves Unicode legal symbols, omissions, and paragraph breaks', async () => {
+    const documentText = 'Art. 1º — Limite ≤ € 10.\n\nArt. 2º (...) Mantém-se vigente.'
+    const { service } = createService(async () => ['8.8.8.8'], 200, documentText)
+
+    const result = await service.execute(createRequest(`${primaryPrefix}public/source.txt`))
+
+    expect(result.transcriptionText).toContain(documentText)
+  })
+
   test('omits inline transcription text when the authenticated job result would exceed the safe payload limit', async () => {
     const largeTranscriptionText = 'a'.repeat(1_000_001)
     const { service } = createService(async () => ['8.8.8.8'], 200, largeTranscriptionText)
