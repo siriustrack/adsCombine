@@ -11,6 +11,16 @@ const requiredEnvironment = {
 }
 
 describe('visual fallback environment limits', () => {
+  test('accepts an omitted text signing secret and rejects malformed explicit values', () => {
+    expect(envSchema.safeParse(requiredEnvironment).success).toBe(true)
+    expect(
+      envSchema.safeParse({
+        ...requiredEnvironment,
+        TEXTS_SIGNING_SECRET: 'not-a-valid-secret',
+      }).success
+    ).toBe(false)
+  })
+
   test('accepts supported log level overrides', () => {
     const parsed = envSchema.parse({
       ...requiredEnvironment,

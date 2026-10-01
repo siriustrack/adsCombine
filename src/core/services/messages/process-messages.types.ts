@@ -81,8 +81,6 @@ export type ProcessWithTimeoutOptions<T> = {
 export type SaveProcessedTextOptions = {
   sanitizedText: string
   conversationId: string
-  protocol: string
-  host: string
   processedFiles: string[]
   failedFiles: { fileId: string; error: string }[]
 }

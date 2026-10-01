@@ -80,6 +80,7 @@ class MockProcessor {
       failedFiles: [],
       filename: 'conv-1.txt',
       downloadUrl: 'http://localhost:3000/conv-1.txt',
+      downloadExpiresAt: '2026-09-03T00:15:00.000Z',
     };
   }
 }
@@ -199,7 +200,6 @@ describe('ProcessMessageJobService', () => {
       processedFiles: ['file-1'],
       failedFiles: [],
       filename: 'conv-1.txt',
-      downloadUrl: 'http://localhost:3000/conv-1.txt',
     });
     expect(completed.enhancedResult).toEqual({
       profile: 'enhanced-ocr',

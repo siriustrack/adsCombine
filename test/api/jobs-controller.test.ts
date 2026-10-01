@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { env } from '../../src/config/env'
 import type { ProcessMessageJobService } from '../../src/core/services/jobs/process-message-job.service'
 import { JobNotFoundError } from '../../src/core/services/jobs/json-job-store.service'
 import type { ProcessMessageJobRecord } from '../../src/core/services/jobs/job.types'
@@ -11,6 +12,7 @@ process.env.JOBS_TOKEN = 'jobs-token'
 
 const jobId = '00000000-0000-4000-8000-000000000000'
 const now = '2026-09-03T00:00:00.000Z'
+const baseUrl = new URL(env.BASE_URL).origin
 
 function createJob(overrides: Partial<ProcessMessageJobRecord> = {}): ProcessMessageJobRecord {
   return {
@@ -63,7 +65,9 @@ async function createController(job: ProcessMessageJobRecord | Error) {
   const controller = new JobsController({
     create: async input => {
       createCalls.push([input])
-      return job instanceof Error ? Promise.reject(job) : { ...job, ...input, request: input.messages }
+      return job instanceof Error
+        ? Promise.reject(job)
+        : { ...job, ...input, request: input.messages }
     },
     get: async () => {
       if (job instanceof Error) throw job
@@ -88,8 +92,8 @@ describe('JobsController', () => {
     expect(response.body).toEqual({
       jobId,
       status: 'queued',
-      statusUrl: `http://localhost:3000/api/jobs/${jobId}/status`,
-      resultUrl: `http://localhost:3000/api/jobs/${jobId}/result`,
+      statusUrl: `${baseUrl}/api/jobs/${jobId}/status`,
+      resultUrl: `${baseUrl}/api/jobs/${jobId}/result`,
       createdAt: now,
     })
     expect(createCalls[0][0].profile).toBeUndefined()
@@ -108,8 +112,8 @@ describe('JobsController', () => {
     expect(response.body).toEqual({
       jobId,
       status: 'queued',
-      statusUrl: `http://localhost:3000/api/jobs/${jobId}/status`,
-      resultUrl: `http://localhost:3000/api/jobs/${jobId}/result/enhanced`,
+      statusUrl: `${baseUrl}/api/jobs/${jobId}/status`,
+      resultUrl: `${baseUrl}/api/jobs/${jobId}/result/enhanced`,
       createdAt: now,
     })
     expect(createCalls[0][0].profile).toBe('enhanced-ocr')
@@ -120,7 +124,10 @@ describe('JobsController', () => {
       createJob({ status: 'queued', profile: 'enhanced-ocr' })
     )
     const queuedResponse = createResponse()
-    await queuedController.getEnhancedJobResultHandler(createRequest() as never, queuedResponse as never)
+    await queuedController.getEnhancedJobResultHandler(
+      createRequest() as never,
+      queuedResponse as never
+    )
     expect(queuedResponse.statusCode).toBe(202)
     expect(queuedResponse.body).toEqual({ jobId, status: 'queued' })
 
@@ -128,7 +135,10 @@ describe('JobsController', () => {
       createJob({ status: 'failed', profile: 'enhanced-ocr', error: 'OCR failed' })
     )
     const failedResponse = createResponse()
-    await failedController.getEnhancedJobResultHandler(createRequest() as never, failedResponse as never)
+    await failedController.getEnhancedJobResultHandler(
+      createRequest() as never,
+      failedResponse as never
+    )
     expect(failedResponse.statusCode).toBe(200)
     expect(failedResponse.body).toEqual({ jobId, status: 'failed', error: 'OCR failed' })
   })
@@ -138,16 +148,22 @@ describe('JobsController', () => {
       createJob({ profile: 'enhanced-ocr' })
     )
     const enhancedResponse = createResponse()
-    await enhancedController.getJobStatusHandler(createRequest() as never, enhancedResponse as never)
+    await enhancedController.getJobStatusHandler(
+      createRequest() as never,
+      enhancedResponse as never
+    )
     expect(enhancedResponse.body).toMatchObject({
-      resultUrl: `http://localhost:3000/api/jobs/${jobId}/result/enhanced`,
+      resultUrl: `${baseUrl}/api/jobs/${jobId}/result/enhanced`,
     })
 
     const { controller: standardController } = await createController(createJob())
     const standardResponse = createResponse()
-    await standardController.getJobStatusHandler(createRequest() as never, standardResponse as never)
+    await standardController.getJobStatusHandler(
+      createRequest() as never,
+      standardResponse as never
+    )
     expect(standardResponse.body).toMatchObject({
-      resultUrl: `http://localhost:3000/api/jobs/${jobId}/result`,
+      resultUrl: `${baseUrl}/api/jobs/${jobId}/result`,
     })
   })
 
@@ -178,7 +194,10 @@ describe('JobsController', () => {
       status: 'completed',
       result: {
         conversationId: 'conv-1',
-        downloadUrl: 'http://localhost:3000/texts/conv-1/conv-1.txt',
+        downloadUrl: expect.stringMatching(
+          new RegExp(`^${baseUrl}/texts/conv-1/conv-1\\.txt\\?v=1&exp=\\d+&sig=`)
+        ),
+        downloadExpiresAt: expect.any(String),
         profile: 'enhanced-ocr',
         summary: expect.objectContaining({ fileCount: 1, pageCount: 1 }),
         files: [{ fileId: 'file-1' }],
@@ -189,13 +208,19 @@ describe('JobsController', () => {
   test('rejects standard jobs and reports missing enhanced jobs', async () => {
     const { controller: standardController } = await createController(createJob())
     const standardResponse = createResponse()
-    await standardController.getEnhancedJobResultHandler(createRequest() as never, standardResponse as never)
+    await standardController.getEnhancedJobResultHandler(
+      createRequest() as never,
+      standardResponse as never
+    )
     expect(standardResponse.statusCode).toBe(409)
     expect(standardResponse.body).toEqual({ error: 'Job is not an enhanced OCR job' })
 
     const { controller: missingController } = await createController(new JobNotFoundError(jobId))
     const missingResponse = createResponse()
-    await missingController.getEnhancedJobResultHandler(createRequest() as never, missingResponse as never)
+    await missingController.getEnhancedJobResultHandler(
+      createRequest() as never,
+      missingResponse as never
+    )
     expect(missingResponse.statusCode).toBe(404)
     expect(missingResponse.body).toEqual({ error: 'Job not found' })
   })

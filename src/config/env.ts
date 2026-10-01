@@ -11,7 +11,7 @@ export const environmentBoolean = z.preprocess(value => {
 
 export const envSchema = z.object({
   LOG_LEVEL: z.enum(['error', 'warn', 'info', 'debug']).optional(),
-  BASE_URL: z.string(),
+  BASE_URL: z.url(),
   OPENAI_API_KEY: z.string().min(1),
   OPENAI_MODEL_TEXT: z.string().min(1),
   PORT: z.coerce.number().default(3000),
@@ -19,6 +19,11 @@ export const envSchema = z.object({
   PDF_OCR_ALWAYS_THRESHOLD: z.coerce.number().int().positive().max(50).default(5),
   PDF_BYTES_PER_PAGE_THRESHOLD: z.coerce.number().default(50_000),
   JOBS_TOKEN: z.string().min(1),
+  TEXTS_SIGNING_SECRET: z
+    .string()
+    .regex(/^[a-fA-F0-9]{64}$/)
+    .optional(),
+  TEXTS_URL_TTL_SECONDS: z.coerce.number().int().positive().max(86_400).default(900),
   JOBS_MAX_CONCURRENCY: z.coerce.number().int().positive().max(4).default(1),
   JOBS_MAX_QUEUE_SIZE: z.coerce.number().int().positive().max(1_000).default(100),
   JOBS_RETENTION_HOURS: z.coerce.number().int().positive().max(168).default(24),

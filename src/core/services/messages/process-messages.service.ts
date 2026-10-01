@@ -1,4 +1,5 @@
 // biome-ignore lint/style/noExcessiveLinesPerFile: file processors remain colocated because they share result and timeout handling.
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path, { join } from 'node:path'
 import { PROCESSING_TIMEOUTS } from '@config/constants'
@@ -16,6 +17,7 @@ import { sanitizeText } from 'utils/textSanitizer'
 import WordExtractor from 'word-extractor'
 import { FileDownloadService, FileSizeLimitError } from './pdf-utils/file-download.service'
 import { ProcessPdfService } from './pdf-utils/process-pdf.service'
+import { createSignedTextDownload } from '../texts/signed-text-download'
 import type { VisualFallbackV2Metadata } from './pdf-utils/visual-fallback.types'
 import type {
   EnhancedPdfMetadata,
@@ -59,6 +61,43 @@ type ProcessedFileOutcome = {
   error?: string
   extractedText?: string
   enhancedOccurrence?: EnhancedOccurrence
+}
+
+function rebaseEnhancedMetadata({
+  enabled,
+  extractedTexts,
+  enhancedOccurrences,
+  sanitizedText,
+}: {
+  enabled: boolean | undefined
+  extractedTexts: string[]
+  enhancedOccurrences: EnhancedOccurrence[]
+  sanitizedText: string
+}): EnhancedPdfMetadata[] | undefined {
+  if (!enabled) return undefined
+
+  const metadata: EnhancedPdfMetadata[] = []
+  let segmentSearchStart = 0
+  const sanitizedSeparator = sanitizeText(`a${FILE_SEPARATOR}b`).slice(1, -1)
+  const deterministicSegmentStarts: number[] = []
+  let deterministicOffset = 0
+  for (const extractedText of extractedTexts) {
+    deterministicSegmentStarts.push(deterministicOffset)
+    deterministicOffset += sanitizeText(extractedText).length + sanitizedSeparator.length
+  }
+  for (const occurrence of enhancedOccurrences) {
+    const rebased = rebaseVisualMetadata({
+      ...occurrence,
+      finalText: sanitizedText,
+      segmentSearchStart,
+      ...(occurrence.segmentIndex !== undefined
+        ? { deterministicSegmentStart: deterministicSegmentStarts[occurrence.segmentIndex] }
+        : {}),
+    })
+    metadata.push(rebased.metadata)
+    segmentSearchStart = rebased.nextSegmentSearchStart
+  }
+  return metadata
 }
 
 function rangeKey(range: SourceRange): string {
@@ -371,6 +410,7 @@ export type ProcessMessagesResponse = {
   failedFiles: { fileId: string; error: string }[]
   filename: string
   downloadUrl: string
+  downloadExpiresAt: string
   transcriptionText?: string
   enhancedResult?: {
     summary?: string
@@ -394,8 +434,6 @@ export class ProcessMessagesService {
   async execute(
     {
       messages,
-      host,
-      protocol,
     }: {
       messages: ProcessMessage
       protocol: string
@@ -464,36 +502,16 @@ export class ProcessMessagesService {
     }
 
     const sanitizedText = sanitizeText(extractedTexts.join(FILE_SEPARATOR).trim())
-    let rebasedMetadata: EnhancedPdfMetadata[] | undefined
-    if (options.enhancedOcr) {
-      rebasedMetadata = []
-      let segmentSearchStart = 0
-      const sanitizedSeparator = sanitizeText(`a${FILE_SEPARATOR}b`).slice(1, -1)
-      const deterministicSegmentStarts: number[] = []
-      let deterministicOffset = 0
-      for (const extractedText of extractedTexts) {
-        deterministicSegmentStarts.push(deterministicOffset)
-        deterministicOffset += sanitizeText(extractedText).length + sanitizedSeparator.length
-      }
-      for (const occurrence of enhancedOccurrences) {
-        const rebased = rebaseVisualMetadata({
-          ...occurrence,
-          finalText: sanitizedText,
-          segmentSearchStart,
-          ...(occurrence.segmentIndex !== undefined
-            ? { deterministicSegmentStart: deterministicSegmentStarts[occurrence.segmentIndex] }
-            : {}),
-        })
-        rebasedMetadata.push(rebased.metadata)
-        segmentSearchStart = rebased.nextSegmentSearchStart
-      }
-    }
+    const rebasedMetadata = rebaseEnhancedMetadata({
+      enabled: options.enhancedOcr,
+      extractedTexts,
+      enhancedOccurrences,
+      sanitizedText,
+    })
 
     const response = await this.saveProcessedText({
       sanitizedText,
       conversationId: messages[0].conversationId,
-      protocol,
-      host,
       processedFiles,
       failedFiles,
     })
@@ -706,12 +724,10 @@ export class ProcessMessagesService {
   private async saveProcessedText({
     sanitizedText,
     conversationId,
-    protocol,
-    host,
     processedFiles,
     failedFiles,
   }: SaveProcessedTextOptions): Promise<ProcessMessagesResponse> {
-    const filename = `${conversationId}-${Date.now()}.txt`
+    const filename = `${randomUUID()}.txt`
 
     const { error: mkdirError } = await wrapPromiseResult(
       fs.promises.mkdir(join(TEXTS_DIR, conversationId), { recursive: true })
@@ -723,9 +739,15 @@ export class ProcessMessagesService {
     }
 
     const filePath = path.join(TEXTS_DIR, conversationId, filename)
-    await fs.promises.writeFile(filePath, sanitizedText)
-
-    const downloadUrl = `${protocol}://${host}/texts/${conversationId}/${filename}`
+    await fs.promises.writeFile(filePath, sanitizedText, { flag: 'wx' })
+    const signedDownload = createSignedTextDownload({
+      baseUrl: env.BASE_URL,
+      secret: env.TEXTS_SIGNING_SECRET,
+      token: env.TOKEN,
+      ttlSeconds: env.TEXTS_URL_TTL_SECONDS,
+      conversationId,
+      filename,
+    })
 
     const inlineTranscriptionText =
       Buffer.byteLength(sanitizedText, 'utf8') <= MAX_INLINE_TRANSCRIPTION_BYTES
@@ -737,7 +759,8 @@ export class ProcessMessagesService {
       processedFiles,
       failedFiles,
       filename,
-      downloadUrl,
+      downloadUrl: signedDownload.url,
+      downloadExpiresAt: signedDownload.expiresAt,
       ...(inlineTranscriptionText !== undefined
         ? { transcriptionText: inlineTranscriptionText }
         : {}),

@@ -35,6 +35,7 @@ describe('MessagesController legacy processing', () => {
           failedFiles: [],
           filename: 'legacy-limit-test.txt',
           downloadUrl: 'http://localhost:3000/texts/legacy-limit-test/legacy-limit-test.txt',
+          downloadExpiresAt: '2026-09-03T00:15:00.000Z',
         }
       },
     })
@@ -58,5 +59,29 @@ describe('MessagesController legacy processing', () => {
       maxTotalOcrPagesPerJob: expect.any(Number),
       maxTotalVisualFallbackPagesPerJob: expect.any(Number),
     })
+  })
+
+  test('rejects conversation identifiers that can escape the text directory', async () => {
+    const { MessagesController } = await import('../../src/api/controllers/messages.controllers')
+    let calls = 0
+    const controller = new MessagesController({
+      async execute() {
+        calls++
+        throw new Error('processor must not run')
+      },
+    })
+    const response = createResponse()
+
+    await controller.processMessagesHandler(
+      {
+        body: { conversationId: '../../escape', body: { files: [] } },
+        protocol: 'http',
+        get: () => 'localhost:3000',
+      } as never,
+      response as never
+    )
+
+    expect(response.statusCode).toBe(400)
+    expect(calls).toBe(0)
   })
 })

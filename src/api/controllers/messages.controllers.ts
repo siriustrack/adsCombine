@@ -21,9 +21,13 @@ const BodySchema = z.object({
   files: z.array(FileInfoSchema).optional(),
 })
 
+const ConversationIdSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/, 'Invalid conversationId')
+
 const MessageSchema = z
   .object({
-    conversationId: z.string(),
+    conversationId: ConversationIdSchema,
     body: BodySchema,
   })
   .loose()
@@ -33,7 +37,7 @@ export type ProcessMessage = z.infer<typeof ProcessMessageSchema>
 
 const DeleteTextsBodySchema = z
   .object({
-    conversationId: z.string().optional(),
+    conversationId: ConversationIdSchema.optional(),
   })
   .strict()
 export type DeleteTextsBody = z.infer<typeof DeleteTextsBodySchema>

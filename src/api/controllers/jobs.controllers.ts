@@ -1,23 +1,39 @@
+import { env } from '@config/env'
 import { JobNotFoundError } from '@core/services/jobs/json-job-store.service'
 import {
   type ProcessMessageJobService,
   processMessageJobService,
 } from '@core/services/jobs/process-message-job.service'
+import type { ProcessMessageJobRecord } from '@core/services/jobs/job.types'
 import type { Request, Response } from 'express'
 import { z } from 'zod'
 import logger from '../../lib/logger'
+import { createSignedTextDownload } from '../../core/services/texts/signed-text-download'
 import { ProcessMessageSchema } from './messages.controllers'
 
 const JobParamsSchema = z.object({
   jobId: z.uuid(),
 })
 
-function buildJobUrl(
-  req: Request,
-  jobId: string,
-  suffix: 'status' | 'result' | 'result/enhanced'
-): string {
-  return `${req.protocol}://${req.get('host')}/api/jobs/${jobId}/${suffix}`
+function buildJobUrl(jobId: string, suffix: 'status' | 'result' | 'result/enhanced'): string {
+  return `${new URL(env.BASE_URL).origin}/api/jobs/${jobId}/${suffix}`
+}
+
+function presentJobResult(result: ProcessMessageJobRecord['result']) {
+  if (!result) return result
+  const signed = createSignedTextDownload({
+    baseUrl: env.BASE_URL,
+    secret: env.TEXTS_SIGNING_SECRET,
+    token: env.TOKEN,
+    ttlSeconds: env.TEXTS_URL_TTL_SECONDS,
+    conversationId: result.conversationId,
+    filename: result.filename,
+  })
+  return {
+    ...result,
+    downloadUrl: signed.url,
+    downloadExpiresAt: signed.expiresAt,
+  }
 }
 
 export class JobsController {
@@ -48,9 +64,8 @@ export class JobsController {
       return res.status(202).json({
         jobId: job.id,
         status: job.status,
-        statusUrl: buildJobUrl(req, job.id, 'status'),
+        statusUrl: buildJobUrl(job.id, 'status'),
         resultUrl: buildJobUrl(
-          req,
           job.id,
           job.profile === 'enhanced-ocr' ? 'result/enhanced' : 'result'
         ),
@@ -83,8 +98,8 @@ export class JobsController {
       return res.status(202).json({
         jobId: job.id,
         status: job.status,
-        statusUrl: buildJobUrl(req, job.id, 'status'),
-        resultUrl: buildJobUrl(req, job.id, 'result/enhanced'),
+        statusUrl: buildJobUrl(job.id, 'status'),
+        resultUrl: buildJobUrl(job.id, 'result/enhanced'),
         createdAt: job.createdAt,
       })
     } catch (error) {
@@ -109,7 +124,6 @@ export class JobsController {
         finishedAt: job.finishedAt,
         error: job.error,
         resultUrl: buildJobUrl(
-          req,
           job.id,
           job.profile === 'enhanced-ocr' ? 'result/enhanced' : 'result'
         ),
@@ -141,7 +155,7 @@ export class JobsController {
       return res.status(200).json({
         jobId: job.id,
         status: job.status,
-        result: job.result,
+        result: presentJobResult(job.result),
       })
     } catch (error) {
       if (error instanceof JobNotFoundError) {
@@ -175,7 +189,7 @@ export class JobsController {
         jobId: job.id,
         status: job.status,
         result: {
-          ...job.result,
+          ...presentJobResult(job.result),
           ...job.enhancedResult,
         },
       })

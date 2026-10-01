@@ -284,7 +284,7 @@ Art. 22-A. No exercício de suas atribuições, os delegatários deverão adotar
       expect(startLog).toBeDefined();
       expect(startLog?.metadata).toEqual({
         fileId: 'redacted-pdf',
-        url: 'https://storage.example.com/documents/redacted.pdf?[redacted-query]',
+        url: 'https://storage.example.com/[redacted-path]?[redacted-query]',
       });
       expect(JSON.stringify(startLog?.metadata)).not.toContain('secret-token');
       expect(JSON.stringify(startLog?.metadata)).not.toContain('secret-signature');

@@ -13,6 +13,10 @@ const app = express()
 
 app.set('trust proxy', 1)
 
+morgan.token('safe-url', req => req.url?.split('?')[0])
+const accessLogFormat =
+  ':remote-addr - :remote-user [:date[clf]] ":method :safe-url HTTP/:http-version" :status :res[content-length] ":user-agent" :response-time ms'
+
 app.use(
   cors({
     origin: '*',
@@ -23,7 +27,9 @@ app.use(
 )
 
 app.use(express.json({ limit: '50mb' }))
-app.use(morgan('combined', { stream: { write: (message: string) => logger.info(message.trim()) } }))
+app.use(
+  morgan(accessLogFormat, { stream: { write: (message: string) => logger.info(message.trim()) } })
+)
 
 app.use(handleGlobalRequestExceptions)
 app.use(handleAuthMiddleware)

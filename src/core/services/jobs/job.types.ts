@@ -8,7 +8,8 @@ export type ProcessMessageJobResult = {
   processedFiles: string[]
   failedFiles: Array<{ fileId: string; error: string }>
   filename: string
-  downloadUrl: string
+  downloadUrl?: string
+  downloadExpiresAt?: string
   transcriptionText?: string
 }
 

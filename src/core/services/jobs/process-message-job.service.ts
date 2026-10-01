@@ -122,7 +122,12 @@ export class ProcessMessageJobService {
         )
       )
 
-      const { enhancedResult: _enhancedResult, ...baseResult } = result
+      const {
+        enhancedResult: _enhancedResult,
+        downloadUrl: _downloadUrl,
+        downloadExpiresAt: _downloadExpiresAt,
+        ...baseResult
+      } = result
       await this.store.update(jobId, {
         status: 'completed',
         result: baseResult,

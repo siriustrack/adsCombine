@@ -151,7 +151,12 @@ const routeLogger =
  *                 downloadUrl:
  *                   type: string
  *                   format: uri
- *                   example: "http://localhost:3000/texts/conv-123/conv-123-1712345678901.txt"
+ *                   description: Link assinado e expirante para baixar o texto processado.
+ *                   example: "http://localhost:3000/texts/conv-123/550e8400-e29b-41d4-a716-446655440000.txt?v=1&exp=1712346578&sig=base64url-signature"
+ *                 downloadExpiresAt:
+ *                   type: string
+ *                   format: date-time
+ *                   description: Expiração UTC do link assinado.
  *       400:
  *         description: Body inválido (falha na validação Zod)
  *         content:
