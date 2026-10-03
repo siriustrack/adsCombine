@@ -54,9 +54,9 @@ export const envSchema = z.object({
     .max(104_857_600)
     .default(104_857_600),
   MAX_FILES_PER_JOB: z.coerce.number().int().positive().max(10).default(10),
-  MAX_PDF_PAGES: z.coerce.number().int().positive().max(500).default(300),
-  MAX_OCR_PAGES_PER_PDF: z.coerce.number().int().positive().max(500).default(500),
-  MAX_TOTAL_OCR_PAGES_PER_JOB: z.coerce.number().int().positive().max(1_000).default(200),
+  MAX_PDF_PAGES: z.coerce.number().int().positive().max(1_000).default(1_000),
+  MAX_OCR_PAGES_PER_PDF: z.coerce.number().int().positive().max(1_000).default(1_000),
+  MAX_TOTAL_OCR_PAGES_PER_JOB: z.coerce.number().int().positive().max(1_000).default(1_000),
   OCR_MAX_PAGES_PER_CHUNK: z.coerce.number().int().positive().max(10).default(2),
   MIXED_PAGE_OCR_DIRECT_MAX_PAGES: z.coerce.number().int().positive().max(50).default(10),
   MIXED_PAGE_MIN_NATIVE_CHARS_PER_PAGE: z.coerce.number().int().positive().default(80),
