@@ -31,8 +31,8 @@ describe('VisualFallbackService reconciliation', () => {
   })
 
   test('preserves OCR when a visual table reorders numbers across the page', async () => {
-    const ocrText = 'UNIDADE C19 C20 C21\nAp.36 10 20 30'
-    const result = await createV2Service('UNIDADE C19 C20 C21\nAp.36 30 10 20').execute({
+    const ocrText = '19 20 21 22 23\nAp.36 10 20 30 40 50'
+    const result = await createV2Service('19 20 21 22 23\nAp.36 50 10 20 30 40').execute({
       buffer: Buffer.from('pdf'),
       fileName: 'quadro-de-areas.pdf',
       pages: [
@@ -40,7 +40,13 @@ describe('VisualFallbackService reconciliation', () => {
           pageNumber: 1,
           text: ocrText,
           sourceRange: { start: 0, end: ocrText.length },
-          legalSignals: { ...legalSignals, corruptedSymbols: 1 },
+          legalSignals: {
+            ...legalSignals,
+            registryMarkers: 0,
+            legalMarkers: 0,
+            squareMeters: 0,
+            fragmentedNumbersOrMeasures: 0,
+          },
         },
       ],
     })
@@ -51,6 +57,7 @@ describe('VisualFallbackService reconciliation', () => {
       state: 'conflict',
       selectedTextSource: 'ocr',
       decisionReason: 'critical_numeric_order_ambiguous',
+      reasons: ['tabular-layout'],
       criticalUncertainties: [
         {
           start: 0,
@@ -64,7 +71,7 @@ describe('VisualFallbackService reconciliation', () => {
   })
 
   test('selects a visual table when row and column order remain stable', async () => {
-    const text = 'UNIDADE C19 C20 C21\nAp.36 10 20 30'
+    const text = '19 20 21 22 23\nAp.36 10 20 30 40 50'
     const result = await createV2Service(text).execute({
       buffer: Buffer.from('pdf'),
       fileName: 'quadro-de-areas.pdf',
@@ -72,7 +79,13 @@ describe('VisualFallbackService reconciliation', () => {
         {
           pageNumber: 1,
           text,
-          legalSignals: { ...legalSignals, corruptedSymbols: 1 },
+          legalSignals: {
+            ...legalSignals,
+            registryMarkers: 0,
+            legalMarkers: 0,
+            squareMeters: 0,
+            fragmentedNumbersOrMeasures: 0,
+          },
         },
       ],
     })
@@ -81,6 +94,7 @@ describe('VisualFallbackService reconciliation', () => {
     expect(result.byPage.get(1)).toMatchObject({
       outcome: 'selected',
       selectedTextSource: 'visual',
+      reasons: ['tabular-layout'],
       criticalUncertainties: [],
     })
   })

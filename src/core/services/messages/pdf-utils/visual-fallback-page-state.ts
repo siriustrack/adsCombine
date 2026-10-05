@@ -1,5 +1,5 @@
 import { sanitizePdfText } from 'utils/sanitize'
-import { hasTabularAreaReference } from './visual-document-profile'
+import { hasTabularAreaReference, isLikelyTabularText } from './visual-document-profile'
 import {
   createV1Metadata,
   createV2BudgetSkippedMetadata,
@@ -27,6 +27,8 @@ function selectRiskReasons(page: VisualFallbackOcrPage): VisualFallbackReason[] 
 
   const reasons: VisualFallbackReason[] = []
   if (weakEvidenceReason) reasons.push(weakEvidenceReason)
+  const hasTabularLayout = (page.tableCount ?? 0) > 0 || isLikelyTabularText(page.text)
+  if (hasTabularLayout) reasons.push('tabular-layout')
   if (!signals) return reasons
 
   if (signals.corruptedSymbols > 0) reasons.push('corrupted-symbols')
@@ -71,7 +73,8 @@ function getRiskSeverity(reasons: VisualFallbackReason[]): number {
   if (
     reasons.includes('corrupted-symbols') ||
     reasons.includes('garbled-spans') ||
-    reasons.includes('fragmented-number-or-measure')
+    reasons.includes('fragmented-number-or-measure') ||
+    reasons.includes('tabular-layout')
   ) {
     return 2
   }
@@ -87,6 +90,7 @@ function getRiskIntensity(page: VisualFallbackOcrPage, reasons: VisualFallbackRe
     (signals?.garbledSpans ?? 0) * 50 +
     (signals?.fragmentedNumbersOrMeasures ?? 0) * 40 +
     (signals?.corruptedSymbols ?? 0) * 30 +
+    (reasons.includes('tabular-layout') ? 25 : 0) +
     (reasons.includes('missing-measure') ? 20 : 0) +
     (reasons.includes('missing-legal-marker') ? 10 : 0) +
     confidenceDeficit

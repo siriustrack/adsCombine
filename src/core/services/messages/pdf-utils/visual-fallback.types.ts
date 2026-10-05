@@ -25,6 +25,7 @@ export type VisualFallbackReason =
   | 'weak-ocr-evidence'
   | 'missing-legal-marker'
   | 'missing-measure'
+  | 'tabular-layout'
 
 export type VisualFallbackProvenance = {
   provider: VisualFallbackProvider
