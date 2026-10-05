@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   inferVisualDocumentProfile,
   resolveVisualDocumentProfile,
+  resolveVisualPageProfile,
   VISUAL_DOCUMENT_PROFILES,
   type VisualDocumentKind,
   type VisualDocumentProfile,
@@ -32,9 +33,16 @@ describe('visual document profile', () => {
       VISUAL_DOCUMENT_PROFILES.contrato.kind,
       VISUAL_DOCUMENT_PROFILES['certidao-registro'].kind,
       VISUAL_DOCUMENT_PROFILES['legal-generico'].kind,
+      VISUAL_DOCUMENT_PROFILES.tabela.kind,
     ]
 
-    expect(kinds).toEqual(['matricula', 'contrato', 'certidao-registro', 'legal-generico'])
+    expect(kinds).toEqual([
+      'matricula',
+      'contrato',
+      'certidao-registro',
+      'legal-generico',
+      'tabela',
+    ])
     expect(VISUAL_DOCUMENT_PROFILES.contrato.transcriptionHints).toEqual([])
     expect(VISUAL_DOCUMENT_PROFILES['certidao-registro'].transcriptionHints).toEqual([])
     expect(VISUAL_DOCUMENT_PROFILES['legal-generico'].transcriptionHints).toEqual([])
@@ -74,5 +82,23 @@ describe('visual document profile', () => {
     expect(VISUAL_DOCUMENT_PROFILES.matricula.transcriptionHints).toEqual([
       'Preserve marcadores R. e AV. exatamente como visíveis.',
     ])
+  })
+
+  test('routes pages with repeated numeric columns through the table profile', () => {
+    const resolved = resolveVisualPageProfile(undefined, {
+      text: '19 20 21 22 23\nAp.36 86,70 10,85 97,55\nAp.41 102,70 12,90 115,60',
+      tableCount: 0,
+    })
+
+    expect(resolved?.kind).toBe('tabela')
+  })
+
+  test('routes extractor-detected tables through the table profile', () => {
+    const resolved = resolveVisualPageProfile(VISUAL_DOCUMENT_PROFILES.matricula, {
+      text: 'texto curto',
+      tableCount: 1,
+    })
+
+    expect(resolved?.kind).toBe('tabela')
   })
 })

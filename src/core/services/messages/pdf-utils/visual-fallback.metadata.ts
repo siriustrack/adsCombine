@@ -54,6 +54,27 @@ const ALL_CRITICAL_CATEGORIES = [
   'number',
 ] as const
 
+const NUMERIC_CRITICAL_CATEGORIES = new Set([
+  'number',
+  'date',
+  'cpf_cnpj',
+  'currency',
+  'fraction',
+  'measurement',
+  'registry_identifier',
+])
+
+export function hasCriticalNumericOrderAmbiguity(
+  ranges: readonly CriticalUncertaintyRange[]
+): boolean {
+  return ranges.some(
+    range =>
+      range.scope === 'page' &&
+      range.divergences.includes('duplicate_or_reordered') &&
+      range.categories.some(category => NUMERIC_CRITICAL_CATEGORIES.has(category))
+  )
+}
+
 export function createInitialMetadata(
   pages: VisualFallbackOcrPage[]
 ): Map<number, VisualFallbackMetadata> {
@@ -197,6 +218,30 @@ export function reconcileV2Candidate({
         outcome: { kind: 'rejected', reason: reconciliation.reason },
         provenance,
       }),
+      reconciliation,
+    }
+  }
+  if (hasCriticalNumericOrderAmbiguity(reconciliation.metadata.criticalUncertainties)) {
+    const sourceRange = { start: 0, end: reconciliation.ocrTextLength }
+    return {
+      metadata: {
+        schemaVersion: VISUAL_FALLBACK_V2_SCHEMA_VERSION,
+        policyVersion: GEMINI_WHOLE_PAGE_CRITICAL_POLICY_VERSION,
+        alignmentVersion: CRITICAL_TOKEN_ALIGNMENT_VERSION,
+        outcome: 'rejected',
+        state: 'conflict',
+        reasons,
+        offsetEncoding: 'utf16_code_units',
+        sourceRange,
+        riskySpans: reconciliation.ocrCriticalUncertainties.map(({ start, end }) => ({
+          start,
+          end,
+        })),
+        provenance,
+        selectedTextSource: 'ocr',
+        decisionReason: 'critical_numeric_order_ambiguous',
+        criticalUncertainties: reconciliation.ocrCriticalUncertainties,
+      },
       reconciliation,
     }
   }

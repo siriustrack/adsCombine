@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import logger from '@lib/logger'
 import type { PageFurnitureProfile } from './gemini-page-furniture'
+import { resolveVisualPageProfile } from './visual-document-profile'
 import { logV2Diagnostic, type VisualFallbackV2Diagnostic } from './visual-fallback.diagnostics'
 import {
   createV1Metadata,
@@ -168,7 +169,10 @@ export async function processSelectedPage({
     image: renderedPage.image,
     pageNumber: page.pageNumber,
     signal,
-    documentProfile,
+    documentProfile: resolveVisualPageProfile(documentProfile, {
+      text: page.text,
+      tableCount: page.tableCount,
+    }),
     model: config.model,
     maxRetries: config.maxRetries,
     timeoutMs: config.timeoutMs,

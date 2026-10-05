@@ -27,6 +27,7 @@ import {
   validatePdfPageLimit,
 } from './process-pdf-helpers'
 import { TextQualityAnalyzer } from './text-quality-analyzer.service'
+import { hasCriticalNumericOrderAmbiguity } from './visual-fallback.metadata'
 import { VisualFallbackService } from './visual-fallback.service'
 import type { VisualFallbackMetadata } from './visual-fallback.types'
 import {
@@ -36,6 +37,20 @@ import {
 } from './visual-fallback.types'
 
 type SourceRange = { start: number; end: number }
+type SelectedPageTextSource = 'enhanced' | 'native' | 'visual'
+
+function getPageQualityClassification(
+  selectedTextSource: SelectedPageTextSource | undefined,
+  hasWarnings: boolean
+): string {
+  if (selectedTextSource === 'native') return 'native-preserved'
+  if (selectedTextSource === 'visual') return 'visual-selected'
+  return hasWarnings ? 'ocr-warning' : 'ocr-selected'
+}
+
+function getVisualFallbackWarnings(metadata: VisualFallbackMetadata | undefined): string[] {
+  return metadata?.state === 'conflict' ? ['visual-fallback-conflict'] : []
+}
 
 function isV2Metadata(
   metadata: VisualFallbackMetadata
@@ -74,6 +89,7 @@ function canSelectAcceptedVisualText(
     candidate.length > 0 &&
     metadata.sourceRange?.start === 0 &&
     metadata.sourceRange.end === candidate.length &&
+    !hasCriticalNumericOrderAmbiguity(metadata.criticalUncertainties) &&
     metadata.criticalUncertainties.every(
       range =>
         isValidLocalRange(range, candidate) &&
@@ -322,7 +338,7 @@ export class ProcessPdfService {
 
     const { value: textData, error: extractionError } =
       await this.textExtractorService.extractTextFromPdf(downloadedFile.buffer, fileId, {
-        includePageVisualMetadata: options.mode === 'mixed-page',
+        includePageVisualMetadata: options.mode === 'mixed-page' || options.mode === 'enhanced',
       })
 
     if (extractionError) {
@@ -475,6 +491,7 @@ export class ProcessPdfService {
           meanConfidence: page.meanConfidence,
           wordCount: page.wordCount,
           warnings: page.warnings,
+          tableCount: nativePagesByNumber.get(page.pageNumber)?.tableCount ?? 0,
         }
       }),
       pageBudget: options.visualFallbackPageBudget,
@@ -490,7 +507,7 @@ export class ProcessPdfService {
       metadataByPage: visualFallback.byPage,
     })
     if (selectionError) return errResult(selectionError)
-    const selectedTextSourceByPage = new Map<number, 'enhanced' | 'native' | 'visual'>()
+    const selectedTextSourceByPage = new Map<number, SelectedPageTextSource>()
     const selectedPages = orderedOcrPages.map(page => {
       const candidate = acceptedVisualTextByPage.get(page.pageNumber)
       const visualMetadata = visualFallback.byPage.get(page.pageNumber)
@@ -548,8 +565,6 @@ export class ProcessPdfService {
       pageQuality: Array.from({ length: ocrResult.totalPages }, (_, index) => {
         const pageNumber = index + 1
         const page = pagesByNumber.get(pageNumber)
-        const noTextWarning = !page?.text.trim() ? ['no-text-detected'] : []
-        const warnings = [...new Set([...(page?.warnings ?? []), ...noTextWarning])]
         const selectedTextSource = selectedTextSourceByPage.get(pageNumber)
         const visualMetadata =
           visualFallback.enabled && selectedTextSource !== 'native'
@@ -558,17 +573,17 @@ export class ProcessPdfService {
                 finalRangesByPage.get(pageNumber)
               )
             : undefined
+        const noTextWarning = !page?.text.trim() ? ['no-text-detected'] : []
+        const visualWarnings = getVisualFallbackWarnings(visualMetadata)
+        const warnings = [
+          ...new Set([...(page?.warnings ?? []), ...noTextWarning, ...visualWarnings]),
+        ]
 
         return {
           pageNumber,
           qualityScore: page?.meanConfidence ?? 0,
           confidence: page?.meanConfidence ?? 0,
-          classification:
-            selectedTextSource === 'native'
-              ? 'native-preserved'
-              : warnings.length > 0
-                ? 'ocr-warning'
-                : 'ocr-selected',
+          classification: getPageQualityClassification(selectedTextSource, warnings.length > 0),
           shouldOcr: true,
           ocrDecisionReason: page?.selectedAttempt?.label,
           wordCount: page?.wordCount ?? 0,

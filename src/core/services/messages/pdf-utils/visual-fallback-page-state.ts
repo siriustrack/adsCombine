@@ -1,4 +1,5 @@
 import { sanitizePdfText } from 'utils/sanitize'
+import { hasTabularAreaReference } from './visual-document-profile'
 import {
   createV1Metadata,
   createV2BudgetSkippedMetadata,
@@ -37,7 +38,10 @@ function selectRiskReasons(page: VisualFallbackOcrPage): VisualFallbackReason[] 
     ' '
   )
   const hasAreaReference = /(?:área|area|superf[ií]cie)/iu.test(textWithoutOrganizationalAreas)
-  if (hasAreaReference && signals.squareMeters === 0) reasons.push('missing-measure')
+  const areaReferenceIsTabular = hasTabularAreaReference(page.text, page.tableCount)
+  if (hasAreaReference && signals.squareMeters === 0 && !areaReferenceIsTabular) {
+    reasons.push('missing-measure')
+  }
 
   const hasFragmentedMeasure = reasons.includes('fragmented-number-or-measure')
   if (hasFragmentedMeasure && signals.registryMarkers > 0 && signals.legalMarkers === 0) {

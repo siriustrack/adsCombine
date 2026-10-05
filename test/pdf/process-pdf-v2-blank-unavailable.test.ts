@@ -301,5 +301,71 @@ describe('ProcessPdfService V2 blank unavailable visual fallback', () => {
       riskySpans: [],
       sourceRange: { start: 0, end: selectedText.length },
     })
+    expect(pageQuality?.[0]?.classification).toBe('visual-selected')
+  })
+
+  test('reports a warning when a visual numeric conflict preserves OCR', async () => {
+    const ocrText = 'UNIDADE C19 C20 C21\nAp.36 10 20 30'
+    let pageQuality: Array<Record<string, unknown>> | undefined
+    const service = createSinglePageEnhancedService({
+      text: ocrText,
+      meanConfidence: 87,
+      wordCount: 10,
+      warnings: [],
+      visualFallbackService: {
+        async execute() {
+          return {
+            byPage: new Map([
+              [
+                1,
+                {
+                  schemaVersion: 'visual-fallback/v2' as const,
+                  policyVersion: 'gemini-whole-page-critical-v2' as const,
+                  alignmentVersion: 'critical-token-alignment-v1' as const,
+                  outcome: 'rejected' as const,
+                  state: 'conflict' as const,
+                  reasons: ['missing-measure' as const],
+                  offsetEncoding: 'utf16_code_units' as const,
+                  sourceRange: { start: 0, end: ocrText.length },
+                  criticalUncertainties: [
+                    {
+                      start: 0,
+                      end: ocrText.length,
+                      scope: 'page' as const,
+                      categories: ['number' as const],
+                      divergences: ['duplicate_or_reordered' as const],
+                    },
+                  ],
+                  riskySpans: [{ start: 0, end: ocrText.length }],
+                  selectedTextSource: 'ocr' as const,
+                  decisionReason: 'critical_numeric_order_ambiguous' as const,
+                  provenance: {
+                    provider: 'gemini' as const,
+                    model: 'gemini-test',
+                    imageSha256: 'a'.repeat(64),
+                    candidateSha256: 'b'.repeat(64),
+                  },
+                },
+              ],
+            ]),
+            acceptedVisualTextByPage: new Map(),
+            selectedPageCount: 1,
+            enabled: true,
+          }
+        },
+      },
+    })
+
+    const result = await service.executeEnhanced(enhancedPdfFile, {
+      onEnhancedMetadata: metadata => {
+        pageQuality = metadata.pageQuality as Array<Record<string, unknown>>
+      },
+    })
+
+    expect(result.value).toContain(ocrText)
+    expect(pageQuality?.[0]).toMatchObject({
+      classification: 'ocr-warning',
+      warnings: ['visual-fallback-conflict'],
+    })
   })
 })

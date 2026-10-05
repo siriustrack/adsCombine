@@ -141,6 +141,7 @@ export type VisualFallbackV2Metadata =
         | 'candidate_empty_after_sanitization'
         | 'candidate_invalid_utf16'
         | 'candidate_truncated'
+        | 'critical_numeric_order_ambiguous'
         | 'alignment_budget_exceeded'
         | 'alignment_invariant_failed'
     })
@@ -155,6 +156,7 @@ export type VisualFallbackOcrPage = {
   meanConfidence?: number
   wordCount?: number
   warnings?: string[]
+  tableCount?: number
 }
 
 export type RenderedPdfPage = {
