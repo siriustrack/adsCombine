@@ -1,32 +1,16 @@
-export interface TextQualityAnalysis {
-  shouldSkipOcr: boolean
-  isHighQuality: boolean
-  isRepetitive: boolean
-  hasOcrIndicators: boolean
-  hasSubstantialContent: boolean
-  qualityScore: number
-}
+import { isValidationOnlyText } from './pdf-validation-text'
 
-export type PageTextClassification =
-  | 'empty'
-  | 'short-text'
-  | 'corrupted-text'
-  | 'repetitive-text'
-  | 'native-text'
-  | 'ocr-candidate'
+import type {
+  PageTextClassification,
+  PageTextDiagnostics,
+  TextQualityAnalysis,
+} from './text-quality.types'
 
-export interface PageTextDiagnostics {
-  textLength: number
-  trimmedLength: number
-  wordCount: number
-  alphanumericRatio: number
-  whitespaceRatio: number
-  spaceDensity: number
-  repetitionRatio: number
-  hasReplacementCharacters: boolean
-  classification: PageTextClassification
-  qualityAnalysis: TextQualityAnalysis
-}
+export type {
+  PageTextClassification,
+  PageTextDiagnostics,
+  TextQualityAnalysis,
+} from './text-quality.types'
 
 type QualityScoreOptions = Pick<
   TextQualityAnalysis,
@@ -124,7 +108,10 @@ export class TextQualityAnalyzer {
     const textLength = extractedText.length
 
     // Early return para textos muito pequenos - sempre fazer OCR
-    if (textLength < this.QUALITY_THRESHOLDS.MIN_TEXT_LENGTH) {
+    if (
+      textLength < this.QUALITY_THRESHOLDS.MIN_TEXT_LENGTH ||
+      isValidationOnlyText(extractedText)
+    ) {
       return {
         shouldSkipOcr: false,
         isHighQuality: false,
@@ -191,7 +178,11 @@ export class TextQualityAnalyzer {
       })
     }
 
-    if (text.length < this.PAGE_THRESHOLDS.MIN_TEXT_LENGTH || hasReplacementCharacters) {
+    if (
+      text.length < this.PAGE_THRESHOLDS.MIN_TEXT_LENGTH ||
+      hasReplacementCharacters ||
+      isValidationOnlyText(text)
+    ) {
       const qualityAnalysis = this.createQualityAnalysis({
         hasOcrIndicators: true,
         qualityScore: 10,

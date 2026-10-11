@@ -60,6 +60,57 @@ async function downloadText(req: Request, res: Response, next: NextFunction) {
   }
 }
 
+/**
+ * @openapi
+ * /texts/{conversationId}/{filename}:
+ *   parameters:
+ *     - in: path
+ *       name: conversationId
+ *       required: true
+ *       schema: { type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$' }
+ *     - in: path
+ *       name: filename
+ *       required: true
+ *       schema: { type: string, maxLength: 255, pattern: '^[A-Za-z0-9][A-Za-z0-9_-]*\.txt$' }
+ *     - in: query
+ *       name: v
+ *       required: true
+ *       schema: { type: string, enum: ['1'] }
+ *     - in: query
+ *       name: exp
+ *       required: true
+ *       schema: { type: integer, minimum: 1 }
+ *     - in: query
+ *       name: sig
+ *       required: true
+ *       schema: { type: string, pattern: '^[A-Za-z0-9_-]{43}$' }
+ *   get:
+ *     tags: [Textos]
+ *     summary: Baixa texto com assinatura e validade verificadas
+ *     description: A URL completa é a credencial. Obtenha uma nova URL pelo resultado autenticado do job quando expirar.
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Texto completo; cache desabilitado.
+ *         headers:
+ *           Cache-Control:
+ *             schema: { type: string, enum: [no-store] }
+ *         content:
+ *           text/plain:
+ *             schema: { type: string }
+ *       400: { description: Caminho inválido }
+ *       403: { description: Assinatura ausente, inválida ou expirada }
+ *       404: { description: Artefato não encontrado }
+ *   head:
+ *     tags: [Textos]
+ *     summary: Verifica o download assinado sem retornar o corpo
+ *     security: []
+ *     responses:
+ *       200: { description: Cabeçalhos do artefato autorizado }
+ *       400: { description: Caminho inválido }
+ *       403: { description: Assinatura ausente, inválida ou expirada }
+ *       404: { description: Artefato não encontrado }
+ */
 textsRouter.get('/:conversationId/:filename', downloadText)
 textsRouter.all('/:conversationId/:filename', (_req, res) =>
   res.status(405).json({ error: 'Method not allowed' })

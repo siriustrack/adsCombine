@@ -82,6 +82,7 @@ const definition = {
 };
 
 const spec = swaggerJsdoc({
+  failOnErrors: true,
   definition,
   apis: [resolve(rootDir, 'src/api/routes/*.ts')],
 });

@@ -94,6 +94,7 @@ function loadSwaggerSpec(): object {
   }
 
   return swaggerJsdoc({
+    failOnErrors: true,
     definition,
     apis: ['./src/api/routes/*.ts'],
   })

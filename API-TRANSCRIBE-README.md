@@ -1,5 +1,10 @@
 # 🎯 API de Transcrição - Implementação Completa
 
+> Documento histórico. Os exemplos abaixo não são o contrato atual:
+> `/api/transcribe` exige `Authorization: Bearer <TOKEN>`. Consulte
+> [o mapa do fluxo](docs/adscombine-flow-roadmap.md) e o OpenAPI gerado pelo build.
+> Não envie o token do serviço ao frontend; a chamada autenticada pertence ao backend.
+
 ## Endpoint Criado
 
 ```

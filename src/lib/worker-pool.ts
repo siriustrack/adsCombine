@@ -1,8 +1,8 @@
 import fs from 'node:fs'
 import { availableParallelism } from 'node:os'
 import path from 'node:path'
-import Piscina from 'piscina'
 import logger from './logger'
+import { OcrProcessPool } from './ocr-process-pool'
 import { calculateWorkerCount, parseCgroupV2CpuQuota } from './worker-count'
 
 function getOptimalWorkerCount(): { maxWorkers: number; minWorkers: number } {
@@ -55,13 +55,6 @@ function getWorkerFilePath(): string {
 const { maxWorkers, minWorkers } = getOptimalWorkerCount()
 const workerFilePath = getWorkerFilePath()
 
-export const pdfWorkerPool = new Piscina({
-  filename: workerFilePath,
-  maxThreads: maxWorkers,
-  minThreads: minWorkers,
-  idleTimeout: 300000,
-  maxQueue: 1000,
-  concurrentTasksPerWorker: 1,
-})
+export const pdfWorkerPool = new OcrProcessPool(workerFilePath, maxWorkers)
 
 export { maxWorkers, minWorkers }

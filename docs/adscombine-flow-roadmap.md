@@ -2,11 +2,75 @@
 
 Nota inicial: este documento é apenas documentação. Ele registra evidências da implementação atual para orientar próximos passos de mapeamento, sem alterar runtime, autenticação, fila, OCR, OpenAPI ou código de integração.
 
-`API-TRANSCRIBE-README.md` e `DELETE-TEXTS-README.md` são documentos anteriores na raiz do adsCombine. Eles devem ser tratados como referência e dívida documental para consolidação futura, sem edição nesta tarefa.
+`API-TRANSCRIBE-README.md` e `DELETE-TEXTS-README.md` são documentos históricos
+na raiz do adsCombine. Seus avisos apontam para este contrato; exemplos antigos
+sem autenticação ou com filtro `filename` não descrevem a API atual.
 
 ## Estado Atual
 
-Onde estamos: o adsCombine é o microserviço que recebe chamadas HTTP, processa mensagens e arquivos, extrai texto de PDFs, aciona OCR quando necessário, grava saídas em `/texts/{conversationId}` e expõe jobs assíncronos para `process-message`. O serviço combina rotas Express, controllers Zod, serviços de processamento, fila de jobs em memória, registros JSON locais em `temp/jobs` e workers Piscina para OCR de PDFs.
+### Reconciliação com o código - 2026-10-11
+
+O backlog abaixo não deve ser confundido com funcionalidades ausentes em todos
+os caminhos. O código já possui fallback de rotação e cancelamento enhanced.
+Downloads de texto já exigem assinatura válida e não expirada, não são públicos
+por simples conhecimento do caminho. As correções desta rodada ainda são
+locais até que seus commits e deploys sejam registrados.
+
+- `GET /api/jobs/:jobId/result` renova `downloadUrl` e `downloadExpiresAt`;
+  `GET` e `HEAD /texts/:conversationId/:filename` exigem `v`, `exp` e `sig`.
+  `TEXTS_SIGNING_SECRET` continua opcional, com chave derivada de `TOKEN`.
+- A recuperação local agora terminaliza registros herdados `queued` e
+  `processing` como `expired` antes de admitir novos jobs. Não reexecuta URLs
+  assinadas antigas nem transforma o JSON store em fila distribuída.
+- A rotação interna do raster já existe atrás de `PDF_OCR_ROTATE_ENABLED`.
+  Um teste com PDF sintético `/Rotate 0`, Poppler e Tesseract reais comprovou
+  recuperação com o fallback habilitado e preservação da página já legível.
+  Habilitação e orçamento de tentativas não são uma entrega implícita em produção.
+- Cancelamento agora propaga signal nos três caminhos OCR e no `pdfinfo`.
+  O pool OCR usa processos Linux supervisionados, com a mesma concorrência
+  configurada, em vez de depender do encerramento de threads Piscina. Abortar
+  encerra o grupo de processos (incluindo Poppler/Tesseract), aguarda `close`
+  e só então remove temporários. Tarefas enfileiradas canceladas não iniciam;
+  tarefas independentes continuam. A prova usa subprocessos reais controlados
+  por eventos, além dos testes das fronteiras de serviço.
+- Texto composto somente por linhas reconhecidas de assinatura/validação/selo
+  e paginação não é devolvido como transcrição bem-sucedida quando o OCR não
+  recupera conteúdo. O original não é removido nem reescrito. Texto jurídico
+  curto ou misto continua elegível a fallback; a regra é deliberadamente
+  conservadora, não um classificador universal de relevância.
+- O teste padrão agora examina `test/`, sem redescobrir cópias antigas em
+  `dist/test`. As suites fonte e os contratos OpenAPI são verificações distintas.
+
+### Download de texto e contrato vigente
+
+Uma URL de resultado tem a forma
+`https://<ADSCOMBINE_HOST>/texts/<CONVERSATION_ID>/<FILENAME>?v=1&exp=<UNIX_SECONDS>&sig=<SIGNATURE>`.
+O consumidor deve usar a URL completa, não reconstruir o caminho e não
+registrar a assinatura. O campo `downloadExpiresAt` é uma data UTC.
+Ao expirar, consulte novamente o resultado autenticado do job. A rota retorna
+403 para assinatura ausente/inválida/expirada e 404 para artefato inexistente;
+links inválidos não autorizam a leitura por bearer alternativo.
+Respostas autorizadas usam `Cache-Control: no-store`, `nosniff` e `no-referrer`.
+O endpoint legado `/api/process-message` continua público por compatibilidade;
+esta atualização documenta a política, sem alterá-la incidentalmente.
+
+### Consolidação de extração - 2026-10-10
+
+A correção local da heurística de tamanho preserva texto nativo forte em vez de
+acionar OCR somente pelo tamanho do PDF. A suíte `bun test ./test/pdf` passou
+323 testes, incluindo o caminho do serviço com zero chamadas de OCR; o typecheck
+e o lint dos arquivos alterados passaram. Em 11/10, a interferência do formatador
+LSP do agente foi contornada temporariamente para aplicar o formato canônico
+do Biome por patches, sem mudar regras do projeto. A configuração temporária
+das ferramentas foi removida. Não confundir validação local com código publicado.
+
+A ingestão estadual do RIDAI foi concluída para 27 UFs, preservando PDFs e
+transcrições originais. Isso não comprova a resolução das pendências de rotação,
+cancelamento, retomada após restart ou observabilidade listadas neste roadmap.
+
+### Arquitetura e pendências do fluxo
+
+Onde estamos: o adsCombine é o microserviço que recebe chamadas HTTP, processa mensagens e arquivos, extrai texto de PDFs, aciona OCR quando necessário, grava saídas em `/texts/{conversationId}` e expõe jobs assíncronos para `process-message`. O serviço combina rotas Express, controllers Zod, serviços de processamento, fila de jobs em memória, registros JSON locais em `temp/jobs` e processos OCR supervisionados para OCR de PDFs.
 
 O runtime atual tem fronteiras importantes. Jobs são coordenados por `queue[]` e `activeJobs` no processo Node atual, com estado consultável em arquivos JSON. Esses registros sobrevivem enquanto o diretório local existir, mas não formam uma fila durável reconstruída automaticamente após restart. O pipeline PDF/OCR usa texto nativo quando a qualidade permite, pode cair para OCR, e oferece `mixed-page` como modo opcional, sem ser o padrão atual dos jobs.
 
@@ -33,6 +97,7 @@ Endpoint protegido pelo token principal (`TOKEN`) para checagem operacional do s
 ```http
 GET /api/health HTTP/1.1
 Host: <ADSCOMBINE_HOST>
+Authorization: Bearer <TOKEN>
 ```
 
 ```json
@@ -168,7 +233,8 @@ Resposta `200 OK` quando `status` é `completed`:
     "processedFiles": ["<FILE_ID>"],
     "failedFiles": [],
     "filename": "upload-<FILE_ID>-1760000000000.txt",
-    "downloadUrl": "https://<ADSCOMBINE_HOST>/texts/upload-<FILE_ID>/upload-<FILE_ID>-1760000000000.txt"
+    "downloadUrl": "https://<ADSCOMBINE_HOST>/texts/upload-<FILE_ID>/upload-<FILE_ID>-1760000000000.txt?v=1&exp=<UNIX_SECONDS>&sig=<SIGNATURE>",
+    "downloadExpiresAt": "<UTC_DATETIME>"
   }
 }
 ```
@@ -510,7 +576,7 @@ O middleware aplica regras diferentes para jobs, rotas públicas legadas e demai
 | `/api/jobs/*` | Obrigatório `Authorization: Bearer <jobs-token>`; ausência retorna `401`, token incorreto retorna `403`. | `JOBS_TOKEN` | Token principal (`TOKEN`) é rejeitado nas rotas de jobs; cobre criação, status e resultado. |
 | `/api/process-message` | Público por compatibilidade legado. | N/A | Risco de compatibilidade legado/público: processa mensagens sem bearer no middleware atual; documentar e monitorar sem propor remoção obrigatória nesta tarefa. |
 | `/api/health` | Protegido pelo token principal, porque não está em `authorizedPaths` nem em `/api/jobs`. | `TOKEN` | Endpoint de saúde expõe status e dependência `pdfinfo`; exige bearer principal no middleware atual. |
-| `/texts/*` | Público por prefixo autorizado. | N/A | Serve arquivos gerados em `public/texts`; `downloadUrl` dos jobs aponta para essa superfície pública. |
+| `/texts/*` | Assinatura HMAC e validade na query, verificadas na própria rota. | `TEXTS_SIGNING_SECRET` opcional; fallback derivado de `TOKEN`; `TEXTS_URL_TTL_SECONDS` | GET/HEAD exigem URL completa; prefixo fora do bearer não significa download público. |
 | `/api/transcribe` | Protegido pelo token principal. | `TOKEN` | Rota de integração/transcrição exige bearer principal e aceita upload de áudio via `multipart/form-data`. |
 | `/api/delete-texts` | Protegido pelo token principal. | `TOKEN` | Operação destrutiva de textos; exige bearer principal. |
 | `/api-docs` e `/favicon.ico` | Públicos por prefixo autorizado. | N/A | Documentação Swagger fica pública no middleware atual. |
@@ -521,11 +587,11 @@ Variáveis relevantes para operação e segurança, sem valores: `JOBS_TOKEN`, `
 
 Os jobs usam armazenamento local em `temp/jobs`, definido por `JOBS_DIR`, com um arquivo JSON por `jobId`. O store cria o diretório se necessário, grava com arquivo temporário e `rename`, lista apenas arquivos `.json` cujo nome é UUID válido, ignora arquivos ilegíveis com log de warning e rejeita IDs inválidos para reduzir risco de path traversal.
 
-A manutenção roda na construção do `ProcessMessageJobService` e depois a cada `60_000ms` por `setInterval(...).unref()`. A cada ciclo, `expireStaleJobs(JOB_STALE_AFTER_MS)` marca jobs `queued` ou `processing` como `expired` quando o tempo desde `startedAt`, `updatedAt` ou `createdAt` passa do limite; em seguida, `deleteFinishedOlderThan(JOBS_RETENTION_HOURS * 60 * 60 * 1000)` remove JSONs finalizados (`completed`, `failed`, `expired`) mais antigos que a retenção.
+A reconciliação roda na inicialização, antes de create/get: jobs herdados queued/processing tornam-se expired, sem replay. Após essa barreira, a manutenção periódica roda a cada 60.000 ms e durante a admissão de jobs; remove registros terminais fora da retenção e expira jobs stale.
 
 Durante o drain da fila, `pruneExpiredQueuedJobs()` também remove da fila em memória jobs ainda `queued` cujo `createdAt` ultrapassou `JOB_STALE_AFTER_MS`, marcando o registro como `expired`. Jobs em execução são limitados por `runWithJobTimeout()`, que usa `JOB_STALE_AFTER_MS` como timeout e marca como `expired` quando a mensagem indica estouro de tempo; outros erros viram `failed`.
 
-Restart: os registros JSON sobrevivem enquanto o diretório local existir, mas `queue` e `activeJobs` não sobrevivem ao processo. Após restart, o serviço consegue consultar registros persistidos e a manutenção pode expirar jobs antigos `queued`/`processing`, porém não há reconstrução automática da fila nem reexecução garantida de jobs que estavam pendentes ou em processamento antes da parada. Portanto, os JSONs devem ser tratados como registro de estado/consulta/retenção, não como fila durável.
+Restart: os registros JSON sobrevivem somente enquanto o diretório local existir. Uma nova instância do serviço expira queued/processing herdados antes de aceitar ou consultar jobs; falhas de leitura/gravação impedem a prontidão. Estados já terminais permanecem preservados até a manutenção de retenção. Não há replay automático, reconstrução de fila ou coordenação entre processos; o store tem um único processo dono.
 
 ## Decisões Recentes
 
@@ -533,9 +599,9 @@ Restart: os registros JSON sobrevivem enquanto o diretório local existir, mas `
 
 Consolidamos este arquivo como documento canônico do fluxo adsCombine e agentes-adv porque os contratos estavam espalhados entre código, testes, READMEs raiz e evidências de tarefas. O objetivo é responder, em um único lugar, o que foi observado, por que as decisões existem, onde estão os limites atuais e quais riscos ainda precisam de trabalho futuro.
 
-Preservamos `API-TRANSCRIBE-README.md` e `DELETE-TEXTS-README.md` como documentação anterior, sem edição nesta tarefa. A razão é evitar misturar consolidação documental com mudança de escopo em documentos raiz legados; a dívida fica explícita no roadmap para revisão própria.
+Preservamos os exemplos históricos de `API-TRANSCRIBE-README.md` e `DELETE-TEXTS-README.md`, acrescentando avisos sobre autenticação, filtros e o contrato vigente neste roadmap. Esses documentos não substituem as rotas atuais nem a especificação OpenAPI verificada.
 
-Registramos a matriz de autenticação porque as superfícies têm riscos diferentes. `/api/jobs/*` exige `JOBS_TOKEN`, `/api/health`, `/api/transcribe` e `/api/delete-texts` seguem o token principal, `/texts/*` é público por servir saídas, e `/api/process-message` segue público por compatibilidade legado. Esse último ponto permanece uma declaração de risco, não uma recomendação automática de quebra de compatibilidade.
+A matriz atual distingue bearer e credenciais por URL: /api/jobs exige JOBS_TOKEN; health, transcribe e delete-texts exigem TOKEN; /texts exige assinatura e validade verificadas pela rota. /api/process-message e Swagger permanecem públicos por compatibilidade.
 
 Documentamos a semântica de armazenamento dos jobs para evitar uma interpretação perigosa: os arquivos JSON em `temp/jobs` são registros consultáveis e base de retenção, enquanto a fila executável fica em memória. Por isso, a frase operacional permanece: A fila de jobs é em memória com registros JSON persistidos; isso não equivale a uma fila durável reconstruída automaticamente após restart.
 
@@ -549,18 +615,37 @@ Onde estamos: há contratos, diagramas, limites de autenticação, ciclo de jobs
 - O modo `mixed-page` deve ser descrito como opcional até haver evidência de uso como padrão em jobs.
 - `JOBS_ENABLED` deve permanecer descrito como configuração do agentes-adv.
 - PDFs digitalizados rotacionados continuam problemáticos: uma classe conhecida é PDF A4 portrait com `/Rotate 0`, mas com o conteúdo escaneado com rotação 90° dentro da própria página. Nesse caso, a orientação do dicionário de página não denuncia o problema e o OCR pode ler pouco ou nada.
-- PDFs com falso texto nativo podem enganar heurísticas: alguns documentos contêm majoritariamente textos de validação, links, selos ou metadados, enquanto o conteúdo jurídico/negocial relevante está em imagem escaneada. O pipeline pode tratar esse texto nativo como fallback, mas isso não equivale a extração completa do documento.
-- O timeout usa `Promise.race` em jobs, processamento de arquivos e OCR. Isso marca timeout para o chamador, mas não cancela necessariamente trabalho já iniciado no processor, no Poppler, no Tesseract ou nos workers Piscina.
-- Há coordenação em duas camadas de fila/paralelismo: jobs usam fila em memória própria, enquanto OCR usa Piscina com chunks de páginas. Essa combinação ajuda throughput, mas também cria disputa de CPU e trabalho residual quando há timeout não cancelante.
-- ImageMagick aplica `deskew` leve e pré-processamento de contraste/threshold quando disponível, mas não há correção geral implementada para conteúdo escaneado girado 90°. Não se deve afirmar que orientação automática de 90° já está resolvida.
+- A regra de falso texto nativo cobre somente texto integralmente reconhecido como linhas de validação/assinatura/selo e paginação. Conteúdo misto desconhecido é preservado; não há promessa de identificar toda camada nativa irrelevante. Falhas nessa classe não devem ser reportadas como transcrição completa.
+- Jobs e arquivos PDF propagam AbortSignal; o OCR supervisionado encerra seu grupo de processos e aguarda close antes da limpeza. Isso não implica cancelamento ponta a ponta dos processadores não PDF ou do chat RIDAI/Agents API, fora deste incremento.
+- Há duas filas: jobs em memória e chunks no pool de processos OCR. A concorrência de chunks continua limitada por PDF_MAX_WORKERS/CPU disponível; cada chunk usa um processo novo. O custo de inicialização deve ser observado pelas métricas, não confundido com espera na fila.
+- ImageMagick oferece deskew e fallback de rotações 90°/270° quando habilitado por PDF_OCR_ROTATE_ENABLED. O seletor exige ganho mínimo e palavras suficientes; o teste sintético real comprova o caso coberto, não correção universal de orientação nem habilitação automática em produção.
 
 ## Runbook Operacional
+
+### Correlação e duração
+
+Jobs em execução carregam `jobId` em contexto assíncrono, sem propagá-lo pelo
+conteúdo documental. Eventos de arquivo e página preservam `fileId`; páginas
+enhanced expõem número, confiança, palavras, tentativa/rotação e quantidade de
+avisos, sem texto ou assinatura de URL. Os eventos de página ficam em nível
+debug; os metadados enhanced seguem consultáveis no resultado autenticado.
+
+`Job processing started` informa `queueWaitMs`, `queueDepth` e `activeJobs`.
+`Job processing completed` e falhas informam `processingMs`; eventos de arquivo
+também medem `processingMs`. O pool registra `queueWaitMs` separado de
+`executionMs`, junto de `firstPage`/`lastPage`. As durações novas usam relógio
+monotônico. Espera de fila começa no enfileiramento, não no upload do browser.
+
+Para investigar, filtre primeiro por `jobId`, depois `fileId` e página/intervalo.
+Compare a espera com a execução antes de aumentar concorrência. Não trate
+timeouts como latência observada nem extraia p95 de limites de configuração.
+Não há painel novo nem tracing distribuído do chat nesta entrega.
 
 - Job parado em `queued` ou `processing`: consultar `/api/jobs/{jobId}/status` com `JOBS_TOKEN`, comparar `createdAt`/`startedAt`/`updatedAt` com `JOB_STALE_AFTER_MS` e aguardar o próximo ciclo de manutenção de 60s antes de classificar como expirado.
 - Job `expired`: verificar se a causa foi timeout de execução, expiração em fila ou manutenção por stale; conferir `error` no status/resultado e orientar reenvio quando apropriado.
 - Token inválido: para `/api/jobs/*`, ausência de bearer indica `401` e bearer diferente de `JOBS_TOKEN` indica `403`; para rotas protegidas fora de jobs, validar uso do token principal (`TOKEN`) sem registrar valores.
 - Saturação de fila: criação de job pode retornar `503` com mensagem de fila cheia quando `queue.length >= JOBS_MAX_QUEUE_SIZE`; reduzir chegada de requisições, aguardar drenagem ou ajustar capacidade por configuração em ambiente apropriado.
-- Restart: após reinício, não assumir retomada automática de jobs; consultar registros JSON, deixar manutenção expirar `queued`/`processing` antigos e solicitar novo job quando a execução anterior não tiver resultado concluído.
+- Restart: consultar o job; registros ativos herdados são expired na inicialização e exigem nova solicitação. Não reutilizar automaticamente URLs assinadas antigas. Se a inicialização falhar por armazenamento inválido, resolver a falha antes de admitir novos jobs.
 - Verificação de limpeza: conferir que jobs finalizados antigos (`completed`, `failed`, `expired`) saem do store depois de `JOBS_RETENTION_HOURS`; se arquivos permanecerem, revisar logs de `Job maintenance failed` e permissões do diretório `temp/jobs`.
 
 ## Roadmap
@@ -571,7 +656,7 @@ Este roadmap é direção futura. Ele não declara implementação atual, não a
 | --- | --- | --- | --- | --- |
 | Rotated scans, rotação 90° | Alta | PDFs A4 portrait com `/Rotate 0`, mas conteúdo escaneado girado dentro da página, podem gerar OCR vazio ou incompleto. | Melhor recuperação de documentos digitalizados que hoje parecem válidos, mas têm texto principal ilegível para Tesseract. | Testes com PDFs sintéticos ou fixtures reais anonimizadas cobrindo conteúdo rotacionado 90°; documentação afirma claramente quando a correção está ativa; métricas mostram extração útil antes/depois; fallback não degrada PDFs já legíveis. |
 | False-native-text detection, falso texto nativo | Alta | Textos nativos de validação, links, selos ou metadados podem mascarar conteúdo jurídico/negocial que está apenas em imagem. | Decisão mais segura entre texto nativo, OCR e `mixed-page`, reduzindo retornos incompletos que parecem sucesso. | Heurística ou classificador documentado; testes com PDFs cujo texto nativo é irrelevante; aceitação exige detectar falso positivo e acionar OCR ou sinalizar baixa confiança; exemplos mantêm placeholders e não expõem dados reais. |
-| Worker cancellation/timeout semantics | Alta | `Promise.race` marca timeout para o chamador, mas pode deixar processor, Poppler, Tesseract ou workers Piscina trabalhando. | Menos CPU residual, menos contenção entre jobs, status mais fiel para usuários e operação. | Semântica de cancelamento definida para job, arquivo, chunk e worker; testes simulam timeout e confirmam encerramento ou isolamento do trabalho residual; logs indicam motivo do cancelamento; comportamento de `expired` continua compatível. |
+| Worker cancellation/timeout semantics | Alta | `Promise.race` marca timeout para o chamador, mas pode deixar processor, Poppler, Tesseract ou processos OCR supervisionados trabalhando. | Menos CPU residual, menos contenção entre jobs, status mais fiel para usuários e operação. | Semântica de cancelamento definida para job, arquivo, chunk e worker; testes simulam timeout e confirmam encerramento ou isolamento do trabalho residual; logs indicam motivo do cancelamento; comportamento de `expired` continua compatível. |
 | Restart/job recovery semantics | Média | JSONs persistidos podem ser confundidos com fila durável, mas `queue[]` e `activeJobs` somem no restart. | Operação mais previsível após deploy, crash ou reinício, com política clara de expirar, reprocessar ou recriar jobs. | Decisão arquitetural documentada, como expirar pendentes ou reconstruir fila; testes cobrem restart com jobs `queued` e `processing`; runbook atualizado; nenhuma claim chama o JSON store de fila durável sem implementação correspondente. |
 | Observability by job/page | Média | Falhas por job, arquivo, página ou chunk ficam difíceis de diagnosticar quando há OCR seletivo, Piscina e fallback. | Debug mais rápido, melhor capacidade de auditoria e base para priorizar melhorias de OCR. | Logs estruturados por `jobId`, `fileId`, página e chunk; métricas de duração, tentativas, confiança OCR e fallback; exemplos sem tokens reais; painel ou consulta operacional definida para status por job/página. |
 | Security/OpenAPI/docs debt | Média | `/api/process-message` público, Swagger público, READMEs raiz anteriores e contratos OpenAPI podem divergir do documento canônico. | Menos risco de integração incorreta, melhor revisão de segurança e documentação mais consistente para consumidores. | Revisão específica decide destino de endpoint legado público sem quebra acidental; OpenAPI e documento canônico passam por check automático de consistência; `API-TRANSCRIBE-README.md` e `DELETE-TEXTS-README.md` são consolidados ou marcados formalmente como históricos; assertions bloqueiam segredos e URLs reais. |
@@ -589,7 +674,7 @@ Este roadmap é direção futura. Ele não declara implementação atual, não a
 - Token: segredo de autenticação enviado como bearer em rotas protegidas. Este documento usa placeholders como `<JOBS_TOKEN>` e nunca registra valores reais.
 - Legacy endpoint, endpoint legado: rota mantida por compatibilidade. Aqui, `/api/process-message` é o endpoint legado síncrono e público no middleware atual, com risco de segurança documentado.
 - JSON store: conjunto de arquivos `temp/jobs/{jobId}.json` que registra estado, timestamps, resultado e erro dos jobs. É armazenamento de estado, não fila durável por si só.
-- Piscina: biblioteca usada para pool de workers Node, aqui aplicada ao OCR de chunks de PDF para paralelizar trabalho pesado.
+- Pool OCR: fila limitada de processos Linux que executa pdfChunkWorker.js; o grupo de subprocessos de cada tarefa é encerrado no cancelamento. Piscina permanece como dependência histórica, não como executor ativo dos chunks.
 - `mixed-page`: modo opcional de processamento PDF que mistura texto nativo e OCR seletivo por página. Não é o padrão atual dos jobs.
 - `JOBS_ENABLED`: flag do agentes-adv que decide se o consumidor usa jobs assíncronos do adsCombine para documentos aplicáveis.
 - `downloadUrl`: URL retornada pelo adsCombine para buscar o texto final em `/texts/{conversationId}/{filename}`. Exemplos devem usar host placeholder, nunca URL real assinada.

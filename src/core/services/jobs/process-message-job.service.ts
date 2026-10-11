@@ -1,6 +1,7 @@
 import { env } from '@config/env'
 import { processMessagesService } from '@core/services/messages/pdf-utils'
 import logger from '@lib/logger'
+import { processingContext } from '@lib/processing-context'
 import type {
   CreateProcessMessageJobInput,
   EnhancedOcrJobResult,
@@ -12,6 +13,7 @@ const MAINTENANCE_INTERVAL_MS = 60_000
 
 type QueuedJob = {
   jobId: string
+  queuedAt: number
 }
 
 export class JobQueueFullError extends Error {
@@ -25,12 +27,33 @@ export class ProcessMessageJobService {
   private readonly queue: QueuedJob[] = []
   private activeJobs = 0
   private maintenanceRunning = false
+  private readonly ready: Promise<void>
 
   constructor(
     private readonly store = new JsonJobStoreService(),
-    private readonly processor = processMessagesService
+    private readonly processor: Pick<
+      typeof processMessagesService,
+      'execute'
+    > = processMessagesService
   ) {
-    void this.runMaintenance()
+    this.ready = this.initialize()
+    void this.ready.catch(error => {
+      logger.error('Job startup reconciliation failed', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+    })
+  }
+
+  private async initialize(): Promise<void> {
+    const jobs = await this.store.list(true)
+    for (const job of jobs) {
+      if (job.status !== 'queued' && job.status !== 'processing') continue
+      await this.store.update(job.id, {
+        status: 'expired',
+        error: 'Job interrompido pelo reinicio do servico; envie uma nova solicitacao',
+        finishedAt: new Date().toISOString(),
+      })
+    }
 
     const timer = setInterval(() => {
       void this.runMaintenance()
@@ -39,6 +62,7 @@ export class ProcessMessageJobService {
   }
 
   async create(input: CreateProcessMessageJobInput): Promise<ProcessMessageJobRecord> {
+    await this.ready
     await this.runMaintenance()
 
     if (this.queue.length >= env.JOBS_MAX_QUEUE_SIZE) {
@@ -64,16 +88,18 @@ export class ProcessMessageJobService {
     return record
   }
 
-  get(jobId: string): Promise<ProcessMessageJobRecord> {
+  async get(jobId: string): Promise<ProcessMessageJobRecord> {
+    await this.ready
     return this.store.get(jobId)
   }
 
   private enqueue(jobId: string): void {
-    this.queue.push({ jobId })
+    this.queue.push({ jobId, queuedAt: performance.now() })
     void this.drainQueue()
   }
 
   private async drainQueue(): Promise<void> {
+    await this.ready
     await this.pruneExpiredQueuedJobs()
 
     while (this.activeJobs < env.JOBS_MAX_CONCURRENCY && this.queue.length > 0) {
@@ -83,15 +109,24 @@ export class ProcessMessageJobService {
       }
 
       this.activeJobs++
-      void this.runJob(nextJob.jobId).finally(() => {
-        this.activeJobs--
-        void this.drainQueue()
+      logger.info('Job processing started', {
+        jobId: nextJob.jobId,
+        queueWaitMs: Math.max(0, performance.now() - nextJob.queuedAt),
+        queueDepth: this.queue.length,
+        activeJobs: this.activeJobs,
       })
+      void processingContext
+        .run({ jobId: nextJob.jobId }, () => this.runJob(nextJob.jobId))
+        .finally(() => {
+          this.activeJobs--
+          void this.drainQueue()
+        })
     }
   }
 
   private async runJob(jobId: string): Promise<void> {
     const startedAt = new Date().toISOString()
+    const processingStarted = performance.now()
 
     try {
       const job = await this.store.update(jobId, {
@@ -142,9 +177,19 @@ export class ProcessMessageJobService {
             : undefined,
         finishedAt: new Date().toISOString(),
       })
+      logger.info('Job processing completed', {
+        jobId,
+        processingMs: Math.max(0, performance.now() - processingStarted),
+        processedFileCount: result.processedFiles.length,
+        failedFileCount: result.failedFiles.length,
+      })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      logger.error('Process-message job failed', { jobId, error: message })
+      logger.error('Process-message job failed', {
+        jobId,
+        error: message,
+        processingMs: Math.max(0, performance.now() - processingStarted),
+      })
 
       await this.store.update(jobId, {
         status: message.includes('excedeu o tempo limite') ? 'expired' : 'failed',

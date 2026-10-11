@@ -656,7 +656,7 @@ async function worker(payload) {
           }
         )}`
       );
-      return [];
+      return structuredPages ? { pages: [] } : '';
     }
 
     const env = {
@@ -702,6 +702,19 @@ async function worker(payload) {
 }
 
 module.exports = worker;
+if (require.main === module) {
+  process.once('message', async payload => {
+    try {
+      const result = await worker(payload);
+      process.send({ result }, () => process.disconnect());
+    } catch (error) {
+      process.send(
+        { error: error instanceof Error ? error.message : 'OCR process failed' },
+        () => { process.exitCode = 1; process.disconnect(); }
+      );
+    }
+  });
+}
 module.exports.__test = {
   performOcrOnPages,
   scoreOcrResult,

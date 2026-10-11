@@ -1,5 +1,10 @@
 # Rota DELETE para arquivos de texto
 
+> Documento histórico. O contrato atual aceita somente `conversationId` opcional;
+> o filtro `filename` mostrado abaixo não é aceito. A rota exige
+> `Authorization: Bearer <TOKEN>`. Consulte
+> [o mapa do fluxo](docs/adscombine-flow-roadmap.md) e o OpenAPI do build.
+
 ## Endpoint: DELETE /api/delete-texts
 
 Esta rota permite excluir arquivos `.txt` da pasta `public/texts` com autenticação via Bearer token.

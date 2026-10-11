@@ -78,8 +78,7 @@ const routeLogger =
  *       Recebe uma lista de mensagens, cada uma contendo um conversationId e uma lista de arquivos
  *       (PDFs, imagens, áudio, DOCX, XLSX, TXT). Extrai o texto de cada arquivo via OCR/Whisper,
  *       salva em disco e retorna a URL de download.
- *     security:
- *       - BearerAuth: []
+ *     security: []
  *     requestBody:
  *       required: true
  *       content:

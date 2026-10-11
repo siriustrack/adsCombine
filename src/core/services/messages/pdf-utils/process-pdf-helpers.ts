@@ -37,6 +37,16 @@ export function shouldBypassOcr({
   }
 }
 
+export function shouldUseFileSizeOcrHeuristic({
+  hasStrongDirectText,
+  qualityAnalysis,
+}: {
+  hasStrongDirectText: boolean
+  qualityAnalysis: TextQualityAnalysis
+}): boolean {
+  return !hasStrongDirectText && qualityAnalysis.hasOcrIndicators
+}
+
 export function logOcrDecision({
   fileId,
   extractedText,

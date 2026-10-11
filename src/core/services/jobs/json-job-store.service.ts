@@ -73,7 +73,7 @@ export class JsonJobStoreService {
     return updated
   }
 
-  async list(): Promise<ProcessMessageJobRecord[]> {
+  async list(strict = false): Promise<ProcessMessageJobRecord[]> {
     await fs.mkdir(this.jobsDir, { recursive: true })
 
     const entries = await fs.readdir(this.jobsDir, { withFileTypes: true })
@@ -92,6 +92,7 @@ export class JsonJobStoreService {
       try {
         jobs.push(await this.get(jobId))
       } catch (error) {
+        if (strict) throw error
         logger.warn('Skipping unreadable job file', { jobId, error: (error as Error).message })
       }
     }

@@ -1,4 +1,5 @@
 import winston from 'winston'
+import { processingContext } from './processing-context'
 
 const isProduction = process.env.NODE_ENV === 'production'
 const configuredLogLevel = ['error', 'warn', 'info', 'debug'].includes(process.env.LOG_LEVEL ?? '')
@@ -11,7 +12,11 @@ const consoleFormat = isProduction
 
 const logger = winston.createLogger({
   level: configuredLogLevel ?? (isProduction ? 'info' : 'debug'),
-  format: winston.format.combine(winston.format.timestamp(), winston.format.json()),
+  format: winston.format.combine(
+    winston.format(info => ({ ...processingContext.getStore(), ...info }))(),
+    winston.format.timestamp(),
+    winston.format.json()
+  ),
   transports: [
     new winston.transports.Console({
       format: consoleFormat,

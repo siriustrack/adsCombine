@@ -10,9 +10,15 @@ import type { EnhancedPdfMetadata } from '../process-messages.types'
 import { summarizeOcrPages } from './enhanced-ocr-summary'
 import { selectEnhancedDocumentText, selectEnhancedPageText } from './enhanced-text-selection'
 import { FileDownloadService } from './file-download.service'
-import { OcrOrchestrator, type OcrPageResult } from './ocr-orchestrator.service'
+import {
+  isOcrCancellation,
+  OcrCancellationError,
+  OcrOrchestrator,
+  type OcrPageResult,
+} from './ocr-orchestrator.service'
 import type { PdfPageText } from './pdf-text-extractor.service'
 import { PdfTextExtractorService } from './pdf-text-extractor.service'
+import { isValidationOnlyText, PdfValidationOnlyTextError } from './pdf-validation-text'
 import { PdfLimitError, type ProcessPdfOptions } from './process-pdf.types'
 import {
   combineTextResults,
@@ -24,6 +30,7 @@ import {
   shouldOcrPage,
   shouldPreferNativePdfTextOverOcr,
   shouldUseDirectOcrForSmallImageOnlyPdf,
+  shouldUseFileSizeOcrHeuristic,
   validatePdfPageLimit,
 } from './process-pdf-helpers'
 import { TextQualityAnalyzer } from './text-quality-analyzer.service'
@@ -307,6 +314,7 @@ export class ProcessPdfService {
   ) {}
 
   async execute(file: FileInput, options: ProcessPdfOptions = {}): Promise<Result<string, Error>> {
+    if (options.signal?.aborted) return errResult(new OcrCancellationError(options.signal.reason))
     const { fileId, url } = file
 
     logger.debug('Starting PDF processing', { fileId, url: redactUrl(url) })
@@ -318,6 +326,7 @@ export class ProcessPdfService {
     const { value: downloadedFile, error: downloadError } =
       await this.fileDownloadService.downloadFile(url, fileId, { maxBytes: options.maxFileBytes })
 
+    if (options.signal?.aborted) return errResult(new OcrCancellationError(options.signal.reason))
     if (downloadError) {
       return errResult(downloadError)
     }
@@ -341,6 +350,7 @@ export class ProcessPdfService {
         includePageVisualMetadata: options.mode === 'mixed-page' || options.mode === 'enhanced',
       })
 
+    if (options.signal?.aborted) return errResult(new OcrCancellationError(options.signal.reason))
     if (extractionError) {
       logger.error('Error extracting text from PDF', {
         fileId,
@@ -364,28 +374,50 @@ export class ProcessPdfService {
     }
 
     if (options.mode === 'mixed-page') {
-      return this.processMixedPagePdf({ buffer: downloadedFile.buffer, textData, fileId, options })
+      return this.validateDocumentContent(
+        this.processMixedPagePdf({ buffer: downloadedFile.buffer, textData, fileId, options }),
+        options.signal
+      )
     }
 
     if (options.mode === 'enhanced') {
-      return this.processEnhancedPdf({
-        buffer: downloadedFile.buffer,
-        extractedText,
-        nativePages: textData.pages,
-        totalPages,
-        fileId,
-        fileName: this.getFileName(file),
-        options,
-        onEnhancedMetadata: options.onEnhancedMetadata,
-      })
+      return this.validateDocumentContent(
+        this.processEnhancedPdf({
+          buffer: downloadedFile.buffer,
+          extractedText,
+          nativePages: textData.pages,
+          totalPages,
+          fileId,
+          fileName: this.getFileName(file),
+          options,
+          onEnhancedMetadata: options.onEnhancedMetadata,
+        }),
+        options.signal
+      )
     }
 
-    return this.processLegacyPdf({
-      buffer: downloadedFile.buffer,
-      extractedText,
-      totalPages,
-      fileId,
-    })
+    return this.validateDocumentContent(
+      this.processLegacyPdf({
+        buffer: downloadedFile.buffer,
+        extractedText,
+        totalPages,
+        fileId,
+        signal: options.signal,
+      }),
+      options.signal
+    )
+  }
+
+  private async validateDocumentContent(
+    result: Result<string, Error> | Promise<Result<string, Error>>,
+    signal?: AbortSignal
+  ): Promise<Result<string, Error>> {
+    const resolved = await result
+    if (signal?.aborted) return errResult(new OcrCancellationError(signal.reason))
+    if (resolved.error) return resolved
+    return isValidationOnlyText(resolved.value)
+      ? errResult(new PdfValidationOnlyTextError())
+      : resolved
   }
 
   async executeEnhanced(file: FileInput, options: Omit<ProcessPdfOptions, 'mode'> = {}) {
@@ -421,7 +453,9 @@ export class ProcessPdfService {
       maxOcrPagesPerPdf: options.maxOcrPagesPerPdf,
       ocrPageBudget: options.ocrPageBudget,
     })
+    if (options.signal?.aborted) return errResult(new OcrCancellationError(options.signal.reason))
     if (error) {
+      if (isOcrCancellation(error)) return errResult(error)
       if (error instanceof PdfLimitError) return errResult(error)
       const nativeText = sanitizePdfText(extractedText)
       if (!nativeText) return errResult(error)
@@ -500,6 +534,7 @@ export class ProcessPdfService {
         ? { documentProfile: options.documentProfile }
         : {}),
     })
+    if (options.signal?.aborted) return errResult(new OcrCancellationError(options.signal.reason))
     const acceptedVisualTextByPage = visualFallback.acceptedVisualTextByPage ?? new Map()
     const selectionError = validateVisualFallbackSelection({
       pages: orderedOcrPages,
@@ -618,11 +653,13 @@ export class ProcessPdfService {
     extractedText,
     totalPages,
     fileId,
+    signal,
   }: {
     buffer: Buffer
     extractedText: string
     totalPages: number
     fileId: string
+    signal?: AbortSignal
   }): Promise<Result<string, Error>> | Result<string, Error> {
     const qualityAnalysis = this.textQualityAnalyzer.analyze(extractedText)
 
@@ -662,7 +699,7 @@ export class ProcessPdfService {
         ocrAlwaysThreshold,
       })
     } else if (shouldSkipOcr) {
-      if (hasStrongDirectText && qualityAnalysis.hasOcrIndicators) {
+      if (shouldUseFileSizeOcrHeuristic({ hasStrongDirectText, qualityAnalysis })) {
         const bytesPerPage = buffer.byteLength / totalPages
         const looksLikeScannedDoc = bytesPerPage > env.PDF_BYTES_PER_PAGE_THRESHOLD
 
@@ -708,7 +745,7 @@ export class ProcessPdfService {
       extractedTextLength: extractedText.length,
     })
 
-    return this.runOcrWithFallback({ buffer, totalPages, fileId, extractedText })
+    return this.runOcrWithFallback({ buffer, totalPages, fileId, extractedText, signal })
   }
 
   private async processMixedPagePdf({
@@ -755,6 +792,7 @@ export class ProcessPdfService {
         totalPages: textData.totalPages,
         fileId,
         extractedText: textData.text,
+        signal: options.signal,
       })
     }
 
@@ -797,9 +835,12 @@ export class ProcessPdfService {
       totalPages: textData.totalPages,
       fileId,
       pageNumbers: pagesToOcr.map(page => page.pageNumber),
+      signal: options.signal,
     })
 
+    if (options.signal?.aborted) return errResult(new OcrCancellationError(options.signal.reason))
     if (error) {
+      if (isOcrCancellation(error)) return errResult(error)
       const nativeText = textData.text.trim()
       if (nativeText.length > 0) {
         return okResult(sanitizePdfText(nativeText))
@@ -834,19 +875,24 @@ export class ProcessPdfService {
     totalPages,
     fileId,
     extractedText,
+    signal,
   }: {
     buffer: Buffer
     totalPages: number
     fileId: string
     extractedText: string
+    signal?: AbortSignal
   }): Promise<Result<string, Error>> {
-    const { value: ocrResult, error: ocrError } = await this.ocrOrchestrator.processWithOcr(
+    const { value: ocrResult, error: ocrError } = await this.ocrOrchestrator.processWithOcr({
       buffer,
       totalPages,
-      fileId
-    )
+      fileId,
+      signal,
+    })
 
+    if (signal?.aborted) return errResult(new OcrCancellationError(signal.reason))
     if (ocrError) {
+      if (isOcrCancellation(ocrError)) return errResult(ocrError)
       logger.error('OCR processing failed', { fileId, error: ocrError.message })
 
       if (extractedText.trim().length > 0) {

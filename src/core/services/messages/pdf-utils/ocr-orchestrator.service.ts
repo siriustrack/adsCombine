@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import { promisify } from 'node:util'
 import { PROCESSING_TIMEOUTS } from '@config/constants'
 import logger from '@lib/logger'
-import { errResult, okResult, type Result, wrapPromiseResult } from '@lib/result.types'
+import { errResult, okResult, type Result } from '@lib/result.types'
 import { pdfWorkerPool } from '@lib/worker-pool'
 import tmp from 'tmp'
 import type { EnhancedOcrPageMetadata } from './enhanced-ocr.types'
@@ -16,6 +16,17 @@ export interface OcrProcessingResult {
   ocrText: string
   chunksProcessed: number
   processingTime: number
+}
+
+export class OcrCancellationError extends Error {
+  constructor(reason: unknown) {
+    super('OCR processing cancelled', { cause: reason })
+    this.name = 'AbortError'
+  }
+}
+
+export function isOcrCancellation(error: Error): boolean {
+  return error.name === 'AbortError' || error.name === 'TimeoutError'
 }
 
 export interface OcrPageResult {
@@ -124,10 +135,14 @@ export function validateEnhancedOcrLimits(
   return undefined
 }
 
-type OcrPageProcessingOptions = {
+type OcrProcessingOptions = {
   buffer: Buffer
   totalPages: number
   fileId: string
+  signal?: AbortSignal
+}
+
+type OcrPageProcessingOptions = OcrProcessingOptions & {
   pageNumbers: number[]
 }
 
@@ -141,6 +156,11 @@ type OcrChunkProcessingOptions = {
 }
 
 export class OcrOrchestrator {
+  constructor(
+    private readonly scheduleTimeout = (expire: () => void) =>
+      setTimeout(expire, PROCESSING_TIMEOUTS.PDF_GLOBAL)
+  ) {}
+
   private readonly chunkManager = new OcrChunkManager()
   private readonly execFile = promisify(execFileCb)
 
@@ -156,16 +176,19 @@ export class OcrOrchestrator {
 
   private async validatePdfStructure(
     pdfPath: string,
-    fileId: string
+    fileId: string,
+    signal: AbortSignal
   ): Promise<{ valid: boolean; pageCount: number }> {
     try {
       const { stdout } = await this.execFile('pdfinfo', [pdfPath], {
         timeout: 10_000,
+        signal,
       })
       const pagesMatch = stdout.match(/Pages:\s+(\d+)/)
       const pageCount = pagesMatch ? parseInt(pagesMatch[1], 10) : 0
       return { valid: pageCount > 0, pageCount }
     } catch (error) {
+      signal.throwIfAborted()
       logger.warn('PDF structure validation failed (pdfinfo)', {
         fileId,
         error: (error as Error).message,
@@ -174,37 +197,17 @@ export class OcrOrchestrator {
     }
   }
 
-  async processWithOcr(
-    buffer: Buffer,
-    totalPages: number,
-    fileId: string
-  ): Promise<Result<OcrProcessingResult, Error>> {
-    const startTime = Date.now()
+  async processWithOcr({
+    buffer,
+    totalPages,
+    fileId,
+    signal: parentSignal,
+  }: OcrProcessingOptions): Promise<Result<OcrProcessingResult, Error>> {
+    return this.withCancellation(parentSignal, async signal => {
+      const startTime = Date.now()
 
-    if (totalPages === 0) {
-      logger.warn('No pages to process with OCR', { fileId })
-      return okResult({
-        ocrText: '',
-        chunksProcessed: 0,
-        processingTime: Date.now() - startTime,
-      })
-    }
-
-    // Criar arquivo temporário antes de validar
-    const tempPdf = tmp.fileSync({ postfix: '.pdf' })
-
-    try {
-      await fs.promises.writeFile(tempPdf.name, buffer)
-
-      // Validar estrutura do PDF com poppler (mesmo engine do pdftoppm)
-      const validation = await this.validatePdfStructure(tempPdf.name, fileId)
-
-      if (!validation.valid) {
-        logger.warn('PDF failed poppler structure validation, skipping OCR', {
-          fileId,
-          declaredPages: totalPages,
-          popplerPages: validation.pageCount,
-        })
+      if (totalPages === 0) {
+        logger.warn('No pages to process with OCR', { fileId })
         return okResult({
           ocrText: '',
           chunksProcessed: 0,
@@ -212,59 +215,162 @@ export class OcrOrchestrator {
         })
       }
 
-      // Usar page count validado (poppler é autoritativo para pdftoppm)
-      const effectivePages = validation.pageCount
-      if (effectivePages !== totalPages) {
-        logger.warn('Page count mismatch: pdf-parse vs pdfinfo', {
+      // Criar arquivo temporário antes de validar
+      const tempPdf = tmp.fileSync({ postfix: '.pdf' })
+
+      try {
+        await fs.promises.writeFile(tempPdf.name, buffer)
+
+        // Validar estrutura do PDF com poppler (mesmo engine do pdftoppm)
+        signal.throwIfAborted()
+        const validation = await this.validatePdfStructure(tempPdf.name, fileId, signal)
+
+        if (!validation.valid) {
+          logger.warn('PDF failed poppler structure validation, skipping OCR', {
+            fileId,
+            declaredPages: totalPages,
+            popplerPages: validation.pageCount,
+          })
+          return okResult({
+            ocrText: '',
+            chunksProcessed: 0,
+            processingTime: Date.now() - startTime,
+          })
+        }
+
+        // Usar page count validado (poppler é autoritativo para pdftoppm)
+        const effectivePages = validation.pageCount
+        if (effectivePages !== totalPages) {
+          logger.warn('Page count mismatch: pdf-parse vs pdfinfo', {
+            fileId,
+            pdfParsePages: totalPages,
+            pdfInfoPages: effectivePages,
+          })
+        }
+
+        // Criar chunks com page count validado
+        const chunks = this.chunkManager.createProcessingChunks(effectivePages, fileId)
+
+        if (chunks.length === 0) {
+          return okResult({
+            ocrText: '',
+            chunksProcessed: 0,
+            processingTime: Date.now() - startTime,
+          })
+        }
+
+        // Processar chunks em paralelo
+        const { value: ocrResults, error: ocrError } = await this.processChunksInParallel({
+          chunks,
+          pdfPath: tempPdf.name,
           fileId,
-          pdfParsePages: totalPages,
-          pdfInfoPages: effectivePages,
+          totalPages: effectivePages,
+          signal,
         })
-      }
 
-      // Criar chunks com page count validado
-      const chunks = this.chunkManager.createProcessingChunks(effectivePages, fileId)
+        if (ocrError) {
+          return errResult(ocrError)
+        }
 
-      if (chunks.length === 0) {
+        // Processar resultados
+        const ocrText = ocrResults.join('\n')
+        const processingTime = Date.now() - startTime
+
+        logger.debug('OCR processing completed', {
+          fileId,
+          totalPages: effectivePages,
+          chunksProcessed: chunks.length,
+          ocrTextLength: ocrText.length,
+          processingTime,
+        })
+
         return okResult({
-          ocrText: '',
-          chunksProcessed: 0,
-          processingTime: Date.now() - startTime,
+          ocrText,
+          chunksProcessed: chunks.length,
+          processingTime,
         })
+      } finally {
+        // Limpar arquivo temporário
+        if (tempPdf) {
+          try {
+            tempPdf.removeCallback()
+          } catch (error) {
+            logger.warn('Failed to cleanup temporary PDF file', {
+              fileId,
+              tempFile: tempPdf.name,
+              error: (error as Error).message,
+            })
+          }
+        }
+      }
+    })
+  }
+
+  async processPagesWithOcr({
+    buffer,
+    totalPages,
+    fileId,
+    pageNumbers,
+    signal: parentSignal,
+  }: OcrPageProcessingOptions): Promise<Result<OcrPagesProcessingResult, Error>> {
+    return this.withCancellation(parentSignal, async signal => {
+      const startTime = Date.now()
+      const selectedPages = [...new Set(pageNumbers)]
+        .filter(page => page >= 1)
+        .sort((a, b) => a - b)
+
+      if (selectedPages.length === 0) {
+        return okResult({ pages: [], chunksProcessed: 0, processingTime: Date.now() - startTime })
       }
 
-      // Processar chunks em paralelo
-      const { value: ocrResults, error: ocrError } = await this.processChunksInParallel({
-        chunks,
-        pdfPath: tempPdf.name,
-        fileId,
-        totalPages: effectivePages,
-      })
+      const tempPdf = tmp.fileSync({ postfix: '.pdf' })
 
-      if (ocrError) {
-        return errResult(ocrError)
-      }
+      try {
+        await fs.promises.writeFile(tempPdf.name, buffer)
+        signal.throwIfAborted()
+        const validation = await this.validatePdfStructure(tempPdf.name, fileId, signal)
 
-      // Processar resultados
-      const ocrText = ocrResults.join('\n')
-      const processingTime = Date.now() - startTime
+        if (!validation.valid) {
+          logger.warn('PDF failed poppler structure validation, skipping selected-page OCR', {
+            fileId,
+            declaredPages: totalPages,
+            popplerPages: validation.pageCount,
+          })
+          return okResult({ pages: [], chunksProcessed: 0, processingTime: Date.now() - startTime })
+        }
 
-      logger.debug('OCR processing completed', {
-        fileId,
-        totalPages: effectivePages,
-        chunksProcessed: chunks.length,
-        ocrTextLength: ocrText.length,
-        processingTime,
-      })
+        const effectivePages = validation.pageCount
+        const validSelectedPages = selectedPages.filter(page => page <= effectivePages)
+        const chunks = this.chunkManager.createProcessingChunksForPages(validSelectedPages, fileId)
 
-      return okResult({
-        ocrText,
-        chunksProcessed: chunks.length,
-        processingTime,
-      })
-    } finally {
-      // Limpar arquivo temporário
-      if (tempPdf) {
+        const { value: pages, error } = await this.processPageChunksInParallel({
+          chunks,
+          pdfPath: tempPdf.name,
+          fileId,
+          totalPages: effectivePages,
+          signal,
+        })
+
+        if (error) {
+          return errResult(error)
+        }
+
+        const processingTime = Date.now() - startTime
+
+        logger.debug('Selected-page OCR processing completed', {
+          fileId,
+          totalPages: effectivePages,
+          selectedPages: validSelectedPages.length,
+          chunksProcessed: chunks.length,
+          processingTime,
+        })
+
+        return okResult({
+          pages: pages.sort((a, b) => a.pageNumber - b.pageNumber),
+          chunksProcessed: chunks.length,
+          processingTime,
+        })
+      } finally {
         try {
           tempPdf.removeCallback()
         } catch (error) {
@@ -275,148 +381,80 @@ export class OcrOrchestrator {
           })
         }
       }
-    }
-  }
-
-  async processPagesWithOcr({
-    buffer,
-    totalPages,
-    fileId,
-    pageNumbers,
-  }: OcrPageProcessingOptions): Promise<Result<OcrPagesProcessingResult, Error>> {
-    const startTime = Date.now()
-    const selectedPages = [...new Set(pageNumbers)].filter(page => page >= 1).sort((a, b) => a - b)
-
-    if (selectedPages.length === 0) {
-      return okResult({ pages: [], chunksProcessed: 0, processingTime: Date.now() - startTime })
-    }
-
-    const tempPdf = tmp.fileSync({ postfix: '.pdf' })
-
-    try {
-      await fs.promises.writeFile(tempPdf.name, buffer)
-      const validation = await this.validatePdfStructure(tempPdf.name, fileId)
-
-      if (!validation.valid) {
-        logger.warn('PDF failed poppler structure validation, skipping selected-page OCR', {
-          fileId,
-          declaredPages: totalPages,
-          popplerPages: validation.pageCount,
-        })
-        return okResult({ pages: [], chunksProcessed: 0, processingTime: Date.now() - startTime })
-      }
-
-      const effectivePages = validation.pageCount
-      const validSelectedPages = selectedPages.filter(page => page <= effectivePages)
-      const chunks = this.chunkManager.createProcessingChunksForPages(validSelectedPages, fileId)
-
-      const { value: pages, error } = await this.processPageChunksInParallel({
-        chunks,
-        pdfPath: tempPdf.name,
-        fileId,
-        totalPages: effectivePages,
-      })
-
-      if (error) {
-        return errResult(error)
-      }
-
-      const processingTime = Date.now() - startTime
-
-      logger.debug('Selected-page OCR processing completed', {
-        fileId,
-        totalPages: effectivePages,
-        selectedPages: validSelectedPages.length,
-        chunksProcessed: chunks.length,
-        processingTime,
-      })
-
-      return okResult({
-        pages: pages.sort((a, b) => a.pageNumber - b.pageNumber),
-        chunksProcessed: chunks.length,
-        processingTime,
-      })
-    } finally {
-      try {
-        tempPdf.removeCallback()
-      } catch (error) {
-        logger.warn('Failed to cleanup temporary PDF file', {
-          fileId,
-          tempFile: tempPdf.name,
-          error: (error as Error).message,
-        })
-      }
-    }
+    })
   }
 
   async processWithEnhancedOcr({
     buffer,
     totalPages,
     fileId,
-    signal,
+    signal: parentSignal,
     ...limits
   }: EnhancedOcrProcessingOptions): Promise<Result<EnhancedOcrProcessingResult, Error>> {
-    const startTime = Date.now()
-    if (totalPages === 0) {
-      return okResult({
-        pages: [],
-        ocrText: '',
-        totalPages: 0,
-        chunksProcessed: 0,
-        processingTime: 0,
-      })
-    }
-
-    const tempPdf = tmp.fileSync({ postfix: '.pdf' })
-    try {
-      await fs.promises.writeFile(tempPdf.name, buffer)
-      const validation = await this.validatePdfStructure(tempPdf.name, fileId)
-      if (!validation.valid) {
+    return this.withCancellation(parentSignal, async signal => {
+      const startTime = Date.now()
+      if (totalPages === 0) {
         return okResult({
           pages: [],
           ocrText: '',
-          totalPages: validation.pageCount,
+          totalPages: 0,
           chunksProcessed: 0,
+          processingTime: 0,
+        })
+      }
+
+      const tempPdf = tmp.fileSync({ postfix: '.pdf' })
+      try {
+        await fs.promises.writeFile(tempPdf.name, buffer)
+        signal.throwIfAborted()
+        const validation = await this.validatePdfStructure(tempPdf.name, fileId, signal)
+        if (!validation.valid) {
+          return okResult({
+            pages: [],
+            ocrText: '',
+            totalPages: validation.pageCount,
+            chunksProcessed: 0,
+            processingTime: Date.now() - startTime,
+          })
+        }
+
+        const limitError = validateEnhancedOcrLimits(validation.pageCount, limits)
+        if (limitError) return errResult(limitError)
+
+        const chunks = this.chunkManager.createProcessingChunks(validation.pageCount, fileId)
+        const { value: pages, error } = await this.processEnhancedChunksInParallel({
+          chunks,
+          pdfPath: tempPdf.name,
+          fileId,
+          totalPages: validation.pageCount,
+          enhancedOcr: true,
+          signal,
+        })
+        if (error) return errResult(error)
+
+        const expectedPages = Array.from({ length: validation.pageCount }, (_, index) => index + 1)
+        const coverageError = validateOcrPageCoverage(pages, expectedPages)
+        if (coverageError) return errResult(coverageError)
+        const orderedPages = pages.sort((a, b) => a.pageNumber - b.pageNumber)
+        return okResult({
+          pages: orderedPages,
+          ocrText: orderedPages.map(page => page.text).join('\n\n'),
+          totalPages: validation.pageCount,
+          chunksProcessed: chunks.length,
           processingTime: Date.now() - startTime,
         })
+      } finally {
+        try {
+          tempPdf.removeCallback()
+        } catch (error) {
+          logger.warn('Failed to cleanup temporary PDF file', {
+            fileId,
+            tempFile: tempPdf.name,
+            error: (error as Error).message,
+          })
+        }
       }
-
-      const limitError = validateEnhancedOcrLimits(validation.pageCount, limits)
-      if (limitError) return errResult(limitError)
-
-      const chunks = this.chunkManager.createProcessingChunks(validation.pageCount, fileId)
-      const { value: pages, error } = await this.processEnhancedChunksInParallel({
-        chunks,
-        pdfPath: tempPdf.name,
-        fileId,
-        totalPages: validation.pageCount,
-        enhancedOcr: true,
-        signal,
-      })
-      if (error) return errResult(error)
-
-      const expectedPages = Array.from({ length: validation.pageCount }, (_, index) => index + 1)
-      const coverageError = validateOcrPageCoverage(pages, expectedPages)
-      if (coverageError) return errResult(coverageError)
-      const orderedPages = pages.sort((a, b) => a.pageNumber - b.pageNumber)
-      return okResult({
-        pages: orderedPages,
-        ocrText: orderedPages.map(page => page.text).join('\n\n'),
-        totalPages: validation.pageCount,
-        chunksProcessed: chunks.length,
-        processingTime: Date.now() - startTime,
-      })
-    } finally {
-      try {
-        tempPdf.removeCallback()
-      } catch (error) {
-        logger.warn('Failed to cleanup temporary PDF file', {
-          fileId,
-          tempFile: tempPdf.name,
-          error: (error as Error).message,
-        })
-      }
-    }
+    })
   }
 
   private async processChunksInParallel({
@@ -424,22 +462,22 @@ export class OcrOrchestrator {
     pdfPath,
     fileId,
     totalPages,
+    signal,
   }: OcrChunkProcessingOptions): Promise<Result<string[], Error>> {
-    const { promise: timeoutPromise, timer } = this.createTimeoutPromise(
-      PROCESSING_TIMEOUTS.PDF_GLOBAL
-    )
-
-    const ocrPromise = Promise.all(
-      chunks.map(async (chunk, index) => {
+    return this.withCancellation(signal, async (taskSignal, cancel) => {
+      const tasks = chunks.map(async (chunk, index) => {
         const chunkStartTime = Date.now()
 
         try {
-          const result = await pdfWorkerPool.run({
-            pageRange: chunk,
-            pdfPath,
-            fileId,
-            totalPages,
-          })
+          const result = await pdfWorkerPool.run(
+            {
+              pageRange: chunk,
+              pdfPath,
+              fileId,
+              totalPages,
+            },
+            { signal: taskSignal }
+          )
 
           const chunkDuration = Date.now() - chunkStartTime
           logger.debug('Chunk processed successfully', {
@@ -447,12 +485,7 @@ export class OcrOrchestrator {
             chunkIndex: index,
             pageRange: `${chunk.first}-${chunk.last}`,
             chunkDuration,
-            resultLength:
-              typeof result === 'string'
-                ? result.length
-                : Array.isArray(result)
-                  ? result.join('').length
-                  : 0,
+            resultLength: result.length,
           })
 
           return result
@@ -468,22 +501,8 @@ export class OcrOrchestrator {
           throw error
         }
       })
-    )
-
-    const { value: ocrResults, error: ocrError } = await wrapPromiseResult<string[], Error>(
-      Promise.race([ocrPromise, timeoutPromise]).finally(() => clearTimeout(timer))
-    )
-
-    if (ocrError) {
-      logger.error('Error in OCR processing', {
-        fileId,
-        error: ocrError.message,
-        chunksCount: chunks.length,
-      })
-      return errResult(new Error(`Erro no processamento OCR: ${ocrError.message}`))
-    }
-
-    return okResult(ocrResults)
+      return okResult(await this.settleChunkTasks(tasks, cancel))
+    })
   }
 
   private async processPageChunksInParallel({
@@ -491,39 +510,25 @@ export class OcrOrchestrator {
     pdfPath,
     fileId,
     totalPages,
+    signal,
   }: OcrChunkProcessingOptions): Promise<Result<OcrPageResult[], Error>> {
-    const { promise: timeoutPromise, timer } = this.createTimeoutPromise(
-      PROCESSING_TIMEOUTS.PDF_GLOBAL
-    )
-
-    const ocrPromise = Promise.all(
-      chunks.map(async chunk => {
-        const result = await pdfWorkerPool.run({
-          pageRange: chunk,
-          pdfPath,
-          fileId,
-          totalPages,
-          structuredPages: true,
-        })
+    return this.withCancellation(signal, async (taskSignal, cancel) => {
+      const tasks = chunks.map(async chunk => {
+        const result = await pdfWorkerPool.run(
+          {
+            pageRange: chunk,
+            pdfPath,
+            fileId,
+            totalPages,
+            structuredPages: true,
+          },
+          { signal: taskSignal }
+        )
 
         return Array.isArray(result?.pages) ? (result.pages as OcrPageResult[]) : []
       })
-    )
-
-    const { value: chunkResults, error } = await wrapPromiseResult<OcrPageResult[][], Error>(
-      Promise.race([ocrPromise, timeoutPromise]).finally(() => clearTimeout(timer))
-    )
-
-    if (error) {
-      logger.error('Error in selected-page OCR processing', {
-        fileId,
-        error: error.message,
-        chunksCount: chunks.length,
-      })
-      return errResult(new Error(`Erro no processamento OCR: ${error.message}`))
-    }
-
-    return okResult(chunkResults.flat())
+      return okResult((await this.settleChunkTasks(tasks, cancel)).flat())
+    })
   }
 
   private async processEnhancedChunksInParallel({
@@ -533,14 +538,8 @@ export class OcrOrchestrator {
     totalPages,
     signal,
   }: OcrChunkProcessingOptions): Promise<Result<OcrPageResult[], Error>> {
-    const controller = new AbortController()
-    const unbindAbortSignal = bindAbortSignal(signal, controller)
-    const timer = setTimeout(
-      () => controller.abort(new Error('Enhanced OCR processing timed out')),
-      PROCESSING_TIMEOUTS.PDF_GLOBAL
-    )
-    const ocrPromise = Promise.all(
-      chunks.map(async chunk => {
+    return this.withCancellation(signal, async (taskSignal, cancel) => {
+      const tasks = chunks.map(async chunk => {
         const result = await pdfWorkerPool.run(
           {
             pageRange: chunk,
@@ -550,42 +549,55 @@ export class OcrOrchestrator {
             structuredPages: true,
             enhancedOcr: true,
           },
-          { signal: controller.signal }
+          { signal: taskSignal }
         )
         return Array.isArray(result?.pages) ? (result.pages as OcrPageResult[]) : []
       })
-    )
-    const { value: chunkResults, error } = await wrapPromiseResult<OcrPageResult[][], Error>(
-      ocrPromise.finally(() => {
-        clearTimeout(timer)
-        unbindAbortSignal()
-      })
-    )
-    if (error) {
-      logger.error('Error in enhanced OCR processing', {
-        fileId,
-        error: error.message,
-        chunksCount: chunks.length,
-      })
-      return errResult(new Error(`Erro no processamento OCR: ${error.message}`))
-    }
-    return okResult(chunkResults.flat())
+      return okResult((await this.settleChunkTasks(tasks, cancel)).flat())
+    })
   }
 
-  private createTimeoutPromise(timeout: number): {
-    promise: Promise<never>
-    timer: ReturnType<typeof setTimeout>
-  } {
-    const timeoutInMinutes = timeout / 60000
-    let timer!: ReturnType<typeof setTimeout>
+  private async settleChunkTasks<T>(
+    tasks: Promise<T>[],
+    cancel: (reason: unknown) => void
+  ): Promise<T[]> {
+    try {
+      return await Promise.all(tasks)
+    } catch (error) {
+      cancel(error)
+      await Promise.allSettled(tasks)
+      throw error
+    }
+  }
 
-    const promise = new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(new Error(`OCR processing timed out after ${timeoutInMinutes} minutes`)),
-        timeout
+  private async withCancellation<T>(
+    parentSignal: AbortSignal | undefined,
+    work: (signal: AbortSignal, cancel: (reason: unknown) => void) => Promise<Result<T, Error>>
+  ): Promise<Result<T, Error>> {
+    const controller = new AbortController()
+    const unbind = bindAbortSignal(parentSignal, controller)
+    const timer = this.scheduleTimeout(() =>
+      controller.abort(new DOMException('OCR processing timed out', 'TimeoutError'))
+    )
+    try {
+      controller.signal.throwIfAborted()
+      const result = await work(controller.signal, reason => controller.abort(reason))
+      controller.signal.throwIfAborted()
+      return result
+    } catch (error) {
+      return errResult(
+        parentSignal?.aborted
+          ? new OcrCancellationError(parentSignal.reason)
+          : controller.signal.reason instanceof DOMException &&
+              controller.signal.reason.name === 'TimeoutError'
+            ? controller.signal.reason
+            : error instanceof Error
+              ? error
+              : new Error('OCR processing failed', { cause: error })
       )
-    })
-
-    return { promise, timer }
+    } finally {
+      clearTimeout(timer)
+      unbind()
+    }
   }
 }

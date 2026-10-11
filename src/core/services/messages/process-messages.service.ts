@@ -14,10 +14,10 @@ import type { Uploadable } from 'openai/uploads'
 import pLimit from 'p-limit'
 import { sanitize, sanitizePdfText } from 'utils/sanitize'
 import WordExtractor from 'word-extractor'
+import { createSignedTextDownload } from '../texts/signed-text-download'
 import { FileDownloadService, FileSizeLimitError } from './pdf-utils/file-download.service'
 import { ProcessPdfService } from './pdf-utils/process-pdf.service'
 import type { VisualFallbackV2Metadata } from './pdf-utils/visual-fallback.types'
-import { createSignedTextDownload } from '../texts/signed-text-download'
 import type {
   EnhancedPdfMetadata,
   ProcessAndHandleFileOptions,
@@ -531,6 +531,7 @@ export class ProcessMessagesService {
   }: Omit<ProcessAndHandleFileOptions, 'extractedTexts'> & {
     visualFallbackPageBudget?: OcrPageBudget
   }): Promise<ProcessedFileOutcome> {
+    const processingStarted = performance.now()
     const enhancedPdfMetadata: EnhancedPdfMetadata[] = []
     const result = await this.processFile({
       file,
@@ -538,6 +539,13 @@ export class ProcessMessagesService {
       ocrPageBudget,
       enhancedPdfMetadata,
       visualFallbackPageBudget,
+    })
+
+    logger.info('File processing finished', {
+      fileId: file.fileId,
+      mimeType: file.mimeType,
+      outcome: result.error ? 'failed' : 'completed',
+      processingMs: Math.max(0, performance.now() - processingStarted),
     })
 
     if (result.error) {
@@ -607,6 +615,18 @@ export class ProcessMessagesService {
               visualFallbackPageBudget,
               onEnhancedMetadata: (metadata: EnhancedPdfMetadata) => {
                 enhancedPdfMetadata?.push(metadata)
+                for (const page of metadata.pageQuality ?? []) {
+                  logger.debug('PDF page processing evaluated', {
+                    fileId: file.fileId,
+                    pageNumber: page.pageNumber,
+                    classification: page.classification,
+                    confidence: page.confidence,
+                    wordCount: page.wordCount,
+                    selectedAttempt: page.selectedAttempt?.label,
+                    rotationAngle: page.selectedAttempt?.rotation?.angle,
+                    warningCount: page.warnings?.length ?? 0,
+                  })
+                }
               },
             }
             const result = options.enhancedOcr
