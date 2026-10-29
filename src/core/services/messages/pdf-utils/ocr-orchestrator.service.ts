@@ -7,6 +7,7 @@ import logger from '@lib/logger'
 import { errResult, okResult, type Result } from '@lib/result.types'
 import { pdfWorkerPool } from '@lib/worker-pool'
 import tmp from 'tmp'
+import { EmbeddedDocumentNoticeReader } from './embedded-document-notice'
 import type { EnhancedOcrPageMetadata } from './enhanced-ocr.types'
 import type { PageChunk } from './ocr-chunk-manager.service'
 import { OcrChunkManager } from './ocr-chunk-manager.service'
@@ -158,7 +159,8 @@ type OcrChunkProcessingOptions = {
 export class OcrOrchestrator {
   constructor(
     private readonly scheduleTimeout = (expire: () => void) =>
-      setTimeout(expire, PROCESSING_TIMEOUTS.PDF_GLOBAL)
+      setTimeout(expire, PROCESSING_TIMEOUTS.PDF_GLOBAL),
+    private readonly documentNoticeReader = new EmbeddedDocumentNoticeReader()
   ) {}
 
   private readonly chunkManager = new OcrChunkManager()
@@ -435,7 +437,11 @@ export class OcrOrchestrator {
         const expectedPages = Array.from({ length: validation.pageCount }, (_, index) => index + 1)
         const coverageError = validateOcrPageCoverage(pages, expectedPages)
         if (coverageError) return errResult(coverageError)
-        const orderedPages = pages.sort((a, b) => a.pageNumber - b.pageNumber)
+        const orderedPages = await this.documentNoticeReader.read(
+          tempPdf.name,
+          pages.sort((a, b) => a.pageNumber - b.pageNumber),
+          signal
+        )
         return okResult({
           pages: orderedPages,
           ocrText: orderedPages.map(page => page.text).join('\n\n'),
