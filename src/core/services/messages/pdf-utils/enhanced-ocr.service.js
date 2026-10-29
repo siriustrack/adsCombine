@@ -76,12 +76,41 @@ function scoreEnhancedOcrAttempt(result) {
   return base + volume + rewards - penalties;
 }
 
+function registryActHeadings(text) {
+  return Array.from(text.matchAll(
+    /^[\t ]*(?:AV|R)[\t ]*[.-][\t ]*(\d{1,4})(?:[\t ]*\/[\t ]*(\d+(?:\.\d+)*)\b|\b(?=[\t ]*(?:[-–—:(]|$)))/gimu
+  ), heading => ({ number: Number(heading[1]), matricula: heading[2]?.replace(/\./g, '') }));
+}
+
+function preservesRegistryActHeadings(baselineText, candidateText) {
+  const candidates = registryActHeadings(candidateText);
+  return registryActHeadings(baselineText).every(baseline =>
+    candidates.some(candidate => candidate.number === baseline.number &&
+      (!baseline.matricula || !candidate.matricula || baseline.matricula === candidate.matricula))
+  );
+}
+
+function hasRegistryActSequenceGap(text) {
+  const headings = registryActHeadings(text);
+  let previousNumber;
+  let previousMatricula;
+  for (const heading of headings) {
+    const { number, matricula } = heading;
+    const sameMatricula = !previousMatricula || !matricula || previousMatricula === matricula;
+    if (sameMatricula && previousNumber !== undefined && number > previousNumber + 1) return true;
+    previousNumber = number;
+    previousMatricula = matricula;
+  }
+  return false;
+}
+
 function shouldUseEnhancedPsmFallback(result) {
   const signals = analyzeEnhancedOcrText(result.text);
   return (
     signals.corruptedSymbols > 0 ||
     signals.fragmentedNumbersOrMeasures > 0 ||
     signals.garbledSpans > 0 ||
+    hasRegistryActSequenceGap(result.text) ||
     (signals.registryMarkers + signals.legalMarkers === 0 && result.wordCount < 15)
   );
 }
@@ -90,5 +119,7 @@ module.exports = {
   analyzeEnhancedOcrText,
   sanitizeEnhancedOcrText,
   scoreEnhancedOcrAttempt,
+  hasRegistryActSequenceGap,
+  preservesRegistryActHeadings,
   shouldUseEnhancedPsmFallback,
 };

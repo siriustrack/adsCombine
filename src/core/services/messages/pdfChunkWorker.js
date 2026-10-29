@@ -7,6 +7,8 @@ const tmp = require('tmp');
 const { threadId } = require('node:worker_threads');
 const {
   analyzeEnhancedOcrText,
+  hasRegistryActSequenceGap,
+  preservesRegistryActHeadings,
   sanitizeEnhancedOcrText,
   scoreEnhancedOcrAttempt,
   shouldUseEnhancedPsmFallback,
@@ -508,7 +510,8 @@ function performOcrOnPages(pngs, env, options = {}) {
           const score = enhancedOcr ? scoreEnhancedOcrAttempt(result) : scoreOcrResult(result);
           const scoreGain = score - baselineScore;
 
-          if (result.wordCount >= rotateMinWords && scoreGain >= rotateMinScoreGain && score > bestScore) {
+          if (result.wordCount >= rotateMinWords && scoreGain >= rotateMinScoreGain && score > bestScore &&
+            (!enhancedOcr || preservesRegistryActHeadings(best?.text || '', result.text))) {
             bestScore = score;
             best = result;
             bestMeta = {
@@ -541,7 +544,8 @@ function performOcrOnPages(pngs, env, options = {}) {
           env,
         });
         const score = enhancedOcr ? scoreEnhancedOcrAttempt(result) : scoreOcrResult(result);
-        if (score > bestScore) {
+        if (score > bestScore &&
+          (!enhancedOcr || preservesRegistryActHeadings(best?.text || '', result.text))) {
           bestScore = score;
           best = result;
           bestMeta = { label: attempt.label, psm: attempt.psm };
@@ -603,6 +607,7 @@ function performOcrOnPages(pngs, env, options = {}) {
 function createEnhancedOcrWarnings(text) {
   const signals = analyzeEnhancedOcrText(text);
   const warnings = [];
+  if (hasRegistryActSequenceGap(text)) warnings.push('registry-act-sequence-gap');
   if (signals.corruptedSymbols > 0) warnings.push('corrupted-symbols');
   if (signals.fragmentedNumbersOrMeasures > 0) warnings.push('fragmented-numbers-or-measures');
   if (signals.duplicateLabels > 0) warnings.push('duplicate-labels');
