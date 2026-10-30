@@ -13,6 +13,95 @@ const listing = [
 ].join('\n')
 
 describe('embedded certificate notice', () => {
+  test('supplements a damaged acquisition clause inside its act without replacing overlays or terminal acts', async () => {
+    // Given: the base image preserves the verb lost under an overlay.
+    const damaged =
+      'Av. 1 - Cidade.\nPESSOA A, supra qualifi See E mével por compra feita-a PESSOA B, pelo preço de R$ 10,00.\n'
+    const remaining = 'Av. 2 - Quitação.\nR. 3 - Venda a PESSOA C.'
+    const clear =
+      'Av. 1 - Cidade.\nPESSOA A, supra qualificada, adquiriu o imóvel por compra feita a PESSOA B, pelo preço de R$ 10,00.\n'
+    let ocrCalls = 0
+    const reader = new EmbeddedDocumentNoticeReader(async (command, args) => {
+      if (command === 'tesseract') {
+        ocrCalls++
+        return { stdout: args[0]?.endsWith('-000.png') ? clear : 'NÃO VALE COMO CERTIDÃO' }
+      }
+      return { stdout: args[0] === '-list' ? listing : '' }
+    })
+    // When
+    const result = await reader.read(
+      'synthetic.pdf',
+      [{ pageNumber: 1, text: damaged + remaining }],
+      new AbortController().signal
+    )
+    // Then: the literal supplement precedes the next act and never becomes a new heading.
+    const output = result[0]?.text ?? ''
+    expect(output).toContain(damaged)
+    expect(output).toContain(remaining)
+    expect(output).toContain(
+      'PESSOA A, supra qualificada, adquiriu o imóvel por compra feita a PESSOA B,'
+    )
+    expect(output.indexOf('adquiriu')).toBeLessThan(output.indexOf('Av. 2'))
+    expect(output.match(/^(?:Av|R)\.\s*\d/gm)?.length).toBe(3)
+    expect(output).toContain('NÃO VALE COMO CERTIDÃO')
+    expect(result[0]?.warnings).toContain('registry-acquisition-clause-recovered')
+    expect(result[0]?.warnings?.includes('registry-acquisition-clause-unreadable')).toBe(false)
+    expect(ocrCalls).toBe(2)
+  })
+
+  test('keeps an observed notice and exposes the role gap when base-image OCR fails', async () => {
+    // Given
+    const damaged =
+      'Av. 1 - Cidade.\nPESSOA A, texto degradado por compra feita-a PESSOA B, pelo preço de R$ 10,00.'
+    const reader = new EmbeddedDocumentNoticeReader(async (command, args) => {
+      if (command === 'tesseract' && args[0]?.endsWith('-000.png'))
+        throw new Error('OCR unavailable')
+      return {
+        stdout:
+          command === 'tesseract' ? 'NÃO VALE COMO CERTIDÃO' : args[0] === '-list' ? listing : '',
+      }
+    })
+    // When
+    const result = await reader.read(
+      'synthetic.pdf',
+      [{ pageNumber: 1, text: damaged }],
+      new AbortController().signal
+    )
+    // Then
+    expect(result[0]?.text).toContain(damaged)
+    expect(result[0]?.text).toContain('NÃO VALE COMO CERTIDÃO')
+    expect(result[0]?.warnings).toContain('registry-acquisition-clause-unreadable')
+    expect(result[0]?.text.includes('adquiriu')).toBe(false)
+  })
+
+  test('does not choose between multiple possible base images', async () => {
+    // Given
+    let baseCalls = 0
+    const damaged =
+      'Av. 1 - Cidade.\nPESSOA A, texto degradado por compra feita-a PESSOA B, pelo preço de R$ 10,00.'
+    const reader = new EmbeddedDocumentNoticeReader(async (command, args) => {
+      if (command === 'tesseract' && args[0]?.endsWith('-000.png')) baseCalls++
+      return {
+        stdout:
+          command === 'tesseract'
+            ? 'NÃO VALE COMO CERTIDÃO'
+            : args[0] === '-list'
+              ? `${listing}\n1 4 image 2500 3500 gray 1 8 image no 12 0 300 300 100K 1%`
+              : '',
+      }
+    })
+    // When
+    const result = await reader.read(
+      'synthetic.pdf',
+      [{ pageNumber: 1, text: damaged }],
+      new AbortController().signal
+    )
+    // Then
+    expect(baseCalls).toBe(0)
+    expect(result[0]?.warnings).toContain('registry-acquisition-clause-unreadable')
+    expect(result[0]?.text).toContain(damaged)
+  })
+
   test('preserves all acts and adds only the observed notice with temporary cleanup', async () => {
     // Given: the notice is in a separate strip; whole-page OCR omitted it.
     const calls: string[] = []
